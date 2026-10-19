@@ -1,0 +1,368 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================================
+   ALASTOR MULTI-THEME ENGINE (Mythic Demon Dark + 3 Light Themes + Color Themes)
+   ============================================================================ */
+
+/* 1. Default Theme: ALASTOR INFERNAL (Mythological Demon Crimson & Molten Gold Dark) */
+:root,
+html[data-theme="alastor-infernal"] {
+  --background: #0b0609;
+  --foreground: #fdf4f6;
+  --border: #331722;
+  --alastor-glow-primary: rgba(225, 29, 72, 0.24);
+  --alastor-glow-secondary: rgba(245, 158, 11, 0.16);
+  --alastor-sigil-stroke: rgba(245, 158, 11, 0.28);
+
+  --z-950: 11 6 9;
+  --z-900: 22 11 16;
+  --z-800: 45 21 31;
+  --z-700: 72 33 47;
+  --z-600: 114 58 76;
+  --z-500: 156 104 120;
+  --z-400: 198 158 170;
+  --z-300: 228 202 210;
+  --z-200: 244 229 234;
+  --z-100: 253 244 246;
+  --z-50: 255 251 252;
+}
+
+/* 2. OLYMPIAN DAYLIGHT (Crisp Pure Light Theme — Alabaster White & Deep Slate Ink) */
+html[data-theme="olympian-light"] {
+  --background: #f3f6fb;
+  --foreground: #0f172a;
+  --border: #d6e0ee;
+  --alastor-glow-primary: rgba(225, 29, 72, 0.09);
+  --alastor-glow-secondary: rgba(14, 116, 144, 0.09);
+  --alastor-sigil-stroke: rgba(180, 83, 9, 0.22);
+
+  --z-950: 243 246 251;
+  --z-900: 255 255 255;
+  --z-800: 220 229 240;
+  --z-700: 191 205 222;
+  --z-600: 124 141 163;
+  --z-500: 82 97 119;
+  --z-400: 54 68 89;
+  --z-300: 33 45 64;
+  --z-200: 18 28 45;
+  --z-100: 9 15 28;
+  --z-50: 2 6 18;
+}
+
+/* 3. ATHENA PARCHMENT (Warm Daylight Theme — Soft Ivory, Gold & Espresso Ink) */
+html[data-theme="athena-parchment"] {
+  --background: #f6f0e4;
+  --foreground: #1c1510;
+  --border: #ded2be;
+  --alastor-glow-primary: rgba(180, 83, 9, 0.11);
+  --alastor-glow-secondary: rgba(190, 18, 60, 0.08);
+  --alastor-sigil-stroke: rgba(146, 64, 14, 0.24);
+
+  --z-950: 246 240 228;
+  --z-900: 254 251 245;
+  --z-800: 226 215 197;
+  --z-700: 201 186 162;
+  --z-600: 138 122 100;
+  --z-500: 98 83 66;
+  --z-400: 69 57 44;
+  --z-300: 46 37 28;
+  --z-200: 29 22 16;
+  --z-100: 17 12 8;
+  --z-50: 8 5 3;
+}
+
+/* 4. HYPERBOREAN FROST (Cool Glacier Light Theme — Ice Blue & Deep Navy) */
+html[data-theme="hyperborean-light"] {
+  --background: #ebf4fc;
+  --foreground: #09192e;
+  --border: #cbe0f5;
+  --alastor-glow-primary: rgba(2, 132, 199, 0.11);
+  --alastor-glow-secondary: rgba(99, 102, 241, 0.09);
+  --alastor-sigil-stroke: rgba(3, 105, 161, 0.22);
+
+  --z-950: 235 244 252;
+  --z-900: 250 253 255;
+  --z-800: 207 225 244;
+  --z-700: 172 199 228;
+  --z-600: 108 139 173;
+  --z-500: 69 98 130;
+  --z-400: 42 68 99;
+  --z-300: 23 45 74;
+  --z-200: 13 30 54;
+  --z-100: 6 17 34;
+  --z-50: 2 9 20;
+}
+
+/* 5. HECATE ARCANE (Mythic Amethyst & Void Dark Theme) */
+html[data-theme="hecate-arcane"] {
+  --background: #090514;
+  --foreground: #f7f4ff;
+  --border: #2b1b4d;
+  --alastor-glow-primary: rgba(168, 85, 247, 0.25);
+  --alastor-glow-secondary: rgba(236, 72, 153, 0.16);
+  --alastor-sigil-stroke: rgba(192, 132, 252, 0.28);
+
+  --z-950: 9 5 20;
+  --z-900: 18 11 36;
+  --z-800: 38 24 68;
+  --z-700: 62 40 105;
+  --z-600: 98 70 150;
+  --z-500: 140 116 190;
+  --z-400: 184 166 222;
+  --z-300: 218 206 244;
+  --z-200: 238 232 252;
+  --z-100: 249 246 255;
+  --z-50: 255 255 255;
+}
+
+/* 6. STYGIAN ABYSS (Classic Cyber Obsidian & Electric Cyan Dark Theme) */
+html[data-theme="stygian-abyss"] {
+  --background: #09090b;
+  --foreground: #fafafa;
+  --border: #27272a;
+  --alastor-glow-primary: rgba(6, 182, 212, 0.2);
+  --alastor-glow-secondary: rgba(59, 130, 246, 0.15);
+  --alastor-sigil-stroke: rgba(34, 211, 238, 0.24);
+
+  --z-950: 9 9 11;
+  --z-900: 24 24 27;
+  --z-800: 39 39 42;
+  --z-700: 63 63 70;
+  --z-600: 82 82 91;
+  --z-500: 113 113 122;
+  --z-400: 161 161 170;
+  --z-300: 212 212 216;
+  --z-200: 228 228 231;
+  --z-100: 244 244 245;
+  --z-50: 250 250 250;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow: hidden;
+  transition: background-color 0.22s ease, color 0.22s ease;
+}
+
+/* ============================================================================
+   LIGHT-MODE SEMANTIC BADGE & CONTRAST HARMONIZATION
+   Ensures all status pills, severity chips, and accent surfaces look crisp
+   and ultra-legible when any Light Theme is active.
+   ============================================================================ */
+html[data-theme-mode="light"] h1.text-white,
+html[data-theme-mode="light"] h2.text-white,
+html[data-theme-mode="light"] h3.text-white,
+html[data-theme-mode="light"] h4.text-white {
+  color: rgb(var(--z-100)) !important;
+}
+
+html[data-theme-mode="light"] .bg-cyan-950,
+html[data-theme-mode="light"] .bg-cyan-950\/80,
+html[data-theme-mode="light"] .bg-cyan-950\/60,
+html[data-theme-mode="light"] .bg-cyan-950\/50,
+html[data-theme-mode="light"] .bg-cyan-950\/40,
+html[data-theme-mode="light"] .bg-cyan-950\/30,
+html[data-theme-mode="light"] .bg-cyan-950\/20,
+html[data-theme-mode="light"] .bg-cyan-950\/15 {
+  background-color: rgba(207, 250, 254, 0.85) !important;
+}
+html[data-theme-mode="light"] .text-cyan-300,
+html[data-theme-mode="light"] .text-cyan-200,
+html[data-theme-mode="light"] .text-cyan-400 {
+  color: #0e7490 !important;
+}
+html[data-theme-mode="light"] .border-cyan-800,
+html[data-theme-mode="light"] .border-cyan-700,
+html[data-theme-mode="light"] .border-cyan-700\/80,
+html[data-theme-mode="light"] .border-cyan-800\/70,
+html[data-theme-mode="light"] .border-cyan-900\/60 {
+  border-color: #67e8f9 !important;
+}
+
+html[data-theme-mode="light"] .bg-indigo-950,
+html[data-theme-mode="light"] .bg-indigo-950\/80,
+html[data-theme-mode="light"] .bg-indigo-950\/60,
+html[data-theme-mode="light"] .bg-indigo-950\/50,
+html[data-theme-mode="light"] .bg-indigo-950\/40,
+html[data-theme-mode="light"] .bg-indigo-950\/30,
+html[data-theme-mode="light"] .bg-indigo-950\/20 {
+  background-color: rgba(224, 231, 255, 0.88) !important;
+}
+html[data-theme-mode="light"] .text-indigo-300,
+html[data-theme-mode="light"] .text-indigo-200,
+html[data-theme-mode="light"] .text-indigo-400 {
+  color: #3730a3 !important;
+}
+html[data-theme-mode="light"] .border-indigo-800,
+html[data-theme-mode="light"] .border-indigo-700,
+html[data-theme-mode="light"] .border-indigo-700\/80 {
+  border-color: #a5b4fc !important;
+}
+
+html[data-theme-mode="light"] .bg-emerald-950,
+html[data-theme-mode="light"] .bg-emerald-950\/80,
+html[data-theme-mode="light"] .bg-emerald-950\/70,
+html[data-theme-mode="light"] .bg-emerald-950\/60,
+html[data-theme-mode="light"] .bg-emerald-950\/50,
+html[data-theme-mode="light"] .bg-emerald-950\/40,
+html[data-theme-mode="light"] .bg-emerald-950\/30,
+html[data-theme-mode="light"] .bg-emerald-950\/20,
+html[data-theme-mode="light"] .bg-emerald-950\/10 {
+  background-color: rgba(209, 250, 229, 0.85) !important;
+}
+html[data-theme-mode="light"] .text-emerald-300,
+html[data-theme-mode="light"] .text-emerald-200,
+html[data-theme-mode="light"] .text-emerald-400 {
+  color: #065f46 !important;
+}
+html[data-theme-mode="light"] .border-emerald-800,
+html[data-theme-mode="light"] .border-emerald-700,
+html[data-theme-mode="light"] .border-emerald-700\/80 {
+  border-color: #6ee7b7 !important;
+}
+
+html[data-theme-mode="light"] .bg-amber-950,
+html[data-theme-mode="light"] .bg-amber-950\/80,
+html[data-theme-mode="light"] .bg-amber-950\/60,
+html[data-theme-mode="light"] .bg-amber-950\/50,
+html[data-theme-mode="light"] .bg-amber-950\/30,
+html[data-theme-mode="light"] .bg-amber-950\/20,
+html[data-theme-mode="light"] .bg-amber-950\/10 {
+  background-color: rgba(254, 243, 199, 0.9) !important;
+}
+html[data-theme-mode="light"] .text-amber-300,
+html[data-theme-mode="light"] .text-amber-200,
+html[data-theme-mode="light"] .text-amber-400 {
+  color: #92400e !important;
+}
+html[data-theme-mode="light"] .border-amber-800,
+html[data-theme-mode="light"] .border-amber-700,
+html[data-theme-mode="light"] .border-amber-800\/80 {
+  border-color: #fcd34d !important;
+}
+
+html[data-theme-mode="light"] .bg-red-950,
+html[data-theme-mode="light"] .bg-red-950\/80,
+html[data-theme-mode="light"] .bg-red-950\/60,
+html[data-theme-mode="light"] .bg-red-950\/50,
+html[data-theme-mode="light"] .bg-red-950\/40,
+html[data-theme-mode="light"] .bg-red-950\/30,
+html[data-theme-mode="light"] .bg-red-950\/20,
+html[data-theme-mode="light"] .bg-red-950\/15 {
+  background-color: rgba(254, 226, 226, 0.88) !important;
+}
+html[data-theme-mode="light"] .text-red-300,
+html[data-theme-mode="light"] .text-red-200,
+html[data-theme-mode="light"] .text-red-400 {
+  color: #991b1b !important;
+}
+html[data-theme-mode="light"] .border-red-800,
+html[data-theme-mode="light"] .border-red-700,
+html[data-theme-mode="light"] .border-red-800\/80,
+html[data-theme-mode="light"] .border-red-900\/60 {
+  border-color: #fca5a5 !important;
+}
+
+html[data-theme-mode="light"] .bg-purple-950,
+html[data-theme-mode="light"] .bg-purple-950\/80,
+html[data-theme-mode="light"] .bg-purple-950\/60,
+html[data-theme-mode="light"] .bg-purple-950\/50,
+html[data-theme-mode="light"] .bg-purple-950\/30,
+html[data-theme-mode="light"] .bg-purple-950\/20 {
+  background-color: rgba(243, 232, 255, 0.88) !important;
+}
+html[data-theme-mode="light"] .text-purple-300,
+html[data-theme-mode="light"] .text-purple-200,
+html[data-theme-mode="light"] .text-purple-400 {
+  color: #6b21a8 !important;
+}
+html[data-theme-mode="light"] .border-purple-800,
+html[data-theme-mode="light"] .border-purple-700 {
+  border-color: #d8b4fe !important;
+}
+
+html[data-theme-mode="light"] .bg-blue-950,
+html[data-theme-mode="light"] .bg-blue-950\/60,
+html[data-theme-mode="light"] .bg-blue-950\/40 {
+  background-color: rgba(219, 234, 254, 0.88) !important;
+}
+html[data-theme-mode="light"] .text-blue-300,
+html[data-theme-mode="light"] .text-blue-200,
+html[data-theme-mode="light"] .text-blue-400 {
+  color: #1e40af !important;
+}
+
+html[data-theme-mode="light"] .bg-yellow-950,
+html[data-theme-mode="light"] .bg-yellow-950\/60 {
+  background-color: rgba(254, 249, 195, 0.9) !important;
+}
+html[data-theme-mode="light"] .text-yellow-300,
+html[data-theme-mode="light"] .text-yellow-200 {
+  color: #854d0e !important;
+}
+
+/* Slow mythic rotation for Alastor arcane sigil rings */
+@keyframes alastorSigilSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes alastorSigilReverseSpin {
+  from {
+    transform: rotate(360deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+.animate-alastor-sigil {
+  animation: alastorSigilSpin 110s linear infinite;
+}
+
+.animate-alastor-sigil-reverse {
+  animation: alastorSigilReverseSpin 140s linear infinite;
+}
+
+/* Monaco vulnerability line highlight */
+.cpg-active-line-highlight {
+  background: rgba(239, 68, 68, 0.18) !important;
+  border-left: 3px solid #ef4444 !important;
+}
+
+/* Monaco vulnerability glyph margin icon */
+.cpg-vuln-glyph {
+  background: #ef4444;
+  border-radius: 50%;
+  width: 8px !important;
+  height: 8px !important;
+  margin-left: 5px;
+  margin-top: 5px;
+  box-shadow: 0 0 8px #ef4444;
+}
+
+/* Custom scrollbars adapting to active theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgb(var(--z-950));
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--z-700));
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--z-600));
+}
