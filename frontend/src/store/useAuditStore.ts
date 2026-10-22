@@ -26,6 +26,7 @@ import {
   RaciGovernanceResponse,
   SastPlusSuiteResponse,
   TrackChangesSummary,
+  UserAccountsStateResponse,
 } from "@/types/cpg";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
@@ -63,6 +64,10 @@ interface AuditState {
   // Unified Engine & Grouping Filter state
   activeEngineFilter: "ALL" | ScanEngineType;
   primaryGrouping: "NONE" | "LANGUAGE" | "SEVERITY" | "ENGINE";
+  filterSecretsOnly: boolean;
+
+  // User Accounts & Multi-Tenant Separation state
+  userAccountsState: UserAccountsStateResponse | null;
 
   // External Site Vulnerability Intelligence state
   extractedAdvisories: ExtractedAdvisory[];
@@ -113,6 +118,7 @@ interface AuditState {
   setActiveSidebarTab: (tab: "FLAWS" | "APP_TREE" | "SITE_EXTRACTOR") => void;
   setActiveEngineFilter: (eng: "ALL" | ScanEngineType) => void;
   setPrimaryGrouping: (grp: "NONE" | "LANGUAGE" | "SEVERITY" | "ENGINE") => void;
+  setFilterSecretsOnly: (val: boolean) => void;
   setSettingsModalOpen: (open: boolean, tab?: "PRESETS" | "GLOBAL_PROJECT" | "QUERY_VIEWER" | "CUSTOMIZATION") => void;
   setIntegrationModalOpen: (open: boolean) => void;
   setReactFlowInstance: (instance: any) => void;
@@ -152,6 +158,40 @@ interface AuditState {
   updatePlatformSettings: (payload: Record<string, any>) => Promise<void>;
   upsertQueryRule: (payload: Record<string, any>) => Promise<void>;
   toggleQueryRule: (ruleId: string) => Promise<void>;
+  createTestProfile: (payload: {
+    name: string;
+    badge: string;
+    description: string;
+    enabled_engines: string[];
+    enabled_rule_ids: string[];
+  }) => Promise<void>;
+  batchUpdateRules: (payload: {
+    enabled_rule_ids: string[];
+    disabled_rule_ids?: string[];
+    preset_id?: string;
+  }) => Promise<void>;
+  fetchUserAccounts: () => Promise<void>;
+  createAccount: (payload: {
+    name: string;
+    organization_unit: string;
+    environment_tier?: string;
+    isolation_mode?: string;
+    compliance_mandate?: string;
+    assigned_project_ids?: string[];
+  }) => Promise<void>;
+  createUserProfile: (payload: {
+    name: string;
+    email: string;
+    role: string;
+    title: string;
+    department: string;
+    account_id: string;
+    default_test_profile_id?: string;
+  }) => Promise<void>;
+  switchUserOrAccount: (payload: {
+    account_id?: string;
+    user_id?: string;
+  }) => Promise<void>;
   addCustomSanitizer: (payload: {
     function_name: string;
     language: string;
@@ -249,6 +289,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
   activeEngineFilter: "ALL",
   primaryGrouping: "NONE",
+  filterSecretsOnly: false,
+  userAccountsState: null,
 
   extractedAdvisories: [],
   isExtractingIntel: false,
@@ -273,7 +315,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   ideLayoutMode: "SPLIT_BOTH",
   isSidebarCollapsed: false,
   isQuickCommandOpen: false,
-  isMenuBarExpanded: false,
+  isMenuBarExpanded: true,
 
   setAppTheme: (theme: AppThemeId) => {
     set({ appTheme: theme });
@@ -361,8 +403,13 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       get().fetchDeepDiveAnalytics();
     } else if (mode === "RACI_GOVERNANCE") {
       get().fetchRaciGovernance();
-    } else if (mode === "SAST_PLUS_SUITE") {
+    } else if (mode === "SAST_PLUS_SUITE" || mode === "THREAT_MODELING") {
       get().fetchSastPlusSuite();
+    } else if (mode === "RULE_ENGINE_PROFILES") {
+      get().fetchPlatformSettings();
+    } else if (mode === "USER_PROFILES") {
+      get().fetchUserAccounts();
+      get().fetchProjects();
     }
   },
 
@@ -372,6 +419,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   setActiveEngineFilter: (eng: "ALL" | ScanEngineType) => set({ activeEngineFilter: eng }),
 
   setPrimaryGrouping: (grp: "NONE" | "LANGUAGE" | "SEVERITY" | "ENGINE") => set({ primaryGrouping: grp }),
+
+  setFilterSecretsOnly: (val: boolean) => set({ filterSecretsOnly: val }),
 
   setSettingsModalOpen: (open: boolean, tab?: "PRESETS" | "GLOBAL_PROJECT" | "QUERY_VIEWER" | "CUSTOMIZATION") => {
     set({
@@ -772,6 +821,134 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       }
     } catch (err) {
       console.error("Failed to toggle query rule:", err);
+    }
+  },
+
+  createTestProfile: async (payload) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/settings/presets`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        const data: PlatformSettingsResponse = await res.json();
+        set({ platformSettings: data });
+        await Promise.all([
+          get().fetchFindings(),
+          get().fetchMetrics(),
+          get().fetchDeepDiveAnalytics(),
+        ]);
+      }
+    } catch (err) {
+      console.error("Failed to create test profile:", err);
+    }
+  },
+
+  batchUpdateRules: async (payload) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/settings/queries/batch-select`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        const data: PlatformSettingsResponse = await res.json();
+        set({ platformSettings: data });
+        await Promise.all([
+          get().fetchFindings(),
+          get().fetchMetrics(),
+          get().fetchDeepDiveAnalytics(),
+        ]);
+      }
+    } catch (err) {
+      console.error("Failed to batch update rules:", err);
+    }
+  },
+
+  fetchUserAccounts: async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/accounts`);
+      if (res.ok) {
+        const data: UserAccountsStateResponse = await res.json();
+        const activeUser = data.users.find((u) => u.id === data.active_user_id) || data.users[0];
+        set((state) => ({
+          userAccountsState: data,
+          activeOperator: activeUser
+            ? {
+                name: activeUser.name,
+                role: `${activeUser.title} (${activeUser.account_name})`,
+                email: activeUser.email,
+              }
+            : state.activeOperator,
+        }));
+      }
+    } catch (err) {
+      console.error("Failed to fetch user accounts state:", err);
+    }
+  },
+
+  createAccount: async (payload) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/accounts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        const data: UserAccountsStateResponse = await res.json();
+        set({ userAccountsState: data });
+        await get().fetchProjects();
+      }
+    } catch (err) {
+      console.error("Failed to create tenant account:", err);
+    }
+  },
+
+  createUserProfile: async (payload) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/accounts/users`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        const data: UserAccountsStateResponse = await res.json();
+        set({ userAccountsState: data });
+      }
+    } catch (err) {
+      console.error("Failed to create user profile:", err);
+    }
+  },
+
+  switchUserOrAccount: async (payload) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/accounts/switch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        const data: UserAccountsStateResponse = await res.json();
+        const activeUser = data.users.find((u) => u.id === data.active_user_id) || data.users[0];
+        set((state) => ({
+          userAccountsState: data,
+          activeOperator: activeUser
+            ? {
+                name: activeUser.name,
+                role: `${activeUser.title} (${activeUser.account_name})`,
+                email: activeUser.email,
+              }
+            : state.activeOperator,
+        }));
+        await Promise.all([
+          get().fetchPlatformSettings(),
+          get().fetchProjects(),
+          get().fetchFindings(),
+        ]);
+      }
+    } catch (err) {
+      console.error("Failed to switch user or account:", err);
     }
   },
 

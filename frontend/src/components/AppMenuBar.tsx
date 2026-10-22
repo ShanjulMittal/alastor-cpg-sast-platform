@@ -10,60 +10,80 @@ import {
   Sparkles,
   Settings,
   ShieldCheck,
+  ShieldAlert,
   Sliders,
   Download,
   GraduationCap,
   Terminal,
   ChevronDown,
   CheckCircle2,
-  AlertTriangle,
   Package,
   Globe,
   Compass,
-  BookOpen,
   Ticket,
   Play,
   Layers,
-  Eye,
-  EyeOff,
   Flame,
+  KeyRound,
+  PhoneCall,
+  Building2,
+  Network,
+  Command,
 } from "lucide-react";
 
 export function AppMenuBar() {
-  const workspaceViewMode = useAuditStore((s) => s.workspaceViewMode);
-  const setWorkspaceViewMode = useAuditStore((s) => s.setWorkspaceViewMode);
-  const audienceMode = useAuditStore((s) => s.audienceMode);
-  const setAudienceMode = useAuditStore((s) => s.setAudienceMode);
-  const isSettingsBarVisible = useAuditStore((s) => s.isSettingsBarVisible);
-  const setSettingsBarVisible = useAuditStore((s) => s.setSettingsBarVisible);
-  const platformSettings = useAuditStore((s) => s.platformSettings);
-  const updatePlatformSettings = useAuditStore((s) => s.updatePlatformSettings);
-  const setSettingsModalOpen = useAuditStore((s) => s.setSettingsModalOpen);
-  const setIntegrationModalOpen = useAuditStore((s) => s.setIntegrationModalOpen);
-  const setSastPlusActiveTab = useAuditStore((s) => s.setSastPlusActiveTab);
-  const raciGovernance = useAuditStore((s) => s.raciGovernance);
-  const sastPlusSuite = useAuditStore((s) => s.sastPlusSuite);
-  const triggerScan = useAuditStore((s) => s.triggerScan);
-  const exportAuditReport = useAuditStore((s) => s.exportAuditReport);
-  const extractAndScanFromSites = useAuditStore((s) => s.extractAndScanFromSites);
-  const setActiveSidebarTab = useAuditStore((s) => s.setActiveSidebarTab);
-  const setShowPortalGate = useAuditStore((s) => s.setShowPortalGate);
-  const setGraphFullscreen = useAuditStore((s) => s.setGraphFullscreen);
-  const appTheme = useAuditStore((s) => s.appTheme);
-  const setAppTheme = useAuditStore((s) => s.setAppTheme);
-  const projectPath = useAuditStore((s) => s.projectPath);
-  const setProjectPath = useAuditStore((s) => s.setProjectPath);
-  const findings = useAuditStore((s) => s.findings);
-  const isScanning = useAuditStore((s) => s.isScanning);
-  const isMenuBarExpanded = useAuditStore((s) => s.isMenuBarExpanded);
-  const setMenuBarExpanded = useAuditStore((s) => s.setMenuBarExpanded);
-  const uiDensityMode = useAuditStore((s) => s.uiDensityMode);
+  const {
+    workspaceViewMode,
+    setWorkspaceViewMode,
+    graphViewMode,
+    setGraphViewMode,
+    ideLayoutMode,
+    setIdeLayoutMode,
+    audienceMode,
+    setAudienceMode,
+    platformSettings,
+    fetchPlatformSettings,
+    updatePlatformSettings,
+    userAccountsState,
+    fetchUserAccounts,
+    switchUserOrAccount,
+    setSettingsModalOpen,
+    setIntegrationModalOpen,
+    setSastPlusActiveTab,
+    raciGovernance,
+    sastPlusSuite,
+    triggerScan,
+    exportAuditReport,
+    extractAndScanFromSites,
+    setActiveSidebarTab,
+    setShowPortalGate,
+    setGraphFullscreen,
+    appTheme,
+    setAppTheme,
+    projectPath,
+    findings,
+    filterSecretsOnly,
+    setFilterSecretsOnly,
+    setQuickCommandOpen,
+  } = useAuditStore();
 
   const [openMenu, setOpenMenu] = useState<
-    null | "WORKSPACE" | "ENGINES" | "RACI" | "SAST_PLUS" | "SETTINGS" | "EXPORT"
+    | null
+    | "FILE"
+    | "WORKSPACE"
+    | "GRAPHS"
+    | "RULES"
+    | "THREATS"
+    | "ACCOUNTS"
+    | "REPORTS"
   >(null);
 
   const menuContainerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!platformSettings) fetchPlatformSettings();
+    if (!userAccountsState) fetchUserAccounts();
+  }, [platformSettings, userAccountsState, fetchPlatformSettings, fetchUserAccounts]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -78,16 +98,37 @@ export function AppMenuBar() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const enabledEngines = platformSettings?.enabled_engines || ["SAST", "SCA", "IaC"];
-  const activePresetId = platformSettings?.active_preset_id || "preset-optimized";
+  const enabledEngines = platformSettings?.enabled_engines || [
+    "SAST",
+    "SCA",
+    "IaC",
+  ];
+  const activePresetId =
+    platformSettings?.active_preset_id || "preset-optimized";
   const presets = platformSettings?.presets || [];
+  const activePreset = presets.find((p) => p.id === activePresetId);
+
+  const accounts = userAccountsState?.accounts || [];
+  const users = userAccountsState?.users || [];
+  const activeAccount =
+    accounts.find((a) => a.id === userAccountsState?.active_account_id) ||
+    accounts[0];
+  const activeUser =
+    users.find((u) => u.id === userAccountsState?.active_user_id) || users[0];
+
+  const secretCount = findings.filter(
+    (f) =>
+      f.is_secret_finding ||
+      (f.rule_id || "").toUpperCase().includes("SECRET") ||
+      f.cwe_id === "CWE-798"
+  ).length;
 
   const handleToggleEngine = async (eng: string) => {
     const exists = enabledEngines.includes(eng);
     const next = exists
       ? enabledEngines.filter((e) => e !== eng)
       : [...enabledEngines, eng];
-    if (next.length === 0) return; // keep at least 1 engine enabled
+    if (next.length === 0) return;
     await updatePlatformSettings({
       scope: platformSettings?.active_scope || "GLOBAL",
       enabled_engines: next,
@@ -99,6 +140,7 @@ export function AppMenuBar() {
       scope: platformSettings?.active_scope || "GLOBAL",
       active_preset_id: presetId,
     });
+    setOpenMenu(null);
   };
 
   const handleDownloadCycloneDxSbom = () => {
@@ -137,873 +179,734 @@ export function AppMenuBar() {
     window.URL.revokeObjectURL(url);
   };
 
-  const raciHealth = raciGovernance?.governance_health_score ?? 100;
-  const raciWarningsCount = raciGovernance?.validation_warnings?.length ?? 0;
-
-  if (!isMenuBarExpanded && uiDensityMode === "SIMPLE_CLEAN") {
-    return null;
-  }
-
   return (
-    <div
+    <nav
       ref={menuContainerRef}
-      className="flex flex-col bg-zinc-950/95 border-b border-zinc-800/90 text-xs select-none relative z-50"
+      aria-label="Top Application Menu Bar"
+      className="h-9 px-3 bg-[#070a10] border-b border-slate-800/90 flex items-center justify-between text-xs select-none relative z-50 shadow-md"
     >
-      {/* ROW 1: Streamlined Desktop Application Menu Bar */}
-      <div className="h-8 px-3 flex items-center justify-between border-b border-zinc-900/90 bg-zinc-950">
-        <div className="flex items-center gap-1">
-          <span className="text-[10px] font-mono uppercase tracking-widest text-rose-400 font-bold px-2 py-0.5 rounded bg-rose-950/50 border border-rose-800/60 mr-1">
-            SAST ++++++ MENU
-          </span>
+      {/* Left: Structured Desktop Menus with Dropdown Options */}
+      <div className="flex items-center gap-1">
+        <span className="text-[10px] font-mono uppercase tracking-widest text-amber-300 font-extrabold px-2 py-0.5 rounded bg-amber-500/15 border border-amber-500/40 mr-1">
+          ALASTOR MENU
+        </span>
 
-          {/* MENU 1: WORKSPACE & VIEWS */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() =>
-                setOpenMenu(openMenu === "WORKSPACE" ? null : "WORKSPACE")
-              }
-              className={`px-2.5 py-1 rounded flex items-center gap-1 text-[11px] font-medium transition-colors ${
-                openMenu === "WORKSPACE"
-                  ? "bg-zinc-800 text-cyan-300"
-                  : "text-zinc-300 hover:bg-zinc-900 hover:text-white"
-              }`}
-            >
-              <span>Workspace</span>
-              <ChevronDown className="w-3 h-3 text-zinc-500" />
-            </button>
-            {openMenu === "WORKSPACE" && (
-              <div className="absolute left-0 mt-1 w-72 rounded-xl bg-zinc-950 border border-zinc-700 shadow-2xl p-1.5 z-50 space-y-0.5">
-                <div className="px-2.5 py-1 text-[9px] font-mono uppercase tracking-wider text-zinc-500">
-                  Switch Primary Module View
-                </div>
+        {/* 1. FILE & SCAN MENU */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setOpenMenu(openMenu === "FILE" ? null : "FILE")}
+            className={`px-2.5 py-1 rounded-md flex items-center gap-1 text-[11px] font-semibold transition-colors ${
+              openMenu === "FILE"
+                ? "bg-slate-800 text-amber-300"
+                : "text-slate-300 hover:bg-slate-900 hover:text-white"
+            }`}
+          >
+            <span>File &amp; Scan</span>
+            <ChevronDown className="w-3 h-3 text-slate-500" />
+          </button>
+          {openMenu === "FILE" && (
+            <div className="absolute left-0 mt-1 w-72 rounded-xl bg-slate-950 border border-slate-700 shadow-2xl p-1.5 z-50 space-y-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setOpenMenu(null);
+                  triggerScan(projectPath);
+                }}
+                className="w-full px-2.5 py-2 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 flex items-center gap-2 text-amber-200 font-bold text-left"
+              >
+                <Play className="w-3.5 h-3.5 text-amber-400 fill-current" />
+                <span>Run Full CPG + Secret Scan Now</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceViewMode("PROJECTS_HUB");
+                  setOpenMenu(null);
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center gap-2 text-slate-200 text-left"
+              >
+                <FolderGit2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Open Projects &amp; Repositories Hub</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOpenMenu(null);
+                  setWorkspaceViewMode("REMEDIATION_IDE");
+                  setActiveSidebarTab("SITE_EXTRACTOR");
+                  extractAndScanFromSites({
+                    sources: ["osv", "nvd", "cisa_owasp"],
+                    customUrls: [],
+                  });
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center gap-2 text-indigo-300 text-left"
+              >
+                <Globe className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Pull Live Web CVE Advisories (OSV / NVD)</span>
+              </button>
+              <div className="border-t border-slate-800 my-1" />
+              <button
+                type="button"
+                onClick={() => {
+                  setQuickCommandOpen(true);
+                  setOpenMenu(null);
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center justify-between text-slate-300 text-left"
+              >
+                <span className="flex items-center gap-2">
+                  <Command className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Command Palette</span>
+                </span>
+                <kbd className="text-[9px] font-mono bg-slate-900 px-1.5 py-0.5 rounded border border-slate-700">
+                  Ctrl+K
+                </kbd>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPortalGate(true);
+                  setOpenMenu(null);
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center gap-2 text-rose-300 text-left"
+              >
+                <Flame className="w-3.5 h-3.5 text-rose-400" />
+                <span>Return to Alastor Portal Gate</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* 2. WORKSPACE & VIEWS MENU */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() =>
+              setOpenMenu(openMenu === "WORKSPACE" ? null : "WORKSPACE")
+            }
+            className={`px-2.5 py-1 rounded-md flex items-center gap-1 text-[11px] font-semibold transition-colors ${
+              openMenu === "WORKSPACE"
+                ? "bg-slate-800 text-amber-300"
+                : "text-slate-300 hover:bg-slate-900 hover:text-white"
+            }`}
+          >
+            <span>Workspace</span>
+            <ChevronDown className="w-3 h-3 text-slate-500" />
+          </button>
+          {openMenu === "WORKSPACE" && (
+            <div className="absolute left-0 mt-1 w-80 rounded-xl bg-slate-950 border border-slate-700 shadow-2xl p-1.5 z-50 space-y-0.5">
+              <div className="px-2.5 py-1 text-[9px] font-mono uppercase tracking-wider text-slate-500">
+                Primary Enterprise Modules
+              </div>
+              {(
+                [
+                  {
+                    id: "REMEDIATION_IDE",
+                    label: "1. Code & CPG Review Workbench",
+                    icon: <Code2 className="w-3.5 h-3.5 text-amber-400" />,
+                  },
+                  {
+                    id: "THREAT_MODELING",
+                    label: "2. Threat Modeling & Secret Vault",
+                    icon: <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />,
+                  },
+                  {
+                    id: "RULE_ENGINE_PROFILES",
+                    label: "3. Rule Engine & Test Profiles",
+                    icon: <Sliders className="w-3.5 h-3.5 text-cyan-400" />,
+                  },
+                  {
+                    id: "USER_PROFILES",
+                    label: "4. User Profiling & Account Separation",
+                    icon: <Users className="w-3.5 h-3.5 text-violet-400" />,
+                  },
+                  {
+                    id: "PROJECTS_HUB",
+                    label: "5. Projects Hub & CI/CD Webhooks",
+                    icon: <FolderGit2 className="w-3.5 h-3.5 text-emerald-400" />,
+                  },
+                  {
+                    id: "DEEP_DIVE",
+                    label: "6. Deep Dive Analytics & Compliance",
+                    icon: <PieChart className="w-3.5 h-3.5 text-indigo-400" />,
+                  },
+                  {
+                    id: "RACI_GOVERNANCE",
+                    label: "7. RACI Governance Matrix",
+                    icon: <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />,
+                  },
+                  {
+                    id: "SAST_PLUS_SUITE",
+                    label: "8. SAST++++++ ASPM & Live SBOM",
+                    icon: <Sparkles className="w-3.5 h-3.5 text-purple-400" />,
+                  },
+                ] as const
+              ).map((item) => (
                 <button
+                  key={item.id}
                   type="button"
                   onClick={() => {
-                    setWorkspaceViewMode("PROJECTS_HUB");
+                    setWorkspaceViewMode(item.id);
                     setOpenMenu(null);
                   }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center justify-between text-left"
+                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center justify-between text-left"
                 >
-                  <span className="flex items-center gap-2 text-zinc-200 font-medium">
-                    <FolderGit2 className="w-3.5 h-3.5 text-cyan-400" />
-                    1. Projects &amp; Risk Hub
+                  <span className="flex items-center gap-2 text-slate-200 font-medium">
+                    {item.icon}
+                    {item.label}
                   </span>
-                  {workspaceViewMode === "PROJECTS_HUB" && (
-                    <span className="text-[9px] font-mono text-cyan-400 font-bold">
-                      ACTIVE
-                    </span>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setWorkspaceViewMode("DEEP_DIVE");
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center justify-between text-left"
-                >
-                  <span className="flex items-center gap-2 text-zinc-200 font-medium">
-                    <PieChart className="w-3.5 h-3.5 text-indigo-400" />
-                    2. Deep Dive Analytics &amp; Compliance
-                  </span>
-                  {workspaceViewMode === "DEEP_DIVE" && (
-                    <span className="text-[9px] font-mono text-indigo-400 font-bold">
-                      ACTIVE
-                    </span>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setWorkspaceViewMode("REMEDIATION_IDE");
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center justify-between text-left"
-                >
-                  <span className="flex items-center gap-2 text-zinc-200 font-medium">
-                    <Code2 className="w-3.5 h-3.5 text-emerald-400" />
-                    3. Vulnerability Remediation IDE
-                  </span>
-                  {workspaceViewMode === "REMEDIATION_IDE" && (
-                    <span className="text-[9px] font-mono text-emerald-400 font-bold">
-                      ACTIVE
-                    </span>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setWorkspaceViewMode("RACI_GOVERNANCE");
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center justify-between text-left"
-                >
-                  <span className="flex items-center gap-2 text-amber-200 font-semibold">
-                    <Users className="w-3.5 h-3.5 text-amber-400" />
-                    4. RACI Governance &amp; Accountability Matrix
-                  </span>
-                  {workspaceViewMode === "RACI_GOVERNANCE" && (
+                  {workspaceViewMode === item.id && (
                     <span className="text-[9px] font-mono text-amber-400 font-bold">
                       ACTIVE
                     </span>
                   )}
                 </button>
+              ))}
+              <div className="border-t border-slate-800 my-1" />
+              <div className="px-2.5 py-1 text-[9px] font-mono uppercase tracking-wider text-slate-500">
+                Workbench Panel Layout
+              </div>
+              <div className="grid grid-cols-3 gap-1 px-1 pb-1">
+                {(
+                  [
+                    { id: "SPLIT_BOTH", label: "Split Code+Graph" },
+                    { id: "CODE_FOCUS", label: "Code Only" },
+                    { id: "GRAPH_FOCUS", label: "Graph Only" },
+                  ] as const
+                ).map((l) => (
+                  <button
+                    key={l.id}
+                    type="button"
+                    onClick={() => {
+                      setWorkspaceViewMode("REMEDIATION_IDE");
+                      setIdeLayoutMode(l.id);
+                      setOpenMenu(null);
+                    }}
+                    className={`px-2 py-1 rounded text-[10px] font-bold border ${
+                      ideLayoutMode === l.id
+                        ? "bg-amber-500/20 text-amber-300 border-amber-500/50"
+                        : "bg-slate-900 text-slate-400 border-slate-800"
+                    }`}
+                  >
+                    {l.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* 3. CPG & GRAPHS MENU */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setOpenMenu(openMenu === "GRAPHS" ? null : "GRAPHS")}
+            className={`px-2.5 py-1 rounded-md flex items-center gap-1 text-[11px] font-semibold transition-colors ${
+              openMenu === "GRAPHS"
+                ? "bg-slate-800 text-cyan-300"
+                : "text-slate-300 hover:bg-slate-900 hover:text-white"
+            }`}
+          >
+            <Network className="w-3 h-3 text-cyan-400" />
+            <span>CPG &amp; Graphs</span>
+            <ChevronDown className="w-3 h-3 text-slate-500" />
+          </button>
+          {openMenu === "GRAPHS" && (
+            <div className="absolute left-0 mt-1 w-80 rounded-xl bg-slate-950 border border-slate-700 shadow-2xl p-1.5 z-50 space-y-1">
+              <div className="px-2.5 py-1 text-[9px] font-mono uppercase tracking-wider text-cyan-400">
+                Interactive Graph Visualizations
+              </div>
+              {(
+                [
+                  {
+                    id: "FINDING_PATH",
+                    label: "1. Vulnerability Attack Path (Source → Sink)",
+                    badge: "TAINT",
+                  },
+                  {
+                    id: "APP_TREE",
+                    label: "2. Decluttered 360° Application Spider Map",
+                    badge: "360° MAP",
+                  },
+                  {
+                    id: "CALL_GRAPH",
+                    label: "3. Inter-Procedural Call Graph (:CALLS)",
+                    badge: "CALLS",
+                  },
+                  {
+                    id: "ENTRYPOINT_GRAPH",
+                    label: "4. Attack Surface Entry Points Graph",
+                    badge: "INGRESS",
+                  },
+                  {
+                    id: "DFG_ONLY",
+                    label: "5. Data-Flow Slice (DFG_FLOWS_TO)",
+                    badge: "DFG",
+                  },
+                  {
+                    id: "CFG_ONLY",
+                    label: "6. Control-Flow Slice (CFG_NEXT)",
+                    badge: "CFG",
+                  },
+                  {
+                    id: "FULL_CPG",
+                    label: "7. Unified Code Property Graph (AST+CFG+DFG)",
+                    badge: "FULL CPG",
+                  },
+                ] as const
+              ).map((g) => (
                 <button
+                  key={g.id}
                   type="button"
                   onClick={() => {
-                    setWorkspaceViewMode("SAST_PLUS_SUITE");
+                    setWorkspaceViewMode("REMEDIATION_IDE");
+                    setGraphViewMode(g.id);
+                    if (ideLayoutMode === "CODE_FOCUS") {
+                      setIdeLayoutMode("SPLIT_BOTH");
+                    }
                     setOpenMenu(null);
                   }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center justify-between text-left"
+                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center justify-between text-left"
                 >
-                  <span className="flex items-center gap-2 text-rose-200 font-semibold">
-                    <Sparkles className="w-3.5 h-3.5 text-rose-400" />
-                    5. SAST ++++++ ASPM &amp; Non-Coder Hub
+                  <span className="text-slate-200 font-medium">{g.label}</span>
+                  <span
+                    className={`px-1.5 py-0.5 text-[9px] font-mono font-bold rounded ${
+                      graphViewMode === g.id
+                        ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                        : "bg-slate-900 text-slate-400"
+                    }`}
+                  >
+                    {g.badge}
                   </span>
-                  {workspaceViewMode === "SAST_PLUS_SUITE" && (
-                    <span className="text-[9px] font-mono text-rose-400 font-bold">
+                </button>
+              ))}
+              <div className="border-t border-slate-800 my-1" />
+              <button
+                type="button"
+                onClick={() => {
+                  setGraphFullscreen(true);
+                  setOpenMenu(null);
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center gap-2 text-cyan-300 font-semibold text-left"
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>Launch Fullscreen 360° Graph Presentation</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* 4. THREAT MODELING & SECRETS MENU */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() =>
+              setOpenMenu(openMenu === "THREATS" ? null : "THREATS")
+            }
+            className={`px-2.5 py-1 rounded-md flex items-center gap-1 text-[11px] font-semibold transition-colors ${
+              openMenu === "THREATS" || workspaceViewMode === "THREAT_MODELING"
+                ? "bg-rose-950/70 text-rose-300 border border-rose-700/60"
+                : "text-rose-300/90 hover:bg-slate-900"
+            }`}
+          >
+            <ShieldAlert className="w-3 h-3 text-rose-400" />
+            <span>Threat Model &amp; Secrets</span>
+            <ChevronDown className="w-3 h-3 text-rose-500/80" />
+          </button>
+          {openMenu === "THREATS" && (
+            <div className="absolute left-0 mt-1 w-80 rounded-xl bg-slate-950 border border-slate-700 shadow-2xl p-1.5 z-50 space-y-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceViewMode("THREAT_MODELING");
+                  setOpenMenu(null);
+                }}
+                className="w-full p-2 rounded-lg bg-rose-950/40 hover:bg-rose-950/70 border border-rose-800/60 flex flex-col gap-0.5 text-left"
+              >
+                <span className="text-xs font-bold text-rose-200 flex items-center gap-1.5">
+                  <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+                  Open STRIDE Threat Modeling Workspace
+                </span>
+                <span className="text-[10px] text-slate-400">
+                  Interactive STRIDE threat matrix, trust boundaries, attack entrypoints &amp; Secret Keys Vault
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setFilterSecretsOnly(!filterSecretsOnly);
+                  setWorkspaceViewMode("REMEDIATION_IDE");
+                  setOpenMenu(null);
+                }}
+                className="w-full px-2.5 py-2 rounded-lg hover:bg-slate-900 flex items-center justify-between text-left"
+              >
+                <span className="flex items-center gap-2 text-amber-300 font-semibold">
+                  <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Filter Detected Secret Keys ({secretCount})</span>
+                </span>
+                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                  {filterSecretsOnly ? "FILTER ON" : "SHOW KEYS"}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceViewMode("REMEDIATION_IDE");
+                  setGraphViewMode("ENTRYPOINT_GRAPH");
+                  setOpenMenu(null);
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center gap-2 text-emerald-300 text-left"
+              >
+                <Compass className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Inspect Attack Surface Entry Points Graph</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceViewMode("REMEDIATION_IDE");
+                  setGraphViewMode("CALL_GRAPH");
+                  setOpenMenu(null);
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center gap-2 text-purple-300 text-left"
+              >
+                <PhoneCall className="w-3.5 h-3.5 text-purple-400" />
+                <span>Inspect Inter-Procedural Call Graph</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* 5. RULE ENGINE & TEST PROFILES MENU */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setOpenMenu(openMenu === "RULES" ? null : "RULES")}
+            className={`px-2.5 py-1 rounded-md flex items-center gap-1 text-[11px] font-semibold transition-colors ${
+              openMenu === "RULES" ||
+              workspaceViewMode === "RULE_ENGINE_PROFILES"
+                ? "bg-cyan-950/70 text-cyan-300 border border-cyan-700/60"
+                : "text-cyan-300/90 hover:bg-slate-900"
+            }`}
+          >
+            <Sliders className="w-3 h-3 text-cyan-400" />
+            <span>Rule Engine &amp; Profiles</span>
+            <ChevronDown className="w-3 h-3 text-cyan-500/80" />
+          </button>
+          {openMenu === "RULES" && (
+            <div className="absolute left-0 mt-1 w-80 rounded-xl bg-slate-950 border border-slate-700 shadow-2xl p-1.5 z-50 space-y-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceViewMode("RULE_ENGINE_PROFILES");
+                  setOpenMenu(null);
+                }}
+                className="w-full p-2 rounded-lg bg-cyan-950/40 hover:bg-cyan-950/70 border border-cyan-800/60 flex flex-col gap-0.5 text-left"
+              >
+                <span className="text-xs font-bold text-cyan-200 flex items-center gap-1.5">
+                  <Sliders className="w-3.5 h-3.5 text-cyan-400" />
+                  Open Rule Engine &amp; Test Profiles Matrix
+                </span>
+                <span className="text-[10px] text-slate-400">
+                  Create custom test profiles and check/uncheck which individual security rules to execute
+                </span>
+              </button>
+
+              <div className="px-2.5 pt-1 text-[9px] font-mono uppercase tracking-wider text-slate-500">
+                Quick-Switch Active Test Profile
+              </div>
+              {presets.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => handlePresetChange(p.id)}
+                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center justify-between text-left"
+                >
+                  <span className="text-slate-200 font-medium truncate pr-2">
+                    {p.name}
+                  </span>
+                  <span
+                    className={`px-1.5 py-0.5 text-[9px] font-mono font-bold rounded shrink-0 ${
+                      activePresetId === p.id
+                        ? "bg-amber-500 text-slate-950"
+                        : "bg-slate-900 text-slate-400 border border-slate-800"
+                    }`}
+                  >
+                    {activePresetId === p.id ? "ACTIVE" : p.badge}
+                  </span>
+                </button>
+              ))}
+
+              <div className="border-t border-slate-800 my-1" />
+              <div className="px-2.5 py-1 flex items-center justify-between">
+                <span className="text-[10px] text-slate-400 font-semibold">
+                  Engines:
+                </span>
+                <div className="flex items-center gap-1">
+                  {(["SAST", "SCA", "IaC"] as const).map((eng) => {
+                    const isOn = enabledEngines.includes(eng);
+                    return (
+                      <button
+                        key={eng}
+                        type="button"
+                        onClick={() => handleToggleEngine(eng)}
+                        className={`px-2 py-0.5 rounded text-[9px] font-mono font-bold border ${
+                          isOn
+                            ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                            : "bg-slate-900 text-slate-500 border-slate-800"
+                        }`}
+                      >
+                        {eng}: {isOn ? "ON" : "OFF"}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* 6. ACCOUNTS & USER PROFILES MENU */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() =>
+              setOpenMenu(openMenu === "ACCOUNTS" ? null : "ACCOUNTS")
+            }
+            className={`px-2.5 py-1 rounded-md flex items-center gap-1 text-[11px] font-semibold transition-colors ${
+              openMenu === "ACCOUNTS" || workspaceViewMode === "USER_PROFILES"
+                ? "bg-violet-950/70 text-violet-300 border border-violet-700/60"
+                : "text-violet-300/90 hover:bg-slate-900"
+            }`}
+          >
+            <Users className="w-3 h-3 text-violet-400" />
+            <span>Accounts &amp; Users</span>
+            <ChevronDown className="w-3 h-3 text-violet-500/80" />
+          </button>
+          {openMenu === "ACCOUNTS" && (
+            <div className="absolute left-0 mt-1 w-80 rounded-xl bg-slate-950 border border-slate-700 shadow-2xl p-1.5 z-50 space-y-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceViewMode("USER_PROFILES");
+                  setOpenMenu(null);
+                }}
+                className="w-full p-2 rounded-lg bg-violet-950/40 hover:bg-violet-950/70 border border-violet-800/60 flex flex-col gap-0.5 text-left"
+              >
+                <span className="text-xs font-bold text-violet-200 flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5 text-violet-400" />
+                  Open User Profiling &amp; Account Separation
+                </span>
+                <span className="text-[10px] text-slate-400">
+                  Manage isolated tenant accounts, RBAC user profiles, secret reveal clearance &amp; audit trail
+                </span>
+              </button>
+
+              <div className="px-2.5 pt-1 text-[9px] font-mono uppercase tracking-wider text-slate-500">
+                Switch Isolated Tenant Account
+              </div>
+              {accounts.map((acct) => (
+                <button
+                  key={acct.id}
+                  type="button"
+                  onClick={() => {
+                    switchUserOrAccount({ account_id: acct.id });
+                    setOpenMenu(null);
+                  }}
+                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center justify-between text-left"
+                >
+                  <span className="flex items-center gap-1.5 text-slate-200 font-medium truncate">
+                    <Building2 className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                    <span className="truncate">{acct.name}</span>
+                  </span>
+                  {activeAccount?.id === acct.id && (
+                    <span className="text-[9px] font-mono text-cyan-400 font-bold shrink-0">
                       ACTIVE
                     </span>
                   )}
                 </button>
-                <div className="border-t border-zinc-800 my-1" />
-                <button
-                  type="button"
-                  onClick={() => {
-                    setGraphFullscreen(true);
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center gap-2 text-zinc-300 text-left"
-                >
-                  <Layers className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Full-Screen 360° Spider &amp; Attack Graph</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowPortalGate(true);
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center gap-2 text-amber-300 text-left"
-                >
-                  <Flame className="w-3.5 h-3.5 text-rose-400" />
-                  <span>Return to Alastor Portal Screen</span>
-                </button>
-              </div>
-            )}
-          </div>
+              ))}
 
-          {/* MENU 2: SCAN & ENGINES */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() =>
-                setOpenMenu(openMenu === "ENGINES" ? null : "ENGINES")
-              }
-              className={`px-2.5 py-1 rounded flex items-center gap-1 text-[11px] font-medium transition-colors ${
-                openMenu === "ENGINES"
-                  ? "bg-zinc-800 text-cyan-300"
-                  : "text-zinc-300 hover:bg-zinc-900 hover:text-white"
-              }`}
-            >
-              <span>Scan &amp; Engines</span>
-              <ChevronDown className="w-3 h-3 text-zinc-500" />
-            </button>
-            {openMenu === "ENGINES" && (
-              <div className="absolute left-0 mt-1 w-72 rounded-xl bg-zinc-950 border border-zinc-700 shadow-2xl p-1.5 z-50 space-y-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpenMenu(null);
-                    triggerScan();
-                  }}
-                  className="w-full px-2.5 py-2 rounded-lg bg-cyan-950/60 hover:bg-cyan-900/70 border border-cyan-800/80 flex items-center gap-2 text-cyan-200 font-semibold text-left"
-                >
-                  <Play className="w-3.5 h-3.5 text-cyan-400 fill-current" />
-                  <span>Run Full CPG + SAST++++++ Scan Now</span>
-                </button>
-                <div className="px-2.5 pt-1 text-[9px] font-mono uppercase tracking-wider text-zinc-500">
-                  Toggle Unified Scan Engines
-                </div>
-                {(["SAST", "SCA", "IaC"] as const).map((eng) => {
-                  const active = enabledEngines.includes(eng);
-                  return (
-                    <button
-                      key={eng}
-                      type="button"
-                      onClick={() => handleToggleEngine(eng)}
-                      className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center justify-between text-left"
-                    >
-                      <span className="text-zinc-200 font-medium">
-                        {eng === "SAST"
-                          ? "SAST Engine (AST + CFG + DFG)"
-                          : eng === "SCA"
-                          ? "SCA Engine (Supply-Chain & SBOM)"
-                          : "IaC Engine (Docker & Cloud Config)"}
-                      </span>
-                      <span
-                        className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold ${
-                          active
-                            ? "bg-emerald-950 text-emerald-300 border border-emerald-700"
-                            : "bg-zinc-900 text-zinc-500 border border-zinc-800"
-                        }`}
-                      >
-                        {active ? "ON" : "OFF"}
-                      </span>
-                    </button>
-                  );
-                })}
-                <div className="border-t border-zinc-800 my-1" />
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpenMenu(null);
-                    setWorkspaceViewMode("REMEDIATION_IDE");
-                    setActiveSidebarTab("SITE_EXTRACTOR");
-                    extractAndScanFromSites({
-                      sources: ["osv", "nvd", "cisa_owasp"],
-                      customUrls: [],
-                    });
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center gap-2 text-indigo-300 text-left"
-                >
-                  <Globe className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>Pull Live Web Vulnerability Intel (OSV/NVD)</span>
-                </button>
+              <div className="px-2.5 pt-1 text-[9px] font-mono uppercase tracking-wider text-slate-500">
+                Assume RBAC User Profile
               </div>
-            )}
-          </div>
-
-          {/* MENU 3: RACI & GOVERNANCE */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setOpenMenu(openMenu === "RACI" ? null : "RACI")}
-              className={`px-2.5 py-1 rounded flex items-center gap-1 text-[11px] font-semibold transition-colors ${
-                openMenu === "RACI" || workspaceViewMode === "RACI_GOVERNANCE"
-                  ? "bg-amber-950/70 text-amber-300 border border-amber-700/60"
-                  : "text-amber-300/90 hover:bg-zinc-900 hover:text-amber-200"
-              }`}
-            >
-              <Users className="w-3 h-3 text-amber-400" />
-              <span>RACI &amp; Governance</span>
-              <ChevronDown className="w-3 h-3 text-amber-500/80" />
-            </button>
-            {openMenu === "RACI" && (
-              <div className="absolute left-0 mt-1 w-80 rounded-xl bg-zinc-950 border border-zinc-700 shadow-2xl p-1.5 z-50 space-y-1">
-                <div className="px-2.5 py-1 text-[9px] font-mono uppercase tracking-wider text-amber-400">
-                  Management &amp; Accountability Governance
-                </div>
+              {users.map((u) => (
                 <button
+                  key={u.id}
                   type="button"
                   onClick={() => {
-                    setWorkspaceViewMode("RACI_GOVERNANCE");
+                    switchUserOrAccount({ user_id: u.id });
                     setOpenMenu(null);
                   }}
-                  className="w-full p-2 rounded-lg bg-amber-950/40 hover:bg-amber-950/70 border border-amber-800/60 flex flex-col gap-0.5 text-left"
+                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center justify-between text-left"
                 >
-                  <span className="text-xs font-bold text-amber-200 flex items-center gap-1.5">
-                    <Users className="w-3.5 h-3.5 text-amber-400" />
-                    Interactive RACI Accountability Matrix
+                  <span className="text-slate-200 font-medium truncate">
+                    {u.name}{" "}
+                    <span className="text-[10px] text-slate-400">
+                      ({u.role})
+                    </span>
                   </span>
-                  <span className="text-[10px] text-zinc-400">
-                    Assign Responsible, Accountable, Consulted &amp; Informed roles across all security tasks &amp; findings
-                  </span>
+                  {activeUser?.id === u.id && (
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  )}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setWorkspaceViewMode("DEEP_DIVE");
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center gap-2 text-zinc-200 text-left"
-                >
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Compliance Scorecards (OWASP / PCI-DSS / ISO)</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSettingsModalOpen(true, "GLOBAL_PROJECT");
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center gap-2 text-zinc-200 text-left"
-                >
-                  <Sliders className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Configure SLA Deadlines &amp; Release Gates</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDownloadRaciJson}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center gap-2 text-zinc-300 text-left"
-                >
-                  <Download className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Export RACI Governance Matrix (.json)</span>
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* MENU 4: SAST ++++++ SUITE */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() =>
-                setOpenMenu(openMenu === "SAST_PLUS" ? null : "SAST_PLUS")
-              }
-              className={`px-2.5 py-1 rounded flex items-center gap-1 text-[11px] font-semibold transition-colors ${
-                openMenu === "SAST_PLUS" || workspaceViewMode === "SAST_PLUS_SUITE"
-                  ? "bg-rose-950/70 text-rose-300 border border-rose-700/60"
-                  : "text-rose-300/90 hover:bg-zinc-900 hover:text-rose-200"
-              }`}
-            >
-              <Sparkles className="w-3 h-3 text-rose-400" />
-              <span>SAST ++++++ Hub</span>
-              <ChevronDown className="w-3 h-3 text-rose-500/80" />
-            </button>
-            {openMenu === "SAST_PLUS" && (
-              <div className="absolute left-0 mt-1 w-80 rounded-xl bg-zinc-950 border border-zinc-700 shadow-2xl p-1.5 z-50 space-y-1">
-                <div className="px-2.5 py-1 text-[9px] font-mono uppercase tracking-wider text-rose-400">
-                  Next-Gen SAST ++++++ &amp; Non-Coder Capabilities
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSastPlusActiveTab("TRANSLATOR");
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-2 rounded-lg hover:bg-zinc-900 flex items-start gap-2.5 text-left"
-                >
-                  <GraduationCap className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                  <div>
-                    <div className="text-xs font-bold text-zinc-100">
-                      1. Plain-English Business Impact Translator
-                    </div>
-                    <div className="text-[10px] text-zinc-400">
-                      Real-world analogies, breach impact &amp; management checklists for non-coders
-                    </div>
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSastPlusActiveTab("SBOM");
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-2 rounded-lg hover:bg-zinc-900 flex items-start gap-2.5 text-left"
-                >
-                  <Package className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
-                  <div>
-                    <div className="text-xs font-bold text-zinc-100">
-                      2. Live SBOM &amp; Supply-Chain Inspector (CycloneDX)
-                    </div>
-                    <div className="text-[10px] text-zinc-400">
-                      Inspect every library, version pin &amp; export CycloneDX 1.5 JSON
-                    </div>
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSastPlusActiveTab("ATTACK_SURFACE");
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-2 rounded-lg hover:bg-zinc-900 flex items-start gap-2.5 text-left"
-                >
-                  <Compass className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                  <div>
-                    <div className="text-xs font-bold text-zinc-100">
-                      3. API &amp; Entrypoint Attack Surface Discovery
-                    </div>
-                    <div className="text-[10px] text-zinc-400">
-                      Discovers exposed routes &amp; callable functions across workspace files
-                    </div>
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSastPlusActiveTab("ROADMAP");
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-2 rounded-lg hover:bg-zinc-900 flex items-start gap-2.5 text-left"
-                >
-                  <Layers className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
-                  <div>
-                    <div className="text-xs font-bold text-zinc-100">
-                      4. Prioritized Remediation Roadmap &amp; Sprint Planner
-                    </div>
-                    <div className="text-[10px] text-zinc-400">
-                      Phased action plan (Immediate 24h vs. Current Sprint vs. Hardening)
-                    </div>
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSastPlusActiveTab("ACADEMY");
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-2 rounded-lg hover:bg-zinc-900 flex items-start gap-2.5 text-left"
-                >
-                  <BookOpen className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                  <div>
-                    <div className="text-xs font-bold text-zinc-100">
-                      5. Non-Coder Security Academy &amp; Glossary
-                    </div>
-                    <div className="text-[10px] text-zinc-400">
-                      Student-friendly guide to SAST, SCA, IaC, CPG, BFL, RACI &amp; OWASP
-                    </div>
-                  </div>
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* MENU 5: SETTINGS & CUSTOMIZATION */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() =>
-                setOpenMenu(openMenu === "SETTINGS" ? null : "SETTINGS")
-              }
-              className={`px-2.5 py-1 rounded flex items-center gap-1 text-[11px] font-medium transition-colors ${
-                openMenu === "SETTINGS"
-                  ? "bg-zinc-800 text-cyan-300"
-                  : "text-zinc-300 hover:bg-zinc-900 hover:text-white"
-              }`}
-            >
-              <Settings className="w-3 h-3 text-cyan-400" />
-              <span>Settings Bar &amp; Rules</span>
-              <ChevronDown className="w-3 h-3 text-zinc-500" />
-            </button>
-            {openMenu === "SETTINGS" && (
-              <div className="absolute left-0 mt-1 w-72 rounded-xl bg-zinc-950 border border-zinc-700 shadow-2xl p-1.5 z-50 space-y-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSettingsModalOpen(true, "PRESETS");
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center gap-2 text-zinc-200 text-left"
-                >
-                  <Sliders className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>1. Scan Presets (Optimized / Zero-Trust)</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSettingsModalOpen(true, "GLOBAL_PROJECT");
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center gap-2 text-zinc-200 text-left"
-                >
-                  <Settings className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>2. Global vs. Project Policy Settings</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSettingsModalOpen(true, "QUERY_VIEWER");
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center gap-2 text-zinc-200 text-left"
-                >
-                  <Code2 className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>3. Security Query Viewer (Cypher Rules)</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSettingsModalOpen(true, "CUSTOMIZATION");
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center gap-2 text-zinc-200 text-left"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                  <span>4. Custom Sanitizer &amp; Rule Engine</span>
-                </button>
-                <div className="border-t border-zinc-800 my-1" />
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIntegrationModalOpen(true);
-                    setOpenMenu(null);
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 flex items-center gap-2 text-indigo-300 text-left"
-                >
-                  <Ticket className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>5. Integration Hub (Jira &amp; GitHub Issues)</span>
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* MENU 6: EXPORT & REPORTS */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() =>
-                setOpenMenu(openMenu === "EXPORT" ? null : "EXPORT")
-              }
-              className={`px-2.5 py-1 rounded flex items-center gap-1 text-[11px] font-medium transition-colors ${
-                openMenu === "EXPORT"
-                  ? "bg-zinc-800 text-cyan-300"
-                  : "text-zinc-300 hover:bg-zinc-900 hover:text-white"
-              }`}
-            >
-              <Download className="w-3 h-3 text-emerald-400" />
-              <span>Reports</span>
-              <ChevronDown className="w-3 h-3 text-zinc-500" />
-            </button>
-            {openMenu === "EXPORT" && (
-              <div className="absolute left-0 mt-1 w-68 rounded-xl bg-zinc-950 border border-zinc-700 shadow-2xl p-1.5 z-50 space-y-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpenMenu(null);
-                    exportAuditReport("markdown");
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 text-left text-zinc-200"
-                >
-                  Executive Audit Report (.md)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpenMenu(null);
-                    exportAuditReport("json");
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 text-left text-zinc-200"
-                >
-                  Full Findings &amp; Metrics Data (.json)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpenMenu(null);
-                    exportAuditReport("sarif");
-                  }}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 text-left text-zinc-200"
-                >
-                  CI/CD SARIF v2.1.0 Report (.sarif.json)
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDownloadCycloneDxSbom}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 text-left text-cyan-300 font-medium"
-                >
-                  CycloneDX v1.5 SBOM (.cdx.json)
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDownloadRaciJson}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-zinc-900 text-left text-amber-300 font-medium"
-                >
-                  RACI Governance Matrix (.json)
-                </button>
-              </div>
-            )}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Right Side of Menu Bar: 1-Click Theme Swatch Bar, Audience Switcher & Ribbon Toggle */}
-        <div className="flex items-center gap-2">
-          {/* 1-Click Visual Theme Swatch Pills */}
-          <div
-            className="hidden xl:flex items-center gap-0.5 bg-zinc-900 border border-zinc-800 rounded-md p-0.5"
-            title="Instant 1-Click Visual Theme Switcher (Light & Dark Modes)"
-          >
-            {(
-              [
-                { id: "olympian-light", label: "☀️ Daylight" },
-                { id: "athena-parchment", label: "📜 Parchment" },
-                { id: "hyperborean-light", label: "❄️ Frost" },
-                { id: "alastor-infernal", label: "🔥 Infernal" },
-                { id: "hecate-arcane", label: "🔮 Arcane" },
-                { id: "stygian-abyss", label: "💎 Abyss" },
-              ] as const
-            ).map((th) => (
-              <button
-                key={th.id}
-                type="button"
-                onClick={() => setAppTheme(th.id)}
-                className={`px-1.5 py-0.5 rounded text-[9px] font-semibold transition-all ${
-                  appTheme === th.id
-                    ? "bg-cyan-950 text-cyan-300 border border-cyan-700/80 shadow-sm font-bold"
-                    : "text-zinc-400 hover:text-zinc-200"
-                }`}
-              >
-                {th.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Non-Coder / Management Student Mode vs Technical Mode Switcher */}
-          <div
-            className="flex items-center bg-zinc-900 border border-zinc-800 rounded-md p-0.5"
-            title="Switch between Non-Coder / Management Student Friendly Mode (Plain-English Analogies, RACI, Business Impact) and Pro Engineer Mode"
-          >
-            <button
-              type="button"
-              onClick={() => setAudienceMode("NON_CODER_MANAGEMENT")}
-              className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold transition-all ${
-                audienceMode === "NON_CODER_MANAGEMENT"
-                  ? "bg-emerald-950 text-emerald-300 border border-emerald-700/80 shadow-sm"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              <GraduationCap className="w-3 h-3 text-emerald-400" />
-              <span>🎓 Non-Coder / Management Mode</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setAudienceMode("TECHNICAL_ENGINEER")}
-              className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold transition-all ${
-                audienceMode === "TECHNICAL_ENGINEER"
-                  ? "bg-cyan-950 text-cyan-300 border border-cyan-700/80 shadow-sm"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              <Terminal className="w-3 h-3 text-cyan-400" />
-              <span>⚡ Pro Engineer Mode</span>
-            </button>
-          </div>
-
+        {/* 7. REPORTS & INTEGRATIONS MENU */}
+        <div className="relative">
           <button
             type="button"
-            onClick={() => setSettingsBarVisible(!isSettingsBarVisible)}
-            title="Show or Hide the Quick Settings Ribbon Bar"
-            className="px-2 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-[10px] font-mono text-zinc-400 hover:text-zinc-200 flex items-center gap-1"
+            onClick={() =>
+              setOpenMenu(openMenu === "REPORTS" ? null : "REPORTS")
+            }
+            className={`px-2.5 py-1 rounded-md flex items-center gap-1 text-[11px] font-semibold transition-colors ${
+              openMenu === "REPORTS"
+                ? "bg-slate-800 text-emerald-300"
+                : "text-slate-300 hover:bg-slate-900 hover:text-white"
+            }`}
           >
-            {isSettingsBarVisible ? (
-              <>
-                <EyeOff className="w-3 h-3 text-zinc-400" />
-                <span className="hidden md:inline">Hide Settings Bar</span>
-              </>
-            ) : (
-              <>
-                <Eye className="w-3 h-3 text-cyan-400" />
-                <span className="hidden md:inline">Show Settings Bar</span>
-              </>
-            )}
+            <Download className="w-3 h-3 text-emerald-400" />
+            <span>Reports &amp; Connectors</span>
+            <ChevronDown className="w-3 h-3 text-slate-500" />
           </button>
+          {openMenu === "REPORTS" && (
+            <div className="absolute left-0 mt-1 w-72 rounded-xl bg-slate-950 border border-slate-700 shadow-2xl p-1.5 z-50 space-y-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setOpenMenu(null);
+                  exportAuditReport("markdown");
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 text-left text-slate-200"
+              >
+                Executive Audit Report (.md)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOpenMenu(null);
+                  exportAuditReport("json");
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 text-left text-slate-200"
+              >
+                Full Findings &amp; Metrics Data (.json)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOpenMenu(null);
+                  exportAuditReport("sarif");
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 text-left text-slate-200"
+              >
+                CI/CD SARIF v2.1.0 Report (.sarif.json)
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadCycloneDxSbom}
+                className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 text-left text-cyan-300 font-medium"
+              >
+                CycloneDX v1.5 SBOM (.cdx.json)
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadRaciJson}
+                className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 text-left text-amber-300 font-medium"
+              >
+                RACI Governance Matrix (.json)
+              </button>
+              <div className="border-t border-slate-800 my-1" />
+              <button
+                type="button"
+                onClick={() => {
+                  setIntegrationModalOpen(true);
+                  setOpenMenu(null);
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center gap-2 text-indigo-300 font-semibold text-left"
+              >
+                <Ticket className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Jira &amp; GitHub Issues Connectors</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSettingsModalOpen(true, "GLOBAL_PROJECT");
+                  setOpenMenu(null);
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center gap-2 text-slate-300 text-left"
+              >
+                <Settings className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Advanced Engine &amp; Sanitizer Settings</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* ROW 2: Streamlined Quick Settings Bar (Ribbon) */}
-      {isSettingsBarVisible && (
-        <div className="px-3 py-1.5 bg-zinc-900/75 border-b border-zinc-800/80 flex items-center justify-between gap-2 flex-wrap">
-          {/* Left: Quick Scan Preset Selector, Engine Toggles & 1-Click Target Switcher */}
-          <div className="flex items-center gap-2.5 flex-wrap">
-            {/* Active Application Verification Button */}
-            <div className="flex items-center gap-1 bg-zinc-950 border border-zinc-800 rounded-lg p-0.5">
-              <button
-                type="button"
-                disabled={isScanning}
-                onClick={() => {
-                  triggerScan();
-                }}
-                title="Run SAST + SCA + IaC Code Property Graph verification on the active application"
-                className="px-2.5 py-0.5 rounded-md text-[10px] font-mono font-bold transition-all flex items-center gap-1 bg-emerald-950 text-emerald-300 border border-emerald-700/80 hover:bg-emerald-900"
-              >
-                <ShieldCheck className="w-3 h-3 text-emerald-400" />
-                <span>
-                  🛡️ Verify Active Application (
-                  {(projectPath || "cpg-sast-platform")
-                    .replace(/[\\/]+$/, "")
-                    .split(/[\\/]/)
-                    .pop() || "cpg-sast-platform"}
-                  )
-                </span>
-              </button>
-            </div>
+      {/* Right: Active Account Badge, Active User Profile Badge, Active Test Profile Badge & Mode Switcher */}
+      <div className="flex items-center gap-2">
+        {/* Active Test Profile Pill */}
+        <button
+          type="button"
+          onClick={() => setWorkspaceViewMode("RULE_ENGINE_PROFILES")}
+          title="Click to configure Test Profiles & Rule Selection"
+          className="hidden lg:flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-cyan-950/50 hover:bg-cyan-900/60 border border-cyan-500/40 text-[10px] font-mono text-cyan-300"
+        >
+          <Sliders className="w-3 h-3 text-cyan-400" />
+          <span>Profile:</span>
+          <strong className="text-amber-300">
+            {activePreset?.badge || "OPTIMIZED"}
+          </strong>
+        </button>
 
-            <span className="text-zinc-800">|</span>
+        {/* Active Tenant Account & Operator Pill */}
+        <button
+          type="button"
+          onClick={() => setWorkspaceViewMode("USER_PROFILES")}
+          title="Click to switch Tenant Account or RBAC Operator Profile"
+          className="hidden md:flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-violet-950/50 hover:bg-violet-900/60 border border-violet-500/40 text-[10px] font-mono text-violet-200"
+        >
+          <Building2 className="w-3 h-3 text-cyan-400" />
+          <span className="truncate max-w-[140px]">
+            {activeAccount?.name || "Enterprise Security HQ"}
+          </span>
+          <span className="text-slate-500">•</span>
+          <strong className="text-amber-300">
+            {activeUser?.name || "Dr. Elena Vance"}
+          </strong>
+        </button>
 
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 flex items-center gap-1">
-                <Sliders className="w-3 h-3 text-cyan-400" />
-                Preset:
-              </span>
-              <select
-                value={activePresetId}
-                onChange={(e) => handlePresetChange(e.target.value)}
-                className="bg-zinc-950 border border-zinc-700 rounded px-2 py-0.5 text-[11px] text-cyan-300 font-medium focus:outline-none focus:border-cyan-500"
-              >
-                {presets.length > 0 ? (
-                  presets.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))
-                ) : (
-                  <option value="preset-optimized">
-                    Checkmarx / ALASTOR Optimized (Default)
-                  </option>
-                )}
-              </select>
-            </div>
-
-            <span className="text-zinc-800">|</span>
-
-            {/* Live Engine Toggles */}
-            <div className="flex items-center gap-1">
-              <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 mr-0.5">
-                Engines:
-              </span>
-              {(["SAST", "SCA", "IaC"] as const).map((eng) => {
-                const isOn = enabledEngines.includes(eng);
-                return (
-                  <button
-                    key={eng}
-                    type="button"
-                    onClick={() => handleToggleEngine(eng)}
-                    title={`Click to toggle ${eng} scan engine on/off`}
-                    className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border transition-all ${
-                      isOn
-                        ? "bg-emerald-950/80 text-emerald-300 border-emerald-700/80"
-                        : "bg-zinc-950 text-zinc-500 border-zinc-800"
-                    }`}
-                  >
-                    {eng}: {isOn ? "ON" : "OFF"}
-                  </button>
-                );
-              })}
-            </div>
-
-            <span className="text-zinc-800 hidden lg:inline">|</span>
-
-            {/* SLA & Gate Policy Quick Indicator */}
-            <button
-              type="button"
-              onClick={() => setSettingsModalOpen(true, "GLOBAL_PROJECT")}
-              title="Click to customize SLA Remediation Deadlines & CI/CD Fail Gates"
-              className="hidden lg:flex items-center gap-1.5 px-2 py-0.5 rounded bg-zinc-950 hover:bg-zinc-900 border border-zinc-800 text-[10px] font-mono text-zinc-300"
-            >
-              <span>
-                Gate:{" "}
-                <strong className="text-rose-400">
-                  {platformSettings?.fail_on_severity || "CRITICAL"}
-                </strong>
-              </span>
-              <span className="text-zinc-600">•</span>
-              <span>
-                SLA: Crit {platformSettings?.sla_days?.CRITICAL ?? 7}d / High{" "}
-                {platformSettings?.sla_days?.HIGH ?? 14}d
-              </span>
-            </button>
-          </div>
-
-          {/* Right: RACI Health Pill, SBOM Count & Quick Navigation Pills */}
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* RACI Governance Status Pill */}
-            <button
-              type="button"
-              onClick={() => setWorkspaceViewMode("RACI_GOVERNANCE")}
-              title="Click to open the interactive RACI Governance & Accountability Matrix"
-              className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold border flex items-center gap-1 transition-all ${
-                raciWarningsCount === 0
-                  ? "bg-amber-950/60 hover:bg-amber-900/70 text-amber-300 border-amber-700/80"
-                  : "bg-red-950/70 hover:bg-red-900/80 text-red-300 border-red-700"
-              }`}
-            >
-              {raciWarningsCount === 0 ? (
-                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-              ) : (
-                <AlertTriangle className="w-3 h-3 text-red-400" />
-              )}
-              <span>RACI Governance: {raciHealth}% Valid</span>
-            </button>
-
-            {/* SAST++++++ ASPM Quick Pill */}
-            <button
-              type="button"
-              onClick={() => setWorkspaceViewMode("SAST_PLUS_SUITE")}
-              title="Click to open SAST++++++ Hub (Plain-English Impact, Live SBOM, Attack Surface, Remediation Roadmap & Non-Coder Academy)"
-              className="px-2.5 py-0.5 rounded-full bg-rose-950/60 hover:bg-rose-900/70 border border-rose-700/80 text-rose-200 text-[10px] font-mono font-bold flex items-center gap-1 transition-all"
-            >
-              <Sparkles className="w-3 h-3 text-rose-400" />
-              <span>
-                SAST++++++ Maturity:{" "}
-                {sastPlusSuite?.overall_maturity_grade || "Grade A"}
-              </span>
-              {sastPlusSuite && (
-                <span className="text-zinc-400">
-                  ({sastPlusSuite.total_sbom_components} SBOM pkgs)
-                </span>
-              )}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ROW 3: Interactive 4-Step Non-Coder & Management Guided Workflow Bar */}
-      {audienceMode === "NON_CODER_MANAGEMENT" && (
-        <div className="px-3 py-1 bg-zinc-950/90 border-b border-zinc-800/80 flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex items-center gap-1.5 text-[10px]">
-            <span className="px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-700/80 font-bold flex items-center gap-1">
+        {/* Audience Mode Toggle */}
+        <button
+          type="button"
+          onClick={() =>
+            setAudienceMode(
+              audienceMode === "NON_CODER_MANAGEMENT"
+                ? "TECHNICAL_ENGINEER"
+                : "NON_CODER_MANAGEMENT"
+            )
+          }
+          title="Toggle between Management Plain-English Mode and Technical Engineer Mode"
+          className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] font-semibold text-slate-200"
+        >
+          {audienceMode === "NON_CODER_MANAGEMENT" ? (
+            <>
               <GraduationCap className="w-3 h-3 text-emerald-400" />
-              Guided Student &amp; Management Journey:
-            </span>
-            <button
-              type="button"
-              onClick={() => setWorkspaceViewMode("REMEDIATION_IDE")}
-              className={`px-2 py-0.5 rounded border font-medium transition-all ${
-                workspaceViewMode === "REMEDIATION_IDE"
-                  ? "bg-cyan-950 text-cyan-300 border-cyan-700 font-bold"
-                  : "bg-zinc-900 text-zinc-300 border-zinc-800 hover:border-zinc-700"
-              }`}
-            >
-              1️⃣ Inspect Code &amp; Plain-English Fixes ({findings.length} findings)
-            </button>
-            <span className="text-zinc-600">→</span>
-            <button
-              type="button"
-              onClick={() => {
-                setWorkspaceViewMode("SAST_PLUS_SUITE");
-                setSastPlusActiveTab("TRANSLATOR");
-              }}
-              className={`px-2 py-0.5 rounded border font-medium transition-all ${
-                workspaceViewMode === "SAST_PLUS_SUITE"
-                  ? "bg-rose-950 text-rose-200 border-rose-700 font-bold"
-                  : "bg-zinc-900 text-zinc-300 border-zinc-800 hover:border-zinc-700"
-              }`}
-            >
-              2️⃣ Business Impact, Attack Surface &amp; Live SBOM
-            </button>
-            <span className="text-zinc-600">→</span>
-            <button
-              type="button"
-              onClick={() => setWorkspaceViewMode("RACI_GOVERNANCE")}
-              className={`px-2 py-0.5 rounded border font-medium transition-all ${
-                workspaceViewMode === "RACI_GOVERNANCE"
-                  ? "bg-amber-950 text-amber-200 border-amber-700 font-bold"
-                  : "bg-zinc-900 text-zinc-300 border-zinc-800 hover:border-zinc-700"
-              }`}
-            >
-              3️⃣ RACI Accountability Matrix (Who Does What)
-            </button>
-            <span className="text-zinc-600">→</span>
-            <button
-              type="button"
-              onClick={() => setWorkspaceViewMode("DEEP_DIVE")}
-              className={`px-2 py-0.5 rounded border font-medium transition-all ${
-                workspaceViewMode === "DEEP_DIVE"
-                  ? "bg-indigo-950 text-indigo-200 border-indigo-700 font-bold"
-                  : "bg-zinc-900 text-zinc-300 border-zinc-800 hover:border-zinc-700"
-              }`}
-            >
-              4️⃣ Compliance &amp; Executive Export
-            </button>
-          </div>
-          <div className="text-[10px] font-mono text-zinc-400 hidden 2xl:block">
-            Active Target:{" "}
-            <strong className="text-cyan-300">{projectPath}</strong>
-          </div>
-        </div>
-      )}
-    </div>
+              <span>Management View</span>
+            </>
+          ) : (
+            <>
+              <Terminal className="w-3 h-3 text-cyan-400" />
+              <span>Engineer View</span>
+            </>
+          )}
+        </button>
+      </div>
+    </nav>
   );
 }

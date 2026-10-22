@@ -198,6 +198,12 @@ export function ReactFlowGraphPane() {
   // Spider App Tree & CPG Presentation interactive controls state
   const [treeLayoutStyle, setTreeLayoutStyle] =
     useState<AppTreeLayoutStyle>("SPIDER_WEB");
+  const [spiderDeclutterMode, setSpiderDeclutterMode] = useState<
+    "SMART_SIMPLIFIED" | "VULNERABLE_ONLY" | "FULL_EXPANDED"
+  >("SMART_SIMPLIFIED");
+  const [callGraphScope, setCallGraphScope] = useState<
+    "WHOLE_APP" | "CURRENT_FILE"
+  >("WHOLE_APP");
   const [cpgLayoutDirection, setCpgLayoutDirection] = useState<"TB" | "LR">("TB");
   const [collapsedDirs, setCollapsedDirs] = useState<Record<string, boolean>>({});
   const [expandedFileElements, setExpandedFileElements] = useState<
@@ -491,8 +497,20 @@ export function ReactFlowGraphPane() {
           },
         });
 
-        // Recursive radial sector layout for Spider-Web mode
-        const RING_STEP = 380;
+        // Recursive radial sector layout for Spider-Web mode with Smart Decluttering
+        const RING_STEP = appTree.total_files > 40 ? 440 : 380;
+        const isLargeApp = appTree.total_files > 18;
+
+        const getSubtreeFlawCount = (d: DirectoryTreeNode): number => {
+          let total = (d.files || []).reduce(
+            (acc, f) => acc + getFlawCountForFile(f.filepath),
+            0
+          );
+          for (const sub of d.subdirectories || []) {
+            total += getSubtreeFlawCount(sub);
+          }
+          return total;
+        };
 
         const layoutRadialChildren = (
           parentNodeId: string,
@@ -501,8 +519,44 @@ export function ReactFlowGraphPane() {
           startAngle: number,
           endAngle: number
         ) => {
-          const subDirs = dirNode.subdirectories || [];
-          const files = dirNode.files || [];
+          const rawSubDirs = dirNode.subdirectories || [];
+          const rawFiles = dirNode.files || [];
+
+          const subDirs =
+            spiderDeclutterMode === "VULNERABLE_ONLY"
+              ? rawSubDirs.filter((d) => getSubtreeFlawCount(d) > 0)
+              : rawSubDirs;
+
+          let files =
+            spiderDeclutterMode === "VULNERABLE_ONLY"
+              ? rawFiles.filter(
+                  (f) =>
+                    getFlawCountForFile(f.filepath) > 0 ||
+                    f.filepath === activeFilepath
+                )
+              : rawFiles;
+
+          // In SMART_SIMPLIFIED mode on large repositories, cap clean files per directory so rings stay legible
+          const maxCleanFilesPerFolder = isLargeApp ? 4 : 14;
+          if (
+            spiderDeclutterMode === "SMART_SIMPLIFIED" &&
+            files.length > maxCleanFilesPerFolder + 2
+          ) {
+            const vulnOrActive = files.filter(
+              (f) =>
+                getFlawCountForFile(f.filepath) > 0 ||
+                f.filepath === activeFilepath
+            );
+            const cleanRest = files.filter(
+              (f) =>
+                getFlawCountForFile(f.filepath) === 0 &&
+                f.filepath !== activeFilepath
+            );
+            files = [
+              ...vulnOrActive,
+              ...cleanRest.slice(0, maxCleanFilesPerFolder),
+            ];
+          }
 
           const items: Array<
             | { kind: "dir"; dir: DirectoryTreeNode; weight: number }
@@ -511,7 +565,10 @@ export function ReactFlowGraphPane() {
             ...subDirs.map((d) => ({
               kind: "dir" as const,
               dir: d,
-              weight: countSubtreeWeight(d, collapsedDirs),
+              weight:
+                spiderDeclutterMode === "SMART_SIMPLIFIED" && isLargeApp
+                  ? Math.min(4, countSubtreeWeight(d, collapsedDirs))
+                  : countSubtreeWeight(d, collapsedDirs),
             })),
             ...files.map((f) => ({
               kind: "file" as const,
@@ -524,7 +581,13 @@ export function ReactFlowGraphPane() {
 
           const totalWeight = items.reduce((acc, it) => acc + it.weight, 0);
           let currentAngle = startAngle;
-          const radius = depth * RING_STEP;
+          // Dynamic circumference scaling: ensure cards never overlap on dense rings
+          const sectorSpan = Math.max(0.35, endAngle - startAngle);
+          const minRadiusForNoOverlap = (items.length * 235) / sectorSpan;
+          const radius = Math.max(
+            depth * RING_STEP,
+            Math.min(depth * RING_STEP + 950, minRadiusForNoOverlap)
+          );
 
           items.forEach((item, idx) => {
             const angleSpan =
@@ -532,8 +595,8 @@ export function ReactFlowGraphPane() {
             const midAngle = currentAngle + angleSpan / 2;
             currentAngle += angleSpan;
 
-            // Slight radial stagger on dense rings so adjacent cards never collide
-            const stagger = items.length > 6 && idx % 2 === 1 ? 85 : 0;
+            // Radial stagger on dense rings so adjacent cards never collide
+            const stagger = items.length > 5 ? (idx % 3) * 95 : 0;
             const r = radius + stagger;
             const cx = Math.cos(midAngle) * r;
             const cy = Math.sin(midAngle) * r;
@@ -541,7 +604,17 @@ export function ReactFlowGraphPane() {
             if (item.kind === "dir") {
               const d = item.dir;
               const dId = `dir:${d.path}`;
-              const isCollapsed = Boolean(collapsedDirs[d.path]);
+              const dirFlaws = getSubtreeFlawCount(d);
+              // Smart auto-collapse deep clean directories on large apps unless explicitly toggled
+              const autoCollapseDeepClean =
+                spiderDeclutterMode === "SMART_SIMPLIFIED" &&
+                isLargeApp &&
+                depth >= 1 &&
+                dirFlaws === 0 &&
+                collapsedDirs[d.path] === undefined;
+              const isCollapsed = autoCollapseDeepClean
+                ? true
+                : Boolean(collapsedDirs[d.path]);
               const isMatch =
                 spiderSearch === "" && categoryFilter === "ALL"
                   ? true
@@ -740,12 +813,16 @@ export function ReactFlowGraphPane() {
         }
       } else {
         try {
-          const url =
-            activeFilepath && graphViewMode !== "APP_TREE"
-              ? `http://localhost:8000/api/graph?view_mode=${graphViewMode}&filepath=${encodeURIComponent(
-                  activeFilepath
-                )}`
-              : `http://localhost:8000/api/graph?view_mode=${graphViewMode}`;
+          const shouldPassFilepath =
+            activeFilepath &&
+            graphViewMode !== "APP_TREE" &&
+            graphViewMode !== "ENTRYPOINT_GRAPH" &&
+            !(graphViewMode === "CALL_GRAPH" && callGraphScope === "WHOLE_APP");
+          const url = shouldPassFilepath
+            ? `http://localhost:8000/api/graph?view_mode=${graphViewMode}&filepath=${encodeURIComponent(
+                activeFilepath!
+              )}`
+            : `http://localhost:8000/api/graph?view_mode=${graphViewMode}`;
           const res = await fetch(url);
           if (res.ok && !isCancelled) {
             const data = await res.json();
@@ -824,6 +901,8 @@ export function ReactFlowGraphPane() {
     appTree,
     findings,
     treeLayoutStyle,
+    spiderDeclutterMode,
+    callGraphScope,
     cpgLayoutDirection,
     collapsedDirs,
     expandedFileElements,
@@ -1127,6 +1206,10 @@ export function ReactFlowGraphPane() {
               ? "360° Spider App Map"
               : graphViewMode === "FINDING_PATH"
               ? "Attack Story Graph"
+              : graphViewMode === "CALL_GRAPH"
+              ? "Inter-Procedural Call Graph"
+              : graphViewMode === "ENTRYPOINT_GRAPH"
+              ? "Attack Surface Entry Points Graph"
               : "Interactive Code Graph"}
           </span>
           <span className="text-[11px] text-zinc-500 font-mono shrink-0">
@@ -1135,7 +1218,7 @@ export function ReactFlowGraphPane() {
         </div>
 
         <div className="flex items-center gap-2 overflow-x-auto">
-          {/* Self-Explanatory View Mode Tabs */}
+          {/* Self-Explanatory View Mode Tabs (Including Call Graph & Entry Points Graph) */}
           <div className="flex items-center gap-1 bg-zinc-950 p-0.5 rounded-md border border-zinc-800 text-[10px]">
             {(
               [
@@ -1147,26 +1230,31 @@ export function ReactFlowGraphPane() {
                 {
                   mode: "APP_TREE",
                   label: "2. 360° Spider Map",
-                  tip: "Interactive 360° spider-web of all folders, files, functions, and references",
+                  tip: "Interactive decluttered 360° spider-web of all folders, files, functions, and references",
+                },
+                {
+                  mode: "CALL_GRAPH",
+                  label: "3. Call Graph",
+                  tip: "Inter-procedural Call Graph showing caller functions -> callee functions (:CALLS)",
+                },
+                {
+                  mode: "ENTRYPOINT_GRAPH",
+                  label: "4. Entry Points",
+                  tip: "Attack Surface Entry Points Graph (API Routes, CLI, Untrusted Sources -> Handlers -> Sinks)",
                 },
                 {
                   mode: "DFG_ONLY",
-                  label: "3. Data Flow",
+                  label: "5. Data Flow",
                   tip: "Shows how variables and user data move between statements",
                 },
                 {
                   mode: "CFG_ONLY",
-                  label: "4. Control Flow",
+                  label: "6. Control Flow",
                   tip: "Shows if/else branches, loops, and execution order",
                 },
                 {
-                  mode: "CALL_GRAPH",
-                  label: "5. Function Calls",
-                  tip: "Shows which functions call other functions across files",
-                },
-                {
                   mode: "FULL_CPG",
-                  label: "6. Full Graph",
+                  label: "7. Full CPG",
                   tip: "Complete compiler graph combining syntax, control flow, and data flow",
                 },
               ] as { mode: GraphViewMode; label: string; tip: string }[]
@@ -1222,21 +1310,23 @@ export function ReactFlowGraphPane() {
           {graphViewMode === "FINDING_PATH" &&
             "Attack Story Path: Shows how untrusted input (Cyan) travels along data/control links to trigger the vulnerable sink (Red). Click any node to highlight its code."}
           {graphViewMode === "APP_TREE" &&
-            "360° Spider Architecture Map: Central hub connects to folders, files, and outer symbol satellites. Click any file to inspect references or jump to code."}
+            "Decluttered 360° Spider Map: Auto-clusters deep clean folders on large apps and scales ring circumference so nodes never overlap. Click any folder to expand/collapse."}
+          {graphViewMode === "CALL_GRAPH" &&
+            "Inter-Procedural Call Graph: Purple arrows connect caller functions to target callee functions (:CALLS) across the application."}
+          {graphViewMode === "ENTRYPOINT_GRAPH" &&
+            "Attack Surface Entry Points Graph: Traces exposed API routes, CLI handlers, and untrusted input sources directly to downstream execution sinks."}
           {graphViewMode === "DFG_ONLY" &&
             "Data Flow View (DFG): Red dashed arrows trace how variable values and inputs flow from definitions to usages across the current file."}
           {graphViewMode === "CFG_ONLY" &&
             "Control Flow View (CFG): Cyan arrows trace sequential execution steps, conditional branches (True/False), and loop back-edges."}
-          {graphViewMode === "CALL_GRAPH" &&
-            "Function Call Map: Purple arrows connect caller functions to the target functions they invoke."}
           {graphViewMode === "FULL_CPG" &&
             "Complete Code Property Graph: Displays combined syntax (AST), execution order (CFG), and variable flow (DFG) for deep inspection."}
         </span>
       </div>
 
-      {/* UNIVERSAL INTERACTIVE CAMERA, LAYOUT & PRESENTATION TOOLBAR (Available Across All 6 Graph Modes) */}
+      {/* UNIVERSAL INTERACTIVE CAMERA, LAYOUT & PRESENTATION TOOLBAR */}
       <div className="bg-zinc-900/75 border-b border-zinc-800/90 px-3 py-1.5 flex items-center justify-between gap-2 flex-wrap text-[11px] shrink-0">
-        {/* Left Controls: Spider Layout Mode OR CPG Orientation Toggle (TB vs LR) */}
+        {/* Left Controls: Spider Layout + Smart Declutter Mode OR CPG Orientation Toggle */}
         {graphViewMode === "APP_TREE" ? (
           <div className="flex items-center gap-2 flex-wrap">
             <div className="flex items-center gap-1 bg-zinc-950 p-0.5 rounded-md border border-zinc-800 font-mono text-[10px]">
@@ -1258,6 +1348,33 @@ export function ReactFlowGraphPane() {
                   }`}
                 >
                   {ly.label}
+                </button>
+              ))}
+            </div>
+
+            {/* 360° Spider Declutter Mode Switcher */}
+            <div
+              className="flex items-center gap-1 bg-zinc-950 p-0.5 rounded-md border border-zinc-800 font-mono text-[10px]"
+              title="Control how dense 360° Spider rings are simplified on large repositories"
+            >
+              {(
+                [
+                  { id: "SMART_SIMPLIFIED", label: "✨ Smart Declutter" },
+                  { id: "VULNERABLE_ONLY", label: "🔥 Flaws Only" },
+                  { id: "FULL_EXPANDED", label: "🌐 All Files" },
+                ] as const
+              ).map((dm) => (
+                <button
+                  key={dm.id}
+                  type="button"
+                  onClick={() => setSpiderDeclutterMode(dm.id)}
+                  className={`px-2 py-0.5 rounded transition-all ${
+                    spiderDeclutterMode === dm.id
+                      ? "bg-amber-500/20 text-amber-300 border border-amber-500/50 font-bold"
+                      : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  {dm.label}
                 </button>
               ))}
             </div>
@@ -1313,6 +1430,33 @@ export function ReactFlowGraphPane() {
                 <span>Left-Right (LR)</span>
               </button>
             </div>
+
+            {graphViewMode === "CALL_GRAPH" && (
+              <div className="flex items-center gap-1 bg-zinc-950 p-0.5 rounded-md border border-zinc-800 font-mono text-[10px]">
+                <button
+                  type="button"
+                  onClick={() => setCallGraphScope("WHOLE_APP")}
+                  className={`px-2 py-0.5 rounded transition-all ${
+                    callGraphScope === "WHOLE_APP"
+                      ? "bg-purple-950 text-purple-300 border border-purple-700 font-bold"
+                      : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  🌐 Whole App Calls
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCallGraphScope("CURRENT_FILE")}
+                  className={`px-2 py-0.5 rounded transition-all ${
+                    callGraphScope === "CURRENT_FILE"
+                      ? "bg-purple-950 text-purple-300 border border-purple-700 font-bold"
+                      : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  📄 Active File Calls
+                </button>
+              </div>
+            )}
 
             {graphViewMode === "FINDING_PATH" && selectedFinding && (
               <button

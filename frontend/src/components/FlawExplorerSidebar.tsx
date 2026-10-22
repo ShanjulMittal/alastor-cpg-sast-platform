@@ -33,6 +33,9 @@ import {
   Info,
   Crosshair,
   Ticket,
+  KeyRound,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 
 function getHumanStoryBadge(f: Finding): { label: string; summary: string; color: string } {
@@ -127,6 +130,9 @@ export function FlawExplorerSidebar() {
   const setPrimaryGrouping = useAuditStore((s) => s.setPrimaryGrouping);
   const activeEngineFilter = useAuditStore((s) => s.activeEngineFilter);
   const setActiveEngineFilter = useAuditStore((s) => s.setActiveEngineFilter);
+  const filterSecretsOnly = useAuditStore((s) => s.filterSecretsOnly);
+  const setFilterSecretsOnly = useAuditStore((s) => s.setFilterSecretsOnly);
+  const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>({});
 
   const appTree = useAuditStore((s) => s.appTree);
   const selectedTreeFile = useAuditStore((s) => s.selectedTreeFile);
@@ -217,6 +223,14 @@ export function FlawExplorerSidebar() {
       if (activeEngineFilter !== "ALL" && (f.scan_engine || "SAST") !== activeEngineFilter) {
         return false;
       }
+      if (filterSecretsOnly) {
+        const isSec =
+          f.is_secret_finding ||
+          Boolean(f.secret_key_name) ||
+          (f.rule_id || "").toUpperCase().includes("SECRET") ||
+          f.cwe_id === "CWE-798";
+        if (!isSec) return false;
+      }
       const isExternal = (f.rule_id || "").startsWith("EXT-");
       if (sourceFilter === "CPG" && isExternal) return false;
       if (sourceFilter === "WEB" && !isExternal) return false;
@@ -258,6 +272,7 @@ export function FlawExplorerSidebar() {
     trackChangeFilter,
     selectedSeverity,
     activeEngineFilter,
+    filterSecretsOnly,
     sourceFilter,
     flawSearch,
     sortBy,
@@ -591,8 +606,8 @@ export function FlawExplorerSidebar() {
               />
             </div>
 
-            {/* Unified Engine Filter (ALL / SAST / SCA / IaC) */}
-            <div className="grid grid-cols-4 gap-1 text-[10px] font-mono">
+            {/* Unified Engine Filter (ALL / SAST / SCA / IaC) + Secret Keys Filter */}
+            <div className="grid grid-cols-5 gap-1 text-[10px] font-mono">
               {(["ALL", "SAST", "SCA", "IaC"] as const).map((eng) => {
                 const cnt =
                   eng === "ALL"
@@ -602,9 +617,12 @@ export function FlawExplorerSidebar() {
                   <button
                     key={eng}
                     type="button"
-                    onClick={() => setActiveEngineFilter(eng)}
+                    onClick={() => {
+                      setActiveEngineFilter(eng);
+                      if (eng !== "ALL" && filterSecretsOnly) setFilterSecretsOnly(false);
+                    }}
                     className={`py-0.5 px-1 rounded border text-center transition-colors ${
-                      activeEngineFilter === eng
+                      activeEngineFilter === eng && !filterSecretsOnly
                         ? "bg-cyan-950/90 text-cyan-200 border-cyan-700 font-bold"
                         : "bg-zinc-950 text-zinc-500 border-zinc-800 hover:text-zinc-300"
                     }`}
@@ -613,6 +631,31 @@ export function FlawExplorerSidebar() {
                   </button>
                 );
               })}
+              <button
+                type="button"
+                onClick={() => setFilterSecretsOnly(!filterSecretsOnly)}
+                title="Filter to show only Hardcoded Secret Keys, API Tokens & Credentials"
+                className={`py-0.5 px-1 rounded border text-center transition-colors flex items-center justify-center gap-0.5 ${
+                  filterSecretsOnly
+                    ? "bg-amber-500/25 text-amber-200 border-amber-400 font-bold"
+                    : "bg-amber-950/30 text-amber-300 border-amber-700/60 hover:bg-amber-900/40"
+                }`}
+              >
+                <KeyRound className="w-2.5 h-2.5" />
+                <span>
+                  Keys (
+                  {
+                    findings.filter(
+                      (f) =>
+                        f.is_secret_finding ||
+                        Boolean(f.secret_key_name) ||
+                        (f.rule_id || "").toUpperCase().includes("SECRET") ||
+                        f.cwe_id === "CWE-798"
+                    ).length
+                  }
+                  )
+                </span>
+              </button>
             </div>
 
             {/* Primary Grouping Toggle (Language vs Severity vs Engine) & Sort */}
@@ -900,36 +943,78 @@ export function FlawExplorerSidebar() {
                             {f.title}
                           </h2>
 
-                          {/* Always-Visible Written Explanation & Affected Software/Code Box */}
+                          {/* Always-Visible Written Explanation & Secret Key / Target Code Box */}
                           <div className="mt-1.5 p-2 rounded-lg bg-zinc-900/85 border border-zinc-800/90 text-[10px] text-zinc-300 space-y-1">
-                            {/* Reachability & EPSS Priority Row */}
-                            <div className="flex items-center gap-1 flex-wrap font-mono text-[9px]">
-                              <span
-                                className={`px-1.5 py-0.5 rounded border font-bold ${
-                                  f.reachability_status === "UNREACHABLE_DORMANT"
-                                    ? "bg-zinc-950 text-zinc-400 border-zinc-700"
-                                    : f.reachability_status === "CONDITIONALLY_REACHABLE"
-                                    ? "bg-amber-950/80 text-amber-300 border-amber-700/70"
-                                    : "bg-rose-950/80 text-rose-300 border-rose-700/70"
-                                }`}
-                              >
-                                {f.reachability_status === "UNREACHABLE_DORMANT"
-                                  ? "💤 Dormant Path"
-                                  : f.reachability_status === "CONDITIONALLY_REACHABLE"
-                                  ? "⚙️ Build/Dev Reachable"
-                                  : "🎯 Runtime Reachable"}
-                              </span>
-                              {typeof f.epss_score === "number" && (
-                                <span className="px-1.5 py-0.5 rounded bg-indigo-950/80 text-indigo-200 border border-indigo-700/70 font-semibold">
-                                  EPSS: {(f.epss_score * 100).toFixed(1)}%
+                            {/* Secret Key Inspector OR Target Symbol & EPSS Priority Row */}
+                            {f.is_secret_finding ||
+                            Boolean(f.secret_key_name) ||
+                            (f.rule_id || "").toUpperCase().includes("SECRET") ||
+                            f.cwe_id === "CWE-798" ? (
+                              <div className="p-1.5 rounded-lg bg-amber-950/40 border border-amber-500/50 space-y-1">
+                                <div className="flex items-center justify-between gap-1 font-mono text-[9px]">
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-200 border border-amber-400/60 font-extrabold flex items-center gap-1">
+                                    <KeyRound className="w-3 h-3 text-amber-400" />
+                                    {f.secret_type || "SECRET KEY DETECTED"}
+                                  </span>
+                                  {f.secret_entropy && (
+                                    <span className="text-[9px] text-cyan-300">
+                                      Entropy: {f.secret_entropy}
+                                    </span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setRevealedSecrets((prev) => ({
+                                        ...prev,
+                                        [f.id]: !prev[f.id],
+                                      }));
+                                    }}
+                                    className="px-1.5 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 text-amber-300 border border-amber-500/40 flex items-center gap-0.5 font-sans font-bold"
+                                  >
+                                    {revealedSecrets[f.id] ? (
+                                      <>
+                                        <EyeOff className="w-2.5 h-2.5" /> Mask
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Eye className="w-2.5 h-2.5" /> Reveal Key
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
+                                <div className="px-1.5 py-1 rounded bg-zinc-950 border border-amber-500/30 font-mono text-[10px] text-amber-200 break-all">
+                                  <span className="text-amber-400 font-bold">
+                                    🔑 {f.secret_key_name || firstNode?.name || "SECRET_KEY"}
+                                  </span>
+                                  <span className="text-zinc-500"> = </span>
+                                  <span className="text-rose-200 font-semibold">
+                                    {revealedSecrets[f.id]
+                                      ? f.secret_value_raw ||
+                                        f.secret_value_masked ||
+                                        firstNode?.code ||
+                                        "SECRET"
+                                      : f.secret_value_masked || "REDACTED_SECRET_KEY"}
+                                  </span>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1 flex-wrap font-mono text-[9px]">
+                                <span className="px-1.5 py-0.5 rounded border font-bold bg-cyan-950/70 text-cyan-200 border-cyan-700/70">
+                                  🎯 Target: {lastNode?.name || firstNode?.name || f.rule_id}
                                 </span>
-                              )}
-                              {f.cisa_kev_listed && (
-                                <span className="px-1.5 py-0.5 rounded bg-red-950 text-red-200 border border-red-600 font-bold">
-                                  CISA KEV
-                                </span>
-                              )}
-                            </div>
+                                {typeof f.epss_score === "number" && (
+                                  <span className="px-1.5 py-0.5 rounded bg-indigo-950/80 text-indigo-200 border border-indigo-700/70 font-semibold">
+                                    EPSS: {(f.epss_score * 100).toFixed(1)}%
+                                  </span>
+                                )}
+                                {f.cisa_kev_listed && (
+                                  <span className="px-1.5 py-0.5 rounded bg-red-950 text-red-200 border border-red-600 font-bold">
+                                    CISA KEV
+                                  </span>
+                                )}
+                              </div>
+                            )}
 
                             {(f.best_fix_location?.code_snippet || firstNode?.code || firstNode?.name) && (
                               <div className="px-1.5 py-1 rounded bg-zinc-950 border border-amber-800/60 font-mono text-[10px] text-amber-200 break-all">
@@ -940,12 +1025,6 @@ export function FlawExplorerSidebar() {
                                   .replace(/\0/g, "")
                                   .slice(0, 120)}
                               </div>
-                            )}
-                            {f.reachability_reason && (
-                              <p className="leading-snug text-indigo-200/90">
-                                <strong className="text-indigo-300">Reachability:</strong>{" "}
-                                {f.reachability_reason}
-                              </p>
                             )}
                             <p className="leading-snug text-zinc-200">
                               <strong className="text-emerald-300">What Is Wrong:</strong>{" "}

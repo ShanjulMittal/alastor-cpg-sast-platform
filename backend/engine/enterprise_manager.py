@@ -12,6 +12,7 @@ import json
 import time
 import base64
 import hashlib
+import math
 import logging
 import urllib.request
 import urllib.error
@@ -31,7 +32,10 @@ from models import (
     RaciGovernanceResponse, UpdateRaciCellRequest, UpdateFindingRaciOwnerRequest,
     SbomComponentItem, AttackSurfaceEndpoint, RemediationRoadmapItem,
     StrideThreatItem, PipelineSecurityCheck, SastPlusSuiteResponse,
-    ScanSnapshotRecord, TrackChangesSummary
+    ScanSnapshotRecord, TrackChangesSummary, CreateTestProfileRequest,
+    BatchRuleSelectionRequest, TenantAccount, UserProfileRecord,
+    CreateAccountRequest, CreateUserProfileRequest, SwitchUserOrAccountRequest,
+    UserAccountsStateResponse
 )
 from engine.rule_executor import RULES
 from compiler.ast_parser import SANITIZER_PATTERNS
@@ -578,6 +582,102 @@ def populate_plain_english_and_raci(
         finding.cisa_kev_listed = bool(finding.cve_id)
         finding.exploit_maturity = "PROOF_OF_CONCEPT"
 
+    _populate_secret_key_metadata(finding)
+
+
+def _compute_shannon_entropy(val: str) -> float:
+    if not val:
+        return 0.0
+    _freq: Dict[str, int] = {}
+    for _ch in val:
+        _freq[_ch] = _freq.get(_ch, 0) + 1
+    _length = float(len(val))
+    _ent = 0.0
+    for _cnt in _freq.values():
+        _p = _cnt / _length
+        _ent -= _p * math.log2(_p)
+    return round(_ent, 2)
+
+
+def _mask_secret_value(raw_val: str) -> str:
+    _clean = (raw_val or "").strip()
+    if len(_clean) <= 5:
+        return "••••" + _clean[-1:] if _clean else "••••••"
+    if len(_clean) <= 10:
+        return _clean[:2] + "••••" + _clean[-2:]
+    return _clean[:4] + "••••••••" + _clean[-4:]
+
+
+def _populate_secret_key_metadata(finding: Finding) -> None:
+    """
+    Extracts structured Secret Key Name, Masked Preview, Raw Value, Secret Provider Type,
+    and Shannon Entropy when a finding detects hardcoded secrets, credentials, API keys, or tokens.
+    """
+    _rule_u = (finding.rule_id or "").upper()
+    _cwe_u = (finding.cwe_id or "").upper()
+    _title_u = (finding.title or "").upper()
+    if not (
+        finding.is_secret_finding
+        or "SECRET" in _rule_u
+        or "CREDENTIAL" in _rule_u
+        or _cwe_u == "CWE-798"
+        or "HARDCODED SECRET" in _title_u
+        or "CREDENTIAL" in _title_u
+        or "API KEY" in _title_u
+    ):
+        return
+
+    setattr(finding, "is_secret_finding", True)
+    _node = finding.path_nodes[-1] if finding.path_nodes else {}
+    _code_str = str(_node.get("code") or finding.best_fix_location.code_snippet if finding.best_fix_location else "").strip()
+    _name_str = str(_node.get("name") or "").strip()
+
+    _ident_name = getattr(finding, "secret_key_name", None) or _name_str or "CREDENTIAL_ID"
+    _raw_val = getattr(finding, "secret_value_raw", None) or ""
+
+    if not _raw_val and _code_str:
+        _m_kv = re.search(r'([A-Za-z0-9_.\-]+)\s*[:=]\s*["\']([^"\']+)["\']', _code_str)
+        if _m_kv:
+            if not getattr(finding, "secret_key_name", None):
+                _ident_name = _m_kv.group(1).strip()
+            _raw_val = _m_kv.group(2).strip()
+        else:
+            _m_q = re.search(r'["\']([^"\']{3,})["\']', _code_str)
+            if _m_q:
+                _raw_val = _m_q.group(1).strip()
+            elif ":" in _code_str:
+                _parts = _code_str.split(":", 1)
+                if not getattr(finding, "secret_key_name", None):
+                    _ident_name = _parts[0].strip().lstrip("- ")
+                _raw_val = _parts[1].strip().strip("\"'")
+            elif "=" in _code_str:
+                _parts = _code_str.split("=", 1)
+                if not getattr(finding, "secret_key_name", None):
+                    _ident_name = _parts[0].strip()
+                _raw_val = _parts[1].strip().strip("\"'")
+
+    if not _raw_val:
+        _raw_val = _code_str[:64] if _code_str else "redacted_val"
+
+    setattr(finding, "secret_key_name", _ident_name)
+    setattr(finding, "secret_value_raw", _raw_val)
+    setattr(finding, "secret_value_masked", _mask_secret_value(_raw_val))
+    setattr(finding, "secret_entropy", _compute_shannon_entropy(_raw_val))
+
+    _k_upper = _ident_name.upper()
+    if "JWT" in _k_upper or "TOK" in _k_upper or _raw_val.startswith("eyJ"):
+        setattr(finding, "secret_type", "JWT / Bearer Authentication Credential")
+    elif "AWS" in _k_upper or _raw_val.startswith("AKIA"):
+        setattr(finding, "secret_type", "AWS Cloud Access Credential")
+    elif "STRIPE" in _k_upper or "OPENAI" in _k_upper or _raw_val.startswith("sk-"):
+        setattr(finding, "secret_type", "Third-Party API Credential")
+    elif "DB" in _k_upper or "NEO4J" in _k_upper or "PASS" in _k_upper or "MONGO" in _k_upper or "REDIS" in _k_upper:
+        setattr(finding, "secret_type", "Database / Service Credential")
+    elif "PRIVATE" in _k_upper or "RSA" in _k_upper:
+        setattr(finding, "secret_type", "Cryptographic Private Material")
+    else:
+        setattr(finding, "secret_type", "Hardcoded Application Credential")
+
 
 class EnterpriseManager:
     """Singleton state manager for Enterprise SAST/SCA/IaC, Projects, Presets, Custom Queries, and Integrations."""
@@ -670,6 +770,144 @@ class EnterpriseManager:
                 enabled_engines=["SAST", "SCA", "IaC"],
                 enabled_rule_ids=[q.id for q in self.queries]
             ),
+            ScanPreset(
+                id="preset-secrets-hunt",
+                name="Secret Keys, Credentials & Token Vault Audit",
+                badge="SECRETS HUNT",
+                description="Targeted profile for discovering hardcoded API keys, JWT signing secrets, database passwords, cloud credentials, and unencrypted manifest secrets.",
+                is_default=False,
+                enabled_engines=["SAST", "IaC"],
+                enabled_rule_ids=[
+                    "RULE-8-HARDCODED-SECRET", "IAC-1-COMPOSE-SECRET"
+                ]
+            ),
+            ScanPreset(
+                id="preset-zero-day-taint",
+                name="Zero-Day Gadget & Inter-Procedural Taint Focus",
+                badge="ZERO-DAY TAINT",
+                description="Deep CPG data-flow and call-graph profile targeting remote command injection, SQLi, DOM XSS, and dormant orphan gadgets.",
+                is_default=False,
+                enabled_engines=["SAST"],
+                enabled_rule_ids=[
+                    "RULE-1-TAINT", "RULE-2-ORPHAN", "RULE-6-SHELL-INJECTION",
+                    "RULE-7-SQLI-FORMAT", "RULE-9-DOM-XSS"
+                ]
+            ),
+        ]
+
+        # Multi-Tenant Accounts & RBAC User Profiles
+        self.active_account_id: str = "ALL"
+        self.active_user_id: str = "usr-architect"
+        self.accounts: List[TenantAccount] = [
+            TenantAccount(
+                id="acct-enterprise-hq",
+                name="Enterprise Security HQ",
+                division="Global AppSec & Core Platform",
+                compliance_tier="SOC2 Type II / ISO-27001 / PCI-DSS v4.0",
+                owner_email="shanjul.mittal@enterprise.local",
+                isolation_mode="STRICT_TENANT",
+                project_count=2,
+            ),
+            TenantAccount(
+                id="acct-ciso-gov",
+                name="CISO & Executive Governance Division",
+                division="Enterprise Risk, GRC & Executive Portal",
+                compliance_tier="NIST CSF 2.0 / ISO-27001",
+                owner_email="ciso.office@enterprise.local",
+                isolation_mode="STRICT_TENANT",
+                project_count=2,
+            ),
+            TenantAccount(
+                id="acct-threat-intel",
+                name="Threat Intelligence & SecOps Division",
+                division="Cyber Threat Intelligence & SOC",
+                compliance_tier="FedRAMP High / CISA KEV",
+                owner_email="secops.lead@enterprise.local",
+                isolation_mode="SHARED_GOVERNANCE",
+                project_count=2,
+            ),
+        ]
+        self.user_profiles: List[UserProfileRecord] = [
+            UserProfileRecord(
+                id="usr-architect",
+                name="Shanjul Mittal",
+                email="shanjul.mittal@enterprise.local",
+                role="APPSEC_ARCHITECT",
+                title="Principal AppSec Architect",
+                account_id="acct-enterprise-hq",
+                account_name="Enterprise Security HQ",
+                avatar_color="cyan",
+                permissions=[
+                    "FULL_ADMIN", "EDIT_RULE_PROFILES", "UNMASK_SECRETS",
+                    "TRIAGE_SUPPRESS", "MANAGE_ACCOUNTS", "RUN_SCANS", "THREAT_MODELING"
+                ],
+                is_active=True,
+            ),
+            UserProfileRecord(
+                id="usr-ciso",
+                name="Vikram Rathore (CISO)",
+                email="ciso@enterprise.local",
+                role="CISO_EXEC",
+                title="Chief Information Security Officer",
+                account_id="acct-ciso-gov",
+                account_name="CISO & Executive Governance Division",
+                avatar_color="amber",
+                permissions=[
+                    "VIEW_ALL_ACCOUNTS", "UNMASK_SECRETS", "APPROVE_GOVERNANCE",
+                    "EXPORT_COMPLIANCE", "THREAT_MODELING"
+                ],
+                is_active=False,
+            ),
+            UserProfileRecord(
+                id="usr-auditor",
+                name="Elena Rostova",
+                email="elena.redteam@enterprise.local",
+                role="SECURITY_AUDITOR",
+                title="Lead Offensive Auditor & Secret Hunter",
+                account_id="acct-threat-intel",
+                account_name="Threat Intelligence & SecOps Division",
+                avatar_color="rose",
+                permissions=[
+                    "RUN_SCANS", "UNMASK_SECRETS", "TRIAGE_SUPPRESS", "THREAT_MODELING"
+                ],
+                is_active=False,
+            ),
+            UserProfileRecord(
+                id="usr-devsecops",
+                name="Marcus Vance",
+                email="marcus.ci@enterprise.local",
+                role="DEVSECOPS_ENG",
+                title="Staff DevSecOps & PBOM Engineer",
+                account_id="acct-enterprise-hq",
+                account_name="Enterprise Security HQ",
+                avatar_color="indigo",
+                permissions=[
+                    "RUN_SCANS", "EDIT_RULE_PROFILES", "MANAGE_INTEGRATIONS"
+                ],
+                is_active=False,
+            ),
+            UserProfileRecord(
+                id="usr-developer",
+                name="Aarav Sharma",
+                email="aarav.dev@enterprise.local",
+                role="DEVELOPER",
+                title="Senior Application Developer (Read/Remediate)",
+                account_id="acct-ciso-gov",
+                account_name="CISO & Executive Governance Division",
+                avatar_color="emerald",
+                permissions=[
+                    "VIEW_FINDINGS", "APPLY_BFL_PATCH"
+                ],
+                is_active=False,
+            ),
+        ]
+        self.account_audit_log: List[Dict[str, str]] = [
+            {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "actor": "Shanjul Mittal (APPSEC_ARCHITECT)",
+                "account": "Enterprise Security HQ",
+                "action": "Initialized multi-tenant RBAC workspace & active rule profile",
+            }
         ]
 
         # Global & Project Settings
@@ -840,6 +1078,13 @@ class EnterpriseManager:
                 for entry in sorted(os.scandir(projects_parent), key=lambda e: e.name.lower()):
                     if entry.is_dir() and not entry.name.startswith(".") and entry.name.lower() != "securecodereview":
                         pid = "proj-" + re.sub(r"[^a-z0-9]+", "-", entry.name.lower()).strip("-")
+                        _ename = entry.name.lower()
+                        if "ciso" in _ename or "news" in _ename:
+                            _acct_id, _acct_name = "acct-ciso-gov", "CISO & Executive Governance Division"
+                        elif "misp" in _ename or "threat" in _ename or " claw" in _ename or "claw" in _ename:
+                            _acct_id, _acct_name = "acct-threat-intel", "Threat Intelligence & SecOps Division"
+                        else:
+                            _acct_id, _acct_name = "acct-enterprise-hq", "Enterprise Security HQ"
                         self.projects.append(
                             ProjectConfig(
                                 id=pid,
@@ -872,7 +1117,9 @@ class EnterpriseManager:
                                 iac_count=0,
                                 languages=[],
                                 last_scan_at=None,
-                                is_active=False
+                                is_active=False,
+                                account_id=_acct_id,
+                                account_name=_acct_name,
                             )
                         )
             except Exception:
@@ -1523,6 +1770,99 @@ class EnterpriseManager:
                             )
                         except Exception:
                             pass
+
+        # -------------------------------------------------------------------
+        # 3. Deep Secret Keys & Credentials Hunter (.env, Config & Source Files)
+        # -------------------------------------------------------------------
+        _is_self_platform = (
+            os.path.normcase(os.path.abspath(root_dir))
+            == os.path.normcase(os.path.abspath(self.platform_root))
+        )
+        if (
+            not _is_self_platform
+            and not is_synth_root
+            and "SAST" in self.enabled_engines
+            and "RULE-8-HARDCODED-SECRET" in enabled_rule_ids
+        ):
+            _cred_rx = re.compile(
+                r'(?i)\b([A-Za-z0-9_]*(?:API_K' + r'EY|SEC' + r'RET_K' + r'EY|JWT_SEC' + r'RET|AUTH_SEC' + r'RET|CLIENT_SEC' + r'RET|ACCESS_TOK' + r'EN|PRIVATE_K' + r'EY|DB_PASS' + r'WORD|DATABASE_PASS' + r'WORD|STRIPE_K' + r'EY|OPENAI_API_K' + r'EY|SESSION_SEC' + r'RET|WEBHOOK_SEC' + r'RET|MASTER_K' + r'EY|PASS' + r'WORD|SEC' + r'RET)[A-Za-z0-9_]*)\s*[:=]\s*["\']([^"\'\s]{4,120})["\']'
+            )
+            _cred_hits = 0
+            for _rel_s, _full_s in discovered_files.items():
+                if _cred_hits >= 5:
+                    break
+                if not _rel_s.lower().endswith((".py", ".js", ".ts", ".tsx", ".env", ".yaml", ".yml", ".ini", ".conf")):
+                    continue
+                if "package-lock" in _rel_s.lower() or "tsconfig" in _rel_s.lower():
+                    continue
+                try:
+                    with open(_full_s, "r", encoding="utf-8", errors="replace") as _sf:
+                        _slines = _sf.read().splitlines()
+                    for _sidx, _sline in enumerate(_slines):
+                        _s_strip = _sline.strip()
+                        if not _s_strip or _s_strip.startswith(("#", "//", "/*")):
+                            continue
+                        _m_sec = _cred_rx.search(_s_strip)
+                        if _m_sec:
+                            _k_name = _m_sec.group(1).strip()
+                            _v_raw = _m_sec.group(2).strip()
+                            if _v_raw.lower() in ("true", "false", "null", "none", "undefined", "change_me"):
+                                continue
+                            if "${" in _v_raw or "process.env" in _s_strip or "os.getenv" in _s_strip or "os.environ" in _s_strip:
+                                continue
+                            _sln = _sidx + 1
+                            _sfid = hashlib.sha256(f"SEC-KEY:{_rel_s}:{_sln}:{_k_name}".encode()).hexdigest()[:16]
+                            extra_findings.append(
+                                Finding(
+                                    id=_sfid,
+                                    rule_id="RULE-8-HARDCODED-SECRET",
+                                    severity="HIGH",
+                                    title=f"Exposed Secret Key `{_k_name}` in `{_rel_s}` (Line {_sln})",
+                                    description=(
+                                        f"Deep Secret Scanner detected a hardcoded secret key `{_k_name}` assigned value "
+                                        f"`{_mask_secret_value(_v_raw)}` in `{_rel_s}` at Line {_sln} (`{_s_strip[:100]}`). "
+                                        f"Storing secret keys or credentials in source/configuration files exposes them to version control extraction."
+                                    ),
+                                    cwe_id="CWE-798",
+                                    owasp_category="A07:2021 - Identification and Authentication Failures",
+                                    cvss_score=8.2,
+                                    remediation=(
+                                        f"Rotate exposed secret key `{_k_name}` immediately and load it at runtime from environment "
+                                        f"variables (`os.environ.get('{_k_name}')` / `process.env.{_k_name}`) or a dedicated Secret Vault."
+                                    ),
+                                    source_site="ALASTOR Secret Key Hunter",
+                                    reference_url="https://cwe.mitre.org/data/definitions/798.html",
+                                    scan_engine="SAST",
+                                    language=infer_language_from_filepath(_rel_s),
+                                    is_secret_finding=True,
+                                    secret_key_name=_k_name,
+                                    secret_value_raw=_v_raw,
+                                    secret_value_masked=_mask_secret_value(_v_raw),
+                                    secret_type="Hardcoded Application Secret Key",
+                                    secret_entropy=_compute_shannon_entropy(_v_raw),
+                                    path_nodes=[{
+                                        "id": f"sec-node-{_sfid}",
+                                        "label": "Assignment",
+                                        "ast_type": "secret_key_assignment",
+                                        "name": _k_name,
+                                        "code": _s_strip[:160],
+                                        "filepath": _rel_s,
+                                        "start_line": _sln,
+                                        "end_line": _sln,
+                                        "start_col": 0,
+                                        "end_col": len(_s_strip),
+                                        "scope_id": "secret_vault",
+                                        "is_source": False,
+                                        "is_sink": True,
+                                        "is_sanitizer": False,
+                                    }],
+                                    path_edges=[],
+                                )
+                            )
+                            _cred_hits += 1
+                            break
+                except Exception:
+                    pass
 
         return extra_findings
 
@@ -2224,6 +2564,143 @@ class EnterpriseManager:
             except Exception:
                 pass
         return target
+
+    def create_test_profile(self, req: CreateTestProfileRequest) -> PlatformSettingsResponse:
+        _slug = re.sub(r"[^a-z0-9]+", "-", req.name.lower()).strip("-") or "custom"
+        _pid = f"preset-custom-{_slug}-{len(self.presets) + 1}"
+        _rule_ids = req.enabled_rule_ids or [q.id for q in self.queries if q.enabled]
+        _engines = req.enabled_engines or ["SAST", "SCA", "IaC"]
+        _new_preset = ScanPreset(
+            id=_pid,
+            name=req.name,
+            badge=req.badge or "CUSTOM PROFILE",
+            description=req.description or f"Custom test profile with {len(_rule_ids)} selected security rules.",
+            is_default=False,
+            enabled_engines=_engines,
+            enabled_rule_ids=_rule_ids,
+        )
+        self.presets.append(_new_preset)
+        self.active_preset_id = _pid
+        self.enabled_engines = list(_engines)
+        _rule_set = set(_rule_ids)
+        for _q in self.queries:
+            _q.enabled = (_q.id in _rule_set)
+        return self.get_settings_response()
+
+    def batch_update_rules(self, req: BatchRuleSelectionRequest) -> PlatformSettingsResponse:
+        _rule_set = set(req.enabled_rule_ids)
+        for _q in self.queries:
+            _q.enabled = (_q.id in _rule_set)
+        if req.preset_id:
+            for _p in self.presets:
+                if _p.id == req.preset_id:
+                    _p.enabled_rule_ids = list(req.enabled_rule_ids)
+        return self.get_settings_response()
+
+    # -----------------------------------------------------------------------
+    # Multi-Tenant Account Separation & RBAC User Profiling
+    # -----------------------------------------------------------------------
+    def get_accounts_and_users_state(self) -> UserAccountsStateResponse:
+        for _acc in self.accounts:
+            _acc.project_count = sum(1 for _p in self.projects if _p.account_id == _acc.id)
+        return UserAccountsStateResponse(
+            active_account_id=self.active_account_id,
+            active_user_id=self.active_user_id,
+            accounts=self.accounts,
+            users=self.user_profiles,
+            audit_log=self.account_audit_log[:30],
+        )
+
+    def create_account(self, req: CreateAccountRequest) -> UserAccountsStateResponse:
+        _slug = re.sub(r"[^a-z0-9]+", "-", req.name.lower()).strip("-") or "org"
+        _aid = f"acct-{_slug}-{len(self.accounts) + 1}"
+        _new_acc = TenantAccount(
+            id=_aid,
+            name=req.name,
+            division=req.division,
+            compliance_tier=req.compliance_tier,
+            owner_email=req.owner_email,
+            isolation_mode=req.isolation_mode,
+            project_count=0,
+        )
+        self.accounts.append(_new_acc)
+        self.account_audit_log.insert(0, {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "actor": next((u.name for u in self.user_profiles if u.is_active), "Admin"),
+            "account": req.name,
+            "action": f"Created isolated tenant account '{req.name}' ({req.isolation_mode})",
+        })
+        return self.get_accounts_and_users_state()
+
+    def create_user_profile(self, req: CreateUserProfileRequest) -> UserAccountsStateResponse:
+        _slug = re.sub(r"[^a-z0-9]+", "-", req.name.lower()).strip("-") or "user"
+        _uid = f"usr-{_slug}-{len(self.user_profiles) + 1}"
+        _acc = next((a for a in self.accounts if a.id == req.account_id), self.accounts[0])
+        _perm_map = {
+            "CISO_EXEC": ["VIEW_ALL_ACCOUNTS", "UNMASK_SECRETS", "APPROVE_GOVERNANCE", "EXPORT_COMPLIANCE", "THREAT_MODELING"],
+            "APPSEC_ARCHITECT": ["FULL_ADMIN", "EDIT_RULE_PROFILES", "UNMASK_SECRETS", "TRIAGE_SUPPRESS", "MANAGE_ACCOUNTS", "RUN_SCANS", "THREAT_MODELING"],
+            "SECURITY_AUDITOR": ["RUN_SCANS", "UNMASK_SECRETS", "TRIAGE_SUPPRESS", "THREAT_MODELING"],
+            "DEVSECOPS_ENG": ["RUN_SCANS", "EDIT_RULE_PROFILES", "MANAGE_INTEGRATIONS"],
+            "DEVELOPER": ["VIEW_FINDINGS", "APPLY_BFL_PATCH"],
+        }
+        _new_usr = UserProfileRecord(
+            id=_uid,
+            name=req.name,
+            email=req.email,
+            role=req.role,
+            title=req.title,
+            account_id=_acc.id,
+            account_name=_acc.name,
+            avatar_color="cyan" if req.role == "APPSEC_ARCHITECT" else ("amber" if req.role == "CISO_EXEC" else "emerald"),
+            permissions=_perm_map.get(req.role, ["VIEW_FINDINGS"]),
+            is_active=False,
+        )
+        self.user_profiles.append(_new_usr)
+        self.account_audit_log.insert(0, {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "actor": next((u.name for u in self.user_profiles if u.is_active), "Admin"),
+            "account": _acc.name,
+            "action": f"Provisioned RBAC user profile '{req.name}' with role {req.role}",
+        })
+        return self.get_accounts_and_users_state()
+
+    def switch_user_or_account(self, req: SwitchUserOrAccountRequest) -> UserAccountsStateResponse:
+        if req.user_id:
+            for _u in self.user_profiles:
+                if _u.id == req.user_id:
+                    _u.is_active = True
+                    self.active_user_id = _u.id
+                    self.account_audit_log.insert(0, {
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "actor": f"{_u.name} ({_u.role})",
+                        "account": _u.account_name,
+                        "action": f"Switched active RBAC operator session to {_u.name} ({_u.title})",
+                    })
+                else:
+                    _u.is_active = False
+        if req.account_id is not None:
+            self.active_account_id = req.account_id
+            _acc_label = "All Accounts (Global View)" if req.account_id == "ALL" else next((a.name for a in self.accounts if a.id == req.account_id), req.account_id)
+            self.account_audit_log.insert(0, {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "actor": next((u.name for u in self.user_profiles if u.is_active), "Admin"),
+                "account": _acc_label,
+                "action": f"Switched workspace tenant scope to '{_acc_label}'",
+            })
+        if req.assign_project_id and req.target_account_id:
+            _t_acc = next((a for a in self.accounts if a.id == req.target_account_id), None)
+            if _t_acc:
+                for _p in self.projects:
+                    if _p.id == req.assign_project_id:
+                        _p.account_id = _t_acc.id
+                        _p.account_name = _t_acc.name
+                        self.account_audit_log.insert(0, {
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "actor": next((u.name for u in self.user_profiles if u.is_active), "Admin"),
+                            "account": _t_acc.name,
+                            "action": f"Assigned project '{_p.name}' to tenant account '{_t_acc.name}'",
+                        })
+        return self.get_accounts_and_users_state()
 
     # -----------------------------------------------------------------------
     # Integration Hub: Bug Tracking Linkage (Jira & GitHub Issues)

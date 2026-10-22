@@ -126,6 +126,13 @@ class Finding(BaseModel):
         "CONFIGURATION_EXPOSURE",
         "DORMANT_CODE_PATH"
     ] = "PROOF_OF_CONCEPT"
+    # Secret Keys & Credentials Detection Metadata
+    is_secret_finding: bool = False
+    secret_key_name: Optional[str] = None
+    secret_value_masked: Optional[str] = None
+    secret_value_raw: Optional[str] = None
+    secret_type: Optional[str] = None
+    secret_entropy: Optional[float] = None
 
 
 
@@ -338,6 +345,8 @@ class ProjectConfig(BaseModel):
     cpg_nodes_count: int = 0
     cpg_edges_count: int = 0
     is_active: bool = False
+    account_id: str = "acct-enterprise-hq"
+    account_name: str = "Enterprise Security HQ"
 
 
 class CreateProjectRequest(BaseModel):
@@ -532,6 +541,76 @@ class AddCustomSanitizerRequest(BaseModel):
     language: str = "All"
     target_cwe: str = "ALL"
     description: str = "Custom codebase sanitizer function"
+
+
+class CreateTestProfileRequest(BaseModel):
+    name: str
+    badge: str = "CUSTOM PROFILE"
+    description: str = "Custom security test profile"
+    enabled_engines: List[str] = Field(default_factory=lambda: ["SAST", "SCA", "IaC"])
+    enabled_rule_ids: List[str] = Field(default_factory=list)
+
+
+class BatchRuleSelectionRequest(BaseModel):
+    enabled_rule_ids: List[str] = Field(default_factory=list)
+    preset_id: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# 9. Enterprise User Profiling, RBAC & Multi-Tenant Account Separation
+# ---------------------------------------------------------------------------
+class TenantAccount(BaseModel):
+    id: str
+    name: str
+    division: str = "Enterprise Security"
+    compliance_tier: str = "SOC2 / ISO-27001 / PCI-DSS"
+    owner_email: str = "secops@enterprise.local"
+    isolation_mode: Literal["STRICT_TENANT", "SHARED_GOVERNANCE"] = "STRICT_TENANT"
+    project_count: int = 0
+
+
+class UserProfileRecord(BaseModel):
+    id: str
+    name: str
+    email: str
+    role: Literal["CISO_EXEC", "APPSEC_ARCHITECT", "SECURITY_AUDITOR", "DEVSECOPS_ENG", "DEVELOPER"] = "APPSEC_ARCHITECT"
+    title: str
+    account_id: str = "acct-enterprise-hq"
+    account_name: str = "Enterprise Security HQ"
+    avatar_color: str = "cyan"
+    permissions: List[str] = Field(default_factory=list)
+    is_active: bool = False
+
+
+class CreateAccountRequest(BaseModel):
+    name: str
+    division: str = "Core Engineering"
+    compliance_tier: str = "SOC2 Type II"
+    owner_email: str = "lead@enterprise.local"
+    isolation_mode: Literal["STRICT_TENANT", "SHARED_GOVERNANCE"] = "STRICT_TENANT"
+
+
+class CreateUserProfileRequest(BaseModel):
+    name: str
+    email: str
+    role: Literal["CISO_EXEC", "APPSEC_ARCHITECT", "SECURITY_AUDITOR", "DEVSECOPS_ENG", "DEVELOPER"] = "SECURITY_AUDITOR"
+    title: str = "Security Engineer"
+    account_id: str = "acct-enterprise-hq"
+
+
+class SwitchUserOrAccountRequest(BaseModel):
+    user_id: Optional[str] = None
+    account_id: Optional[str] = None
+    assign_project_id: Optional[str] = None
+    target_account_id: Optional[str] = None
+
+
+class UserAccountsStateResponse(BaseModel):
+    active_account_id: str = "ALL"
+    active_user_id: str = "usr-architect"
+    accounts: List[TenantAccount] = Field(default_factory=list)
+    users: List[UserProfileRecord] = Field(default_factory=list)
+    audit_log: List[Dict[str, str]] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

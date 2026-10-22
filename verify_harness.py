@@ -104,7 +104,20 @@ def ensure_frontend_running() -> subprocess.Popen:
 
 
 def run_assertions():
-    """Executes all 6 deterministic CPG assertions against API endpoints."""
+    """Executes all deterministic CPG, Enterprise UI, and Self-Audit assertions against API endpoints."""
+    # Preserve whichever project and preset the user currently has open in the UI
+    orig_projects = requests.get(f"{BACKEND_URL}/api/projects", timeout=15).json()
+    orig_active_proj = next((p for p in orig_projects if p.get("is_active")), None)
+    requests.put(
+        f"{BACKEND_URL}/api/settings",
+        json={
+            "scope": "GLOBAL",
+            "active_preset_id": "preset-optimized",
+            "enabled_engines": ["SAST", "SCA", "IaC"],
+        },
+        timeout=15,
+    )
+
     log("Step 1: Sending POST /api/scan pointing to ./synthetic_test_target...")
     target_scan_dir = os.path.join(ROOT_DIR, "synthetic_test_target")
     scan_resp = requests.post(
@@ -472,6 +485,30 @@ def run_assertions():
     log(
         f"PASS: Assertion Q (Track Changes verified: Last Scanned='{tc_data.get('last_scanned_at')}', Scan #{tc_data.get('scan_count')}, Fixed={tc_data.get('fixed_count')}, New={tc_data.get('new_count')}, Unchanged={tc_data.get('unchanged_count')})."
     )
+
+    # 17. Assertion R: Enterprise Call Graph, Entry Points Graph & Multi-Tenant Account/RBAC Separation
+    log("Verifying Assertion R: Call Graph (CALL_GRAPH), Entry Points Graph (ENTRYPOINT_GRAPH) & Multi-Tenant RBAC (/api/accounts)...")
+    cg_resp = requests.get(f"{BACKEND_URL}/api/graph", params={"view_mode": "CALL_GRAPH"}, timeout=20)
+    assert cg_resp.status_code == 200, f"Assertion R FAILED: CALL_GRAPH returned {cg_resp.status_code}"
+    cg_data = cg_resp.json()
+    assert len(cg_data.get("nodes", [])) >= 5, f"Assertion R FAILED: Expected CALL_GRAPH nodes >= 5, got {len(cg_data.get('nodes', []))}"
+
+    ep_resp = requests.get(f"{BACKEND_URL}/api/graph", params={"view_mode": "ENTRYPOINT_GRAPH"}, timeout=20)
+    assert ep_resp.status_code == 200, f"Assertion R FAILED: ENTRYPOINT_GRAPH returned {ep_resp.status_code}"
+    ep_data = ep_resp.json()
+    assert len(ep_data.get("nodes", [])) >= 3, f"Assertion R FAILED: Expected ENTRYPOINT_GRAPH nodes >= 3, got {len(ep_data.get('nodes', []))}"
+
+    acct_resp = requests.get(f"{BACKEND_URL}/api/accounts", timeout=15)
+    assert acct_resp.status_code == 200, f"Assertion R FAILED: /api/accounts returned {acct_resp.status_code}"
+    acct_data = acct_resp.json()
+    assert len(acct_data.get("accounts", [])) >= 3 and len(acct_data.get("users", [])) >= 5, "Assertion R FAILED: Missing multi-tenant accounts or RBAC user profiles!"
+    log(
+        f"PASS: Assertion R (CALL_GRAPH={len(cg_data['nodes'])} nodes, ENTRYPOINT_GRAPH={len(ep_data['nodes'])} nodes, Accounts={len(acct_data['accounts'])}, RBAC Users={len(acct_data['users'])})."
+    )
+
+    # Restore previously active user project if one was selected
+    if orig_active_proj and orig_active_proj.get("id"):
+        requests.post(f"{BACKEND_URL}/api/projects/{orig_active_proj['id']}/activate", timeout=15)
 
 
 def main():

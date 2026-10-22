@@ -272,18 +272,6 @@ export function TopMetricsBar() {
     }
   };
 
-  // Detect target badge type
-  const targetBadge = (() => {
-    const v = inputPath.trim();
-    if (v.startsWith("http://") || v.startsWith("https://") || v.startsWith("git@")) {
-      return { label: "URL", color: "bg-indigo-950 text-indigo-300 border-indigo-700" };
-    }
-    if (/\.(py|js|jsx|ts|tsx|json|yaml|yml|html)$/i.test(v)) {
-      return { label: "FILE", color: "bg-emerald-950 text-emerald-300 border-emerald-700" };
-    }
-    return { label: "FOLDER", color: "bg-cyan-950 text-cyan-300 border-cyan-800" };
-  })();
-
   const detectedTech = appTree?.detected_tech_stack || metrics?.tech_stack || [];
   const totalFiles = appTree?.total_files || metrics?.total_app_files || 0;
 
@@ -307,262 +295,125 @@ export function TopMetricsBar() {
 
   return (
     <div className="flex flex-col border-b border-zinc-800 bg-zinc-950/95 select-none relative z-40">
-      {/* Primary Top Bar */}
-      <header className="h-14 px-4 flex items-center justify-between gap-3">
-        {/* Left: Brand & Clean 5-Tab Workspace Navigation */}
+      {/* Primary Top Bar (Decluttered Enterprise Header) */}
+      <header className="h-12 px-4 flex items-center justify-between gap-3">
+        {/* Left: Brand + Active Workspace Breadcrumb */}
         <div className="flex items-center gap-3 shrink-0">
           <AlastorBrandHeader />
 
-          {/* 5-Module Workspace Switcher */}
-          <div className="flex items-center bg-zinc-900/90 border border-zinc-800 rounded-xl p-1 text-xs font-medium gap-0.5">
-            <button
-              type="button"
-              onClick={() => setWorkspaceViewMode("PROJECTS_HUB")}
-              title="1. Projects & Saved Scans Hub (Switch apps, view saved scan snapshots, or add repository)"
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all ${
-                workspaceViewMode === "PROJECTS_HUB"
-                  ? "bg-cyan-950 text-cyan-300 border border-cyan-700/80 font-bold shadow-sm"
-                  : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60"
-              }`}
-            >
-              <FolderGit2 className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Projects</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setWorkspaceViewMode("DEEP_DIVE")}
-              title="2. Overview & Deep-Dive Analytics (Security Posture, OWASP/SANS Compliance, Fix First List)"
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all ${
-                workspaceViewMode === "DEEP_DIVE"
-                  ? "bg-indigo-950 text-indigo-300 border border-indigo-700/80 font-bold shadow-sm"
-                  : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60"
-              }`}
-            >
-              <PieChart className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Overview</span>
-            </button>
+          {/* Clean Workspace Quick Pills */}
+          <div className="hidden xl:flex items-center bg-zinc-900/90 border border-zinc-800 rounded-xl p-0.5 text-[11px] font-semibold gap-0.5">
             <button
               type="button"
               onClick={() => setWorkspaceViewMode("REMEDIATION_IDE")}
-              title="3. Code & Graph Review Workspace (Findings, Source Code, Plain-English Fixes & CPG Graph)"
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all ${
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all ${
                 workspaceViewMode === "REMEDIATION_IDE"
-                  ? "bg-emerald-950 text-emerald-300 border border-emerald-700/80 font-bold shadow-sm"
-                  : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60"
+                  ? "bg-amber-500/20 text-amber-300 border border-amber-500/50 font-bold"
+                  : "text-zinc-400 hover:text-zinc-100"
               }`}
             >
-              <Code2 className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Code &amp; Graph</span>
+              <Code2 className="w-3.5 h-3.5 text-amber-400" />
+              <span>Code &amp; CPG</span>
             </button>
             <button
               type="button"
-              onClick={() => setWorkspaceViewMode("RACI_GOVERNANCE")}
-              title="4. RACI Governance & Role Accountability Matrix (Responsible, Accountable, Consulted, Informed)"
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all ${
-                workspaceViewMode === "RACI_GOVERNANCE"
-                  ? "bg-amber-950 text-amber-300 border border-amber-700/80 font-bold shadow-sm"
-                  : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60"
+              onClick={() => setWorkspaceViewMode("THREAT_MODELING")}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all ${
+                workspaceViewMode === "THREAT_MODELING"
+                  ? "bg-rose-500/20 text-rose-300 border border-rose-500/50 font-bold"
+                  : "text-zinc-400 hover:text-zinc-100"
               }`}
             >
-              <Users className="w-3.5 h-3.5 text-amber-400" />
-              <span>RACI</span>
+              <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+              <span>Threat Modeling</span>
             </button>
             <button
               type="button"
-              onClick={() => setWorkspaceViewMode("SAST_PLUS_SUITE")}
-              title="5. SAST++++++ Suite (Plain-English Risk Translator, Live SBOM, Attack Surface, Roadmap & Academy)"
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all ${
-                workspaceViewMode === "SAST_PLUS_SUITE"
-                  ? "bg-rose-950 text-rose-300 border border-rose-700/80 font-bold shadow-sm"
-                  : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60"
+              onClick={() => setWorkspaceViewMode("RULE_ENGINE_PROFILES")}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all ${
+                workspaceViewMode === "RULE_ENGINE_PROFILES"
+                  ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/50 font-bold"
+                  : "text-zinc-400 hover:text-zinc-100"
               }`}
             >
-              <Sparkles className="w-3.5 h-3.5 text-rose-400" />
-              <span>SAST++++++</span>
+              <SlidersHorizontal className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Rule Profiles</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setWorkspaceViewMode("USER_PROFILES")}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all ${
+                workspaceViewMode === "USER_PROFILES"
+                  ? "bg-violet-500/20 text-violet-300 border border-violet-500/50 font-bold"
+                  : "text-zinc-400 hover:text-zinc-100"
+              }`}
+            >
+              <Users className="w-3.5 h-3.5 text-violet-400" />
+              <span>Accounts</span>
             </button>
           </div>
         </div>
 
-        {/* Center: Target Picker, Scan & Global Quick Find (Streamlined in Simple Mode, Expanded in Pro Mode) */}
-        {uiDensityMode === "SIMPLE_CLEAN" ? (
-          <div className="flex items-center gap-2 flex-1 max-w-xl justify-center">
-            {/* Clean 1-Click Target Browser Button */}
-            <button
-              type="button"
-              onClick={() => openPickerModal("FOLDER")}
-              title="Browse and select any Folder, Single File, URL/Git Repo, or Upload Code to scan"
-              className="px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-medium text-zinc-200 flex items-center gap-2 transition-colors shrink-0"
-            >
-              <FolderOpen className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Select Target...</span>
-            </button>
+        {/* Center: Streamlined Target Selector + Scan + Quick Command */}
+        <div className="flex items-center gap-2 flex-1 max-w-2xl justify-center">
+          <button
+            type="button"
+            onClick={() => openPickerModal("FOLDER")}
+            title="Select Folder, Single File, URL/Git Repo, or Upload Code"
+            className="px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-medium text-zinc-200 flex items-center gap-2 transition-colors shrink-0 max-w-[260px]"
+          >
+            <FolderOpen className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+            <span className="font-mono text-[11px] truncate">
+              {(projectPath || "Select Target...")
+                .replace(/[\\/]+$/, "")
+                .split(/[\\/]/)
+                .pop() || "Select Target..."}
+            </span>
+            <ChevronDown className="w-3 h-3 text-zinc-500 shrink-0" />
+          </button>
 
-            {/* Primary Scan Action */}
-            <button
-              type="button"
-              disabled={isScanning}
-              onClick={() => handleSelectAndScan(inputPath || projectPath)}
-              title="Run CPG SAST + SCA + Secrets Scan on the active target"
-              className="bg-cyan-600 hover:bg-cyan-500 disabled:bg-zinc-800 text-white font-semibold text-xs px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 transition-colors shadow-sm shadow-cyan-900/50 shrink-0"
-            >
-              {isScanning ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-200" />
-                  <span>Scanning {percent}%</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-3.5 h-3.5 fill-current" />
-                  <span>Scan</span>
-                </>
-              )}
-            </button>
+          <button
+            type="button"
+            disabled={isScanning}
+            onClick={() => handleSelectAndScan(inputPath || projectPath)}
+            title="Run CPG SAST + SCA + Secret Keys Scan on the active target"
+            className="bg-cyan-600 hover:bg-cyan-500 disabled:bg-zinc-800 text-white font-semibold text-xs px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 transition-colors shadow-sm shadow-cyan-900/50 shrink-0"
+          >
+            {isScanning ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-200" />
+                <span>Scanning {percent}%</span>
+              </>
+            ) : (
+              <>
+                <Play className="w-3.5 h-3.5 fill-current" />
+                <span>Scan Target</span>
+              </>
+            )}
+          </button>
 
-            {/* Global Quick Find & Command Palette Trigger (Ctrl+K) */}
-            <button
-              type="button"
-              onClick={() => setQuickCommandOpen(true)}
-              title="Search any feature, page, scan action, export, finding, or file (Ctrl+K)"
-              className="flex-1 max-w-xs px-3 py-1.5 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-400 hover:text-zinc-200 flex items-center justify-between gap-2 transition-colors"
-            >
-              <span className="flex items-center gap-2 truncate">
-                <Search className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                <span className="truncate">Quick Find / All Actions...</span>
-              </span>
-              <kbd className="px-1.5 py-0.5 rounded bg-zinc-950 border border-zinc-800 text-[10px] font-mono text-zinc-400 shrink-0">
-                Ctrl+K
-              </kbd>
-            </button>
-          </div>
-        ) : (
-          <form onSubmit={handleScan} className="flex items-center gap-1.5 flex-1 max-w-2xl">
-            <div className="flex items-center bg-zinc-900 border border-zinc-800 rounded-md p-0.5 shrink-0">
-              <button
-                type="button"
-                onClick={() => openPickerModal("FOLDER")}
-                title="Browse & Select a Local Project Folder"
-                className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium text-cyan-300 hover:bg-zinc-800 transition-colors"
-              >
-                <FolderOpen className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Folder</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => openPickerModal("FILE")}
-                title="Browse & Select a Single Source File"
-                className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium text-emerald-300 hover:bg-zinc-800 transition-colors"
-              >
-                <FileText className="w-3.5 h-3.5 text-emerald-400" />
-                <span>File</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => openPickerModal("URL")}
-                title="Scan a Remote URL, GitHub Repo, or Webpage"
-                className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium text-indigo-300 hover:bg-zinc-800 transition-colors"
-              >
-                <Link2 className="w-3.5 h-3.5 text-indigo-400" />
-                <span>URL</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => openPickerModal("UPLOAD")}
-                title="Upload Local File(s) or Paste Code Snippet"
-                className="flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium text-amber-300 hover:bg-zinc-800 transition-colors"
-              >
-                <Upload className="w-3.5 h-3.5 text-amber-400" />
-                <span className="hidden xl:inline">Upload</span>
-              </button>
-            </div>
+          <button
+            type="button"
+            onClick={() => setQuickCommandOpen(true)}
+            title="Quick Find & Command Palette (Ctrl+K)"
+            className="hidden md:flex flex-1 max-w-xs px-3 py-1.5 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-400 hover:text-zinc-200 items-center justify-between gap-2 transition-colors"
+          >
+            <span className="flex items-center gap-2 truncate">
+              <Search className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+              <span className="truncate">Search findings, files, commands...</span>
+            </span>
+            <kbd className="px-1.5 py-0.5 rounded bg-zinc-950 border border-zinc-800 text-[10px] font-mono text-zinc-400 shrink-0">
+              Ctrl+K
+            </kbd>
+          </button>
+        </div>
 
-            <div className="relative flex-1 min-w-[160px]">
-              <span
-                className={`absolute left-2 top-1/2 -translate-y-1/2 text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border ${targetBadge.color}`}
-              >
-                {targetBadge.label}
-              </span>
-              <input
-                type="text"
-                list="common-scan-targets"
-                value={inputPath}
-                onChange={(e) => setInputPath(e.target.value)}
-                placeholder="Select Folder, File, or URL (https://...)..."
-                className="w-full bg-zinc-900 border border-zinc-800 rounded-md pl-16 pr-7 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 font-mono focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-              />
-              <button
-                type="button"
-                onClick={() => openPickerModal("FOLDER")}
-                title="Open Visual Target Browser"
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 text-zinc-400 hover:text-cyan-300 rounded"
-              >
-                <ChevronDown className="w-3.5 h-3.5" />
-              </button>
-              <datalist id="common-scan-targets">
-                {recentTargets.map((rt) => (
-                  <option key={rt} value={rt} />
-                ))}
-              </datalist>
-            </div>
-
-            <button
-              type="submit"
-              disabled={isScanning}
-              className="bg-cyan-600 hover:bg-cyan-500 disabled:bg-zinc-800 text-white font-semibold text-xs px-3 py-1.5 rounded-md flex items-center gap-1.5 transition-colors shadow-sm shadow-cyan-900/50 shrink-0"
-            >
-              {isScanning ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
-                  <span>{percent}%</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-3.5 h-3.5 fill-current" />
-                  <span>Scan</span>
-                </>
-              )}
-            </button>
-
-            <button
-              type="button"
-              disabled={isExtractingIntel}
-              onClick={() => {
-                setActiveSidebarTab("SITE_EXTRACTOR");
-                extractAndScanFromSites({
-                  sources: ["osv", "nvd", "cisa_owasp"],
-                  customUrls: inputPath.startsWith("http") ? [inputPath] : [],
-                });
-              }}
-              title="Pull live advisories from OSV.dev, NIST NVD, MITRE CWE & OWASP"
-              className="bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-700/80 text-indigo-200 font-medium text-xs px-2.5 py-1.5 rounded-md flex items-center gap-1.5 transition-colors shrink-0"
-            >
-              {isExtractingIntel ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
-              ) : (
-                <Globe className="w-3.5 h-3.5 text-indigo-400" />
-              )}
-              <span className="hidden lg:inline">Web Vulns</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setGraphFullscreen(true)}
-              title="Open Full-Screen Graph Presentation View"
-              className="bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-700/80 text-cyan-200 font-medium text-xs px-2.5 py-1.5 rounded-md flex items-center gap-1.5 transition-colors shrink-0"
-            >
-              <Maximize2 className="w-3.5 h-3.5 text-cyan-400" />
-              <span className="hidden xl:inline">Present</span>
-            </button>
-          </form>
-        )}
-
-        {/* Right: Clean Posture Summary, Simple/Pro Mode Switch, Menus Toggle, Export & Settings */}
+        {/* Right: Findings Summary Pill & Theme Switcher */}
         <div className="flex items-center gap-2 shrink-0">
-          {/* Unified Findings Posture Pill */}
           {(metrics?.total_findings ?? 0) === 0 ? (
             <button
               type="button"
               onClick={() => setWorkspaceViewMode("DEEP_DIVE")}
-              title="0 Active Vulnerabilities — Click to view full Executive Posture Summary"
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-950/70 border border-emerald-700/70 text-emerald-300 text-xs font-semibold"
             >
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
@@ -572,7 +423,6 @@ export function TopMetricsBar() {
             <button
               type="button"
               onClick={() => setWorkspaceViewMode("REMEDIATION_IDE")}
-              title="Click to inspect findings in Code & Graph Review"
               className="flex items-center gap-2 px-2.5 py-1 rounded-xl bg-rose-950/60 border border-rose-800/80 text-xs font-mono"
             >
               <span className="text-red-300 font-bold flex items-center gap-1">
@@ -590,146 +440,7 @@ export function TopMetricsBar() {
             </button>
           )}
 
-          {/* Simple Clean vs Pro Detailed View Mode Switcher */}
-          <button
-            type="button"
-            onClick={() =>
-              setUiDensityMode(
-                uiDensityMode === "SIMPLE_CLEAN" ? "PRO_DETAILED" : "SIMPLE_CLEAN"
-              )
-            }
-            title="Switch between Simple Clean View (streamlined layout) and Pro Detailed View (all toolbars & ribbons expanded)"
-            className={`px-2.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all ${
-              uiDensityMode === "SIMPLE_CLEAN"
-                ? "bg-emerald-950/70 hover:bg-emerald-900/80 border-emerald-700/70 text-emerald-300"
-                : "bg-amber-950/70 hover:bg-amber-900/80 border-amber-700/70 text-amber-300"
-            }`}
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5" />
-            <span>{uiDensityMode === "SIMPLE_CLEAN" ? "✨ Simple View" : "🎛️ Pro View"}</span>
-          </button>
-
-          {/* Toggle Full Desktop Menu & Quick Settings Ribbon */}
-          <button
-            type="button"
-            onClick={() => setMenuBarExpanded(!isMenuBarExpanded)}
-            title="Show or hide the full SAST++++++ Desktop Menu Bar & Quick Settings Ribbon"
-            className={`px-2.5 py-1.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 transition-colors ${
-              isMenuBarExpanded
-                ? "bg-cyan-950 text-cyan-300 border-cyan-700"
-                : "bg-zinc-900 hover:bg-zinc-800 border-zinc-700 text-zinc-300"
-            }`}
-          >
-            <Menu className="w-3.5 h-3.5 text-cyan-400" />
-            <span className="hidden xl:inline">Menus</span>
-          </button>
-
-          {/* Export Report Dropdown */}
-          <div className="relative shrink-0">
-            <button
-              type="button"
-              onClick={() => setShowExportMenu((v) => !v)}
-              title="Download Security Audit Report (Markdown, JSON, or SARIF)"
-              className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 font-medium text-xs px-2.5 py-1.5 rounded-xl flex items-center gap-1 transition-colors"
-            >
-              <Download className="w-3.5 h-3.5 text-cyan-400" />
-              <span className="hidden lg:inline">Export</span>
-              <ChevronDown className="w-3 h-3 text-zinc-400" />
-            </button>
-
-            {showExportMenu && (
-              <div className="absolute right-0 mt-1.5 w-60 rounded-xl bg-zinc-950 border border-zinc-700 shadow-2xl p-1.5 z-50 space-y-1 text-left">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowExportMenu(false);
-                    exportAuditReport("markdown");
-                  }}
-                  className="w-full p-2 rounded-lg hover:bg-zinc-900 flex flex-col gap-0.5 text-left"
-                >
-                  <span className="text-xs font-semibold text-zinc-100">
-                    Markdown Audit Report (.md)
-                  </span>
-                  <span className="text-[10px] text-zinc-400">
-                    Human-readable executive summary, stories &amp; fixes
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowExportMenu(false);
-                    exportAuditReport("json");
-                  }}
-                  className="w-full p-2 rounded-lg hover:bg-zinc-900 flex flex-col gap-0.5 text-left"
-                >
-                  <span className="text-xs font-semibold text-zinc-100">
-                    JSON Full Data (.json)
-                  </span>
-                  <span className="text-[10px] text-zinc-400">
-                    Machine-readable findings, metrics &amp; advisories
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowExportMenu(false);
-                    exportAuditReport("sarif");
-                  }}
-                  className="w-full p-2 rounded-lg hover:bg-zinc-900 flex flex-col gap-0.5 text-left"
-                >
-                  <span className="text-xs font-semibold text-zinc-100">
-                    GitHub / IDE SARIF (.sarif.json)
-                  </span>
-                  <span className="text-[10px] text-zinc-400">
-                    Standard static analysis format for CI/CD pipelines
-                  </span>
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Integration Hub (Jira / GitHub Issues) Button */}
-          <button
-            type="button"
-            onClick={() => setIntegrationModalOpen(true)}
-            title="Integration Hub: Connect Jira & GitHub Issues"
-            className="px-2.5 py-1.5 rounded-xl border bg-indigo-950/80 hover:bg-indigo-900 border-indigo-700/80 text-indigo-200 text-xs font-medium flex items-center gap-1 transition-colors"
-          >
-            <Ticket className="w-3.5 h-3.5 text-indigo-400" />
-            <span className="hidden 2xl:inline">Tickets</span>
-            {integrationState?.tickets && integrationState.tickets.length > 0 && (
-              <span className="px-1 py-0.1 rounded bg-indigo-900 text-[9px] font-mono font-bold text-white">
-                {integrationState.tickets.length}
-              </span>
-            )}
-          </button>
-
-          {/* Theme & Light Mode Switcher */}
           <AlastorThemeSwitcher />
-
-          {/* Gear Icon: Settings, Presets, Query Viewer & Customization Engine */}
-          <button
-            type="button"
-            onClick={() => setSettingsModalOpen(true)}
-            title="Settings & Customization (Scan Presets, Global vs Project Overrides, Query Viewer, Custom Sanitizers)"
-            className="p-1.5 rounded-xl border bg-zinc-900 hover:bg-zinc-800 border-zinc-700 text-zinc-200 hover:text-cyan-300 flex items-center gap-1 transition-colors"
-          >
-            <Settings className="w-4 h-4 text-cyan-400" />
-          </button>
-
-          {/* Interactive How-It-Works Guide Button */}
-          <button
-            type="button"
-            onClick={() => setShowQuickGuide((v) => !v)}
-            title="Show/Hide Quick 4-Step Guide"
-            className={`p-1.5 rounded-xl border text-xs font-medium flex items-center gap-1 transition-colors ${
-              showQuickGuide
-                ? "bg-cyan-950 text-cyan-300 border-cyan-700"
-                : "bg-zinc-900 text-zinc-300 border-zinc-700 hover:bg-zinc-800"
-            }`}
-          >
-            <Info className="w-4 h-4 text-cyan-400" />
-          </button>
         </div>
       </header>
 

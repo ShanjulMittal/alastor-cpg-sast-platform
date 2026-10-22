@@ -137,6 +137,12 @@ export interface Finding {
   epss_percentile?: number;
   cisa_kev_listed?: boolean;
   exploit_maturity?: string;
+  is_secret_finding?: boolean;
+  secret_key_name?: string | null;
+  secret_value_masked?: string | null;
+  secret_value_raw?: string | null;
+  secret_type?: string | null;
+  secret_entropy?: number | null;
 }
 
 export interface ExtractedAdvisory {
@@ -236,12 +242,16 @@ export type GraphViewMode =
   | "FINDING_PATH"
   | "FULL_CPG"
   | "CALL_GRAPH"
+  | "ENTRYPOINT_GRAPH"
   | "DFG_ONLY"
   | "CFG_ONLY"
   | "APP_TREE";
 
 export type WorkspaceViewMode =
   | "REMEDIATION_IDE"
+  | "THREAT_MODELING"
+  | "RULE_ENGINE_PROFILES"
+  | "USER_PROFILES"
   | "PROJECTS_HUB"
   | "DEEP_DIVE"
   | "RACI_GOVERNANCE"
@@ -310,6 +320,8 @@ export interface ProjectConfig {
   cpg_nodes_count?: number;
   cpg_edges_count?: number;
   is_active: boolean;
+  account_id?: string;
+  account_name?: string;
 }
 
 export interface AgingBucket {
@@ -696,4 +708,55 @@ export interface TrackChangesSummary {
   scan_history: ScanSnapshotRecord[];
   status_headline: string;
 }
+
+// ---------------------------------------------------------------------------
+// 9. User Profiling, RBAC & Multi-Tenant Account Separation Interfaces
+// ---------------------------------------------------------------------------
+export interface TenantAccount {
+  id: string;
+  name: string;
+  organization_unit: string;
+  environment_tier: string;
+  isolation_mode: "STRICT" | "SHARED_READ" | string;
+  assigned_project_ids: string[];
+  allowed_preset_ids: string[];
+  compliance_mandate: string;
+  created_at: string;
+}
+
+export interface UserProfileRecord {
+  id: string;
+  name: string;
+  email: string;
+  role: "APPSEC_ARCHITECT" | "CISO_EXEC" | "SECURITY_AUDITOR" | "DEVSECOPS_ENG" | "DEVELOPER" | string;
+  title: string;
+  department: string;
+  account_id: string;
+  account_name: string;
+  clearance_level: string;
+  permissions: string[];
+  default_test_profile_id: string;
+  can_reveal_secrets: boolean;
+  can_edit_rules: boolean;
+  can_triage_findings: boolean;
+  can_manage_accounts: boolean;
+  avatar_badge: string;
+  last_active_at: string;
+  is_active: boolean;
+}
+
+export interface UserAccountsStateResponse {
+  active_account_id: string;
+  active_user_id: string;
+  accounts: TenantAccount[];
+  users: UserProfileRecord[];
+  audit_log: Array<{
+    timestamp: string;
+    actor: string;
+    action: string;
+    account: string;
+    details: string;
+  }>;
+}
+
 

@@ -31,7 +31,10 @@ from models import (
     UpdateTicketRequest, TestConnectionRequest, TestConnectionResponse,
     IntegrationHubStateResponse,
     RaciGovernanceResponse, UpdateRaciCellRequest, UpdateFindingRaciOwnerRequest,
-    SastPlusSuiteResponse, ScanSnapshotRecord, TrackChangesSummary
+    SastPlusSuiteResponse, ScanSnapshotRecord, TrackChangesSummary,
+    CreateTestProfileRequest, BatchRuleSelectionRequest,
+    CreateAccountRequest, CreateUserProfileRequest, SwitchUserOrAccountRequest,
+    UserAccountsStateResponse
 )
 from database.neo4j_client import Neo4jClient
 from database.batch_ingestor import BatchIngestor
@@ -1452,7 +1455,7 @@ def get_node_at_location(filepath: str = Query(...), line: int = Query(...)):
 
 @app.get("/api/graph")
 def get_graph(
-    view_mode: str = Query("FINDING_PATH", description="FULL_CPG, DFG_ONLY, CFG_ONLY, CALL_GRAPH, FINDING_PATH, APP_TREE"),
+    view_mode: str = Query("FINDING_PATH", description="FULL_CPG, DFG_ONLY, CFG_ONLY, CALL_GRAPH, ENTRYPOINT_GRAPH, FINDING_PATH, APP_TREE"),
     finding_id: Optional[str] = Query(None),
     filepath: Optional[str] = Query(None)
 ):
@@ -1465,6 +1468,130 @@ def get_graph(
             if f.id == finding_id:
                 return {"nodes": f.path_nodes, "edges": f.path_edges}
         return {"nodes": [], "edges": []}
+
+    if view_mode == "ENTRYPOINT_GRAPH":
+        _target_dir = current_scan_dir or enterprise_mgr.platform_root
+        _findings = get_or_compute_findings()
+        _suite = enterprise_mgr.get_sast_plus_suite(_target_dir, _findings)
+        _ep_nodes: List[Dict[str, Any]] = []
+        _ep_edges: List[Dict[str, Any]] = []
+        _seen_nid = set()
+
+        # Root Ingress Gateway Node
+        _app_label = os.path.basename(os.path.abspath(_target_dir)) or "Application"
+        _gw_id = f"ep-gateway:{_app_label}"
+        _ep_nodes.append({
+            "id": _gw_id,
+            "label": "Entry",
+            "ast_type": "ingress_gateway",
+            "name": f"🌐 External Attack Surface ({_app_label})",
+            "code": f"{len(_suite.endpoints)} Discovered Entrypoints • {len(_findings)} Active Findings",
+            "filepath": _app_label,
+            "start_line": 1,
+            "end_line": 1,
+            "start_col": 0,
+            "end_col": 10,
+            "scope_id": "ingress",
+            "is_source": True,
+            "is_sink": False,
+            "is_sanitizer": False,
+        })
+        _seen_nid.add(_gw_id)
+
+        for _idx, _ep in enumerate(_suite.endpoints[:24]):
+            _ep_id = f"ep-route:{_ep.id}:{_idx}"
+            if _ep_id not in _seen_nid:
+                _seen_nid.add(_ep_id)
+                _ep_nodes.append({
+                    "id": _ep_id,
+                    "label": "Entry",
+                    "ast_type": "http_entrypoint",
+                    "name": f"[{_ep.method}] {_ep.route_path}",
+                    "code": f"Handler: {_ep.handler_name}() • {_ep.auth_posture}",
+                    "filepath": _ep.filepath,
+                    "start_line": _ep.line_number,
+                    "end_line": _ep.line_number,
+                    "start_col": 0,
+                    "end_col": 40,
+                    "scope_id": _ep.filepath,
+                    "is_source": True,
+                    "is_sink": False,
+                    "is_sanitizer": False,
+                })
+                _ep_edges.append({
+                    "id": f"ep-edge-gw-{_idx}",
+                    "source": _gw_id,
+                    "target": _ep_id,
+                    "type": "CFG_NEXT",
+                    "var_name": _ep.method,
+                })
+
+            _fn_id = f"ep-handler:{_ep.filepath}:{_ep.handler_name}:{_ep.line_number}"
+            if _fn_id not in _seen_nid:
+                _seen_nid.add(_fn_id)
+                _ep_nodes.append({
+                    "id": _fn_id,
+                    "label": "Function",
+                    "ast_type": "function_definition",
+                    "name": f"{_ep.handler_name}()",
+                    "code": _ep.plain_english_purpose or f"Controller in {_ep.filepath}:L{_ep.line_number}",
+                    "filepath": _ep.filepath,
+                    "start_line": _ep.line_number,
+                    "end_line": _ep.line_number,
+                    "start_col": 0,
+                    "end_col": 40,
+                    "scope_id": _ep.filepath,
+                    "is_source": False,
+                    "is_sink": _ep.linked_findings_count > 0,
+                    "is_sanitizer": False,
+                })
+            _ep_edges.append({
+                "id": f"ep-edge-fn-{_idx}",
+                "source": _ep_id,
+                "target": _fn_id,
+                "type": "CALLS",
+                "var_name": "dispatches",
+            })
+
+            # Connect handler to any findings in the same file
+            _file_flaws = [
+                _fl for _fl in _findings
+                if any(
+                    (_pn.get("filepath") or "") == _ep.filepath
+                    or (_ep.filepath or "").endswith(_pn.get("filepath") or "__none__")
+                    for _pn in (_fl.path_nodes or [])
+                )
+            ]
+            for _f_idx, _fl in enumerate(_file_flaws[:2]):
+                _sink_n = (_fl.path_nodes or [{}])[-1]
+                _sink_id = f"ep-sink:{_fl.id}"
+                if _sink_id not in _seen_nid:
+                    _seen_nid.add(_sink_id)
+                    _ep_nodes.append({
+                        "id": _sink_id,
+                        "label": "Call",
+                        "ast_type": "vulnerable_sink",
+                        "name": f"🚨 [{_fl.severity}] {_fl.rule_id}",
+                        "code": str(_sink_n.get("code") or _fl.title)[:100],
+                        "filepath": str(_sink_n.get("filepath") or _ep.filepath),
+                        "start_line": int(_sink_n.get("start_line") or _ep.line_number),
+                        "end_line": int(_sink_n.get("end_line") or _ep.line_number),
+                        "start_col": 0,
+                        "end_col": 40,
+                        "scope_id": _ep.filepath,
+                        "is_source": False,
+                        "is_sink": True,
+                        "is_sanitizer": False,
+                    })
+                _ep_edges.append({
+                    "id": f"ep-edge-sink-{_idx}-{_f_idx}",
+                    "source": _fn_id,
+                    "target": _sink_id,
+                    "type": "DFG_FLOWS_TO",
+                    "var_name": _fl.cwe_id or "taint",
+                })
+
+        return {"nodes": _ep_nodes, "edges": _ep_edges}
 
     with neo4j_client.driver.session() as session:
         if view_mode == "APP_TREE":
@@ -1503,7 +1630,7 @@ def get_graph(
         where_clauses = []
         if filepath:
             norm_fp = filepath.replace("\\", "/").lstrip("/")
-            where_clauses.append("(s.filepath ENDS WITH $filepath OR $filepath ENDS WITH s.filepath)")
+            where_clauses.append("(s.filepath ENDS WITH $filepath OR $filepath ENDS WITH s.filepath OR t.filepath ENDS WITH $filepath)")
             params["filepath"] = norm_fp
 
         where_stmt = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
@@ -1517,26 +1644,49 @@ def get_graph(
         else:
             rel_filter = ""
 
-        if rel_filter:
-            q = f"""
-            MATCH (s:CPGNode)-[r{rel_filter}]->(t:CPGNode)
-            {where_stmt}
-            WITH s, r, t LIMIT 150
-            RETURN collect(DISTINCT properties(s)) + collect(DISTINCT properties(t)) AS all_nodes,
-                   collect(DISTINCT {{id: r.id, source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS all_edges
-            """
-        else:
-            q = f"""
+        def _run_cpg_graph_query(_w_stmt: str, _q_params: Dict[str, Any]):
+            if view_mode == "CALL_GRAPH":
+                _cg_q = f"""
+                MATCH (s:CPGNode)-[r:CALLS]->(t:CPGNode)
+                {_w_stmt}
+                OPTIONAL MATCH (callerFn:Function)-[:AST_CHILD*1..4]->(s)
+                WITH callerFn, s, r, t LIMIT 100
+                WITH collect(DISTINCT properties(s)) AS s_nodes,
+                     collect(DISTINCT properties(t)) AS t_nodes,
+                     [cf IN collect(DISTINCT callerFn) WHERE cf IS NOT NULL | properties(cf)] AS cf_nodes,
+                     collect(DISTINCT {{id: r.id, source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS call_edges,
+                     [ce IN collect(DISTINCT CASE WHEN callerFn IS NOT NULL THEN {{id: 'def-' + callerFn.id + '-' + s.id, source: callerFn.id, target: s.id, type: 'DEFINES', var_name: 'calls'}} ELSE NULL END) WHERE ce IS NOT NULL] AS def_edges
+                RETURN (s_nodes + t_nodes + cf_nodes) AS all_nodes,
+                       (call_edges + def_edges) AS all_edges
+                """
+                return session.run(_cg_q, **_q_params).single()
+            if rel_filter:
+                _std_q = f"""
+                MATCH (s:CPGNode)-[r{rel_filter}]->(t:CPGNode)
+                {_w_stmt}
+                WITH s, r, t LIMIT 120
+                RETURN collect(DISTINCT properties(s)) + collect(DISTINCT properties(t)) AS all_nodes,
+                       collect(DISTINCT {{id: r.id, source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS all_edges
+                """
+                return session.run(_std_q, **_q_params).single()
+            _full_q = f"""
             MATCH (s:CPGNode)-[r]->(t:CPGNode)
-            {where_stmt}
-            WITH s, r, t LIMIT 150
+            {_w_stmt}
+            WITH s, r, t LIMIT 120
             RETURN collect(DISTINCT properties(s)) + collect(DISTINCT properties(t)) AS all_nodes,
                    collect(DISTINCT {{id: r.id, source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS all_edges
             """
+            return session.run(_full_q, **_q_params).single()
 
-        result = session.run(q, **params).single()
+        result = _run_cpg_graph_query(where_stmt, params)
         raw_nodes = result["all_nodes"] if result else []
         raw_edges = result["all_edges"] if result else []
+
+        # If active file is a manifest/config or has 0 edges for this view_mode, fall back to Project-Wide graph!
+        if not raw_edges and where_stmt:
+            result = _run_cpg_graph_query("", {})
+            raw_nodes = result["all_nodes"] if result else []
+            raw_edges = result["all_edges"] if result else []
 
         # Deduplicate
         unique_nodes = {}
@@ -1550,8 +1700,71 @@ def get_graph(
 
         unique_edges = {}
         for e in raw_edges:
-            if isinstance(e, dict) and "id" in e:
+            if isinstance(e, dict) and "id" in e and e.get("source") in unique_nodes and e.get("target") in unique_nodes:
                 unique_edges[e["id"]] = e
+
+        # Fallback synthesis if viewing a cached project not currently in Neo4j or a project with 0 CALLS in Neo4j
+        if len(unique_nodes) < 2 and current_app_tree:
+            _synth_nodes: List[Dict[str, Any]] = []
+            _synth_edges: List[Dict[str, Any]] = []
+            _fn_files = [
+                _ff for _ff in current_app_tree.flat_files
+                if _ff.elements and (not filepath or _ff.filepath == filepath or len(current_app_tree.flat_files) > 0)
+            ][:18]
+            _prev_fn_id: Optional[str] = None
+            for _f_i, _ff in enumerate(_fn_files):
+                _mod_id = f"cg-mod:{_ff.filepath}"
+                _synth_nodes.append({
+                    "id": _mod_id,
+                    "label": "Module",
+                    "ast_type": "module",
+                    "name": _ff.filename,
+                    "code": _ff.purpose or _ff.filepath,
+                    "filepath": _ff.filepath,
+                    "start_line": 1,
+                    "end_line": max(1, _ff.line_count),
+                    "start_col": 0,
+                    "end_col": 20,
+                    "scope_id": _ff.filepath,
+                    "is_source": _ff.category == "API_ROUTER",
+                    "is_sink": False,
+                    "is_sanitizer": False,
+                })
+                for _e_i, _el in enumerate(_ff.elements[:4]):
+                    _el_id = f"cg-fn:{_ff.filepath}:{_el.name}:{_el.line_number}:{_e_i}"
+                    _synth_nodes.append({
+                        "id": _el_id,
+                        "label": "Function" if _el.element_type in ("FUNCTION", "ROUTE", "CLASS") else "Call",
+                        "ast_type": _el.element_type.lower(),
+                        "name": f"{_el.name}()",
+                        "code": _el.signature or _el.details or _el.name,
+                        "filepath": _ff.filepath,
+                        "start_line": max(1, _el.line_number),
+                        "end_line": max(1, _el.line_number),
+                        "start_col": 0,
+                        "end_col": 30,
+                        "scope_id": _ff.filepath,
+                        "is_source": _el.element_type == "ROUTE",
+                        "is_sink": False,
+                        "is_sanitizer": False,
+                    })
+                    _synth_edges.append({
+                        "id": f"cg-edge-mod-{_f_i}-{_e_i}",
+                        "source": _mod_id,
+                        "target": _el_id,
+                        "type": "CALLS" if view_mode == "CALL_GRAPH" else "CFG_NEXT",
+                        "var_name": "invokes" if view_mode == "CALL_GRAPH" else None,
+                    })
+                    if _prev_fn_id and _e_i == 0:
+                        _synth_edges.append({
+                            "id": f"cg-edge-cross-{_f_i}",
+                            "source": _prev_fn_id,
+                            "target": _el_id,
+                            "type": "CALLS",
+                            "var_name": "calls",
+                        })
+                    _prev_fn_id = _el_id
+            return {"nodes": _synth_nodes, "edges": _synth_edges}
 
         return {
             "nodes": list(unique_nodes.values()),
@@ -1850,6 +2063,53 @@ def toggle_custom_sanitizer_rule(san_id: str):
     _cached_findings = None
     get_or_compute_findings(force_refresh=True)
     return san
+
+
+@app.post("/api/settings/presets", response_model=PlatformSettingsResponse)
+def create_custom_test_profile(req: CreateTestProfileRequest):
+    """Creates a new Test Profile specifying which security rules and engines are enabled."""
+    global _cached_findings
+    res = enterprise_mgr.create_test_profile(req)
+    _cached_findings = None
+    get_or_compute_findings(force_refresh=True)
+    return res
+
+
+@app.post("/api/settings/queries/batch-select", response_model=PlatformSettingsResponse)
+def batch_select_security_rules(req: BatchRuleSelectionRequest):
+    """Batch-updates which rules are enabled/disabled in the Rule Engine & Test Profile."""
+    global _cached_findings
+    res = enterprise_mgr.batch_update_rules(req)
+    _cached_findings = None
+    get_or_compute_findings(force_refresh=True)
+    return res
+
+
+# ===========================================================================
+# 4B. MULTI-TENANT ACCOUNT SEPARATION & RBAC USER PROFILING ENDPOINTS
+# ===========================================================================
+@app.get("/api/accounts", response_model=UserAccountsStateResponse)
+def get_accounts_and_users():
+    """Returns multi-tenant accounts, RBAC user profiles, active session context, and audit trail."""
+    return enterprise_mgr.get_accounts_and_users_state()
+
+
+@app.post("/api/accounts", response_model=UserAccountsStateResponse)
+def create_tenant_account(req: CreateAccountRequest):
+    """Creates a new isolated tenant account/organization for multi-tenant project separation."""
+    return enterprise_mgr.create_account(req)
+
+
+@app.post("/api/accounts/users", response_model=UserAccountsStateResponse)
+def create_rbac_user_profile(req: CreateUserProfileRequest):
+    """Creates a new RBAC user profile assigned to a tenant account."""
+    return enterprise_mgr.create_user_profile(req)
+
+
+@app.post("/api/accounts/switch", response_model=UserAccountsStateResponse)
+def switch_active_user_or_account(req: SwitchUserOrAccountRequest):
+    """Switches the active RBAC user profile, active tenant account scope, or project-account assignment."""
+    return enterprise_mgr.switch_user_or_account(req)
 
 
 # ===========================================================================
