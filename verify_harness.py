@@ -433,6 +433,11 @@ def run_assertions():
     assert len(aspm_data.get("endpoints", [])) >= 1, "Assertion O FAILED: Expected discovered attack surface endpoints!"
     assert len(aspm_data.get("roadmap_items", [])) >= 1, "Assertion O FAILED: Expected prioritized management remediation roadmap!"
     assert len(aspm_data.get("stride_threats", [])) == 6, f"Assertion O FAILED: Expected 6 STRIDE threat categories, got {len(aspm_data.get('stride_threats', []))}"
+    for st_item in aspm_data.get("stride_threats", []):
+        assert st_item.get("total_checks_count", 0) >= 1, f"Assertion O FAILED: Missing total_checks_count in STRIDE {st_item.get('stride_letter')}"
+        assert st_item.get("ok_count", 0) >= 1, f"Assertion O FAILED: Missing ok_count in STRIDE {st_item.get('stride_letter')}"
+        assert isinstance(st_item.get("issue_count"), int), f"Assertion O FAILED: Missing issue_count in STRIDE {st_item.get('stride_letter')}"
+        assert len(st_item.get("observations", [])) >= 1, f"Assertion O FAILED: Missing observations list in STRIDE {st_item.get('stride_letter')}"
     assert len(aspm_data.get("pipeline_checks", [])) == 5, f"Assertion O FAILED: Expected 5 CI/CD PBOM pipeline checks, got {len(aspm_data.get('pipeline_checks', []))}"
     log(
         f"PASS: Assertion O (SAST++++++ ASPM Suite: {len(aspm_data['sbom_components'])} SBOM packages, {len(aspm_data['endpoints'])} entrypoints, {len(aspm_data['stride_threats'])} STRIDE threats & {len(aspm_data['pipeline_checks'])} PBOM checks verified)."

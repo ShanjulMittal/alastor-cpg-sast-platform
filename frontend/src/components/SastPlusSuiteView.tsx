@@ -855,119 +855,303 @@ export function SastPlusSuiteView() {
       {sastPlusActiveTab === "THREAT_MODEL" && (
         <div className="space-y-5">
           {/* Section A: Automated STRIDE Threat Model Mapped to Active Application */}
-          <div className="rounded-2xl bg-zinc-900/75 border border-purple-700/50 p-4 space-y-3">
+          <div className="rounded-2xl bg-zinc-900/75 border border-purple-700/50 p-4 space-y-4">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div>
                 <h2 className="text-sm font-bold text-white flex items-center gap-2">
                   <ShieldAlert className="w-4 h-4 text-purple-400" />
                   <span>
-                    Automated STRIDE Architectural Threat Model —{" "}
+                    Automated STRIDE Architectural Threat Model, Count Matrix &amp; Observations —{" "}
                     <span className="text-cyan-300">{activeAppName}</span>
                   </span>
                 </h2>
                 <p className="text-xs text-zinc-400 mt-0.5">
-                  Dynamically maps discovered entrypoints, supply-chain manifests, runtime configurations, and CPG findings across the 6 Microsoft STRIDE threat categories.
+                  Per-category STRIDE evaluation showing exact check counts,{" "}
+                  <strong className="text-emerald-300">✔ What is OK</strong>,{" "}
+                  <strong className="text-rose-300">✖ What is the Issue</strong>, and{" "}
+                  <strong className="text-cyan-300">Detailed Observations</strong> with direct IDE code links.
                 </p>
               </div>
-              <span className="px-2.5 py-1 rounded-lg bg-purple-950/90 border border-purple-700 text-purple-200 font-mono text-[11px] font-bold">
-                {strideThreats.filter((t) => t.status === "ACTION_REQUIRED").length} Action Required / {strideThreats.length} Categories
-              </span>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="px-2.5 py-1 rounded-lg bg-emerald-950/90 border border-emerald-700 text-emerald-200 font-mono text-[11px] font-bold">
+                  ✔ Total OK:{" "}
+                  {strideThreats.reduce((a, t) => a + (t.ok_count ?? 1), 0)}
+                </span>
+                <span className="px-2.5 py-1 rounded-lg bg-rose-950/90 border border-rose-700 text-rose-200 font-mono text-[11px] font-bold">
+                  ✖ Total Issues:{" "}
+                  {strideThreats.reduce((a, t) => a + (t.issue_count ?? 0), 0)}
+                </span>
+                <span className="px-2.5 py-1 rounded-lg bg-purple-950/90 border border-purple-700 text-purple-200 font-mono text-[11px] font-bold">
+                  Observations:{" "}
+                  {strideThreats.reduce(
+                    (a, t) => a + (t.observations?.length ?? t.observations_count ?? 0),
+                    0
+                  )}
+                </span>
+              </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5">
-              {strideThreats.map((threat) => (
-                <div
-                  key={threat.id}
-                  className={`rounded-xl p-3.5 border space-y-2 flex flex-col justify-between ${
-                    threat.status === "ACTION_REQUIRED"
-                      ? "bg-amber-950/20 border-amber-700/70"
-                      : threat.status === "MITIGATED"
-                      ? "bg-emerald-950/20 border-emerald-800/60"
-                      : "bg-zinc-950/90 border-zinc-800"
-                  }`}
-                >
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-2">
+            {/* Executive STRIDE Count & Verdict Summary Table */}
+            <div className="overflow-x-auto rounded-xl border border-zinc-800 bg-zinc-950/80">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-zinc-950 text-zinc-300 border-b border-zinc-800 text-[10px] uppercase tracking-wider font-extrabold">
+                    <th className="py-2 px-3">STRIDE Category</th>
+                    <th className="py-2 px-3 text-center">Total Checks</th>
+                    <th className="py-2 px-3 text-center text-emerald-300">✔ OK Count</th>
+                    <th className="py-2 px-3 text-center text-rose-300">✖ Issue Count</th>
+                    <th className="py-2 px-3 text-center text-cyan-300">Observations</th>
+                    <th className="py-2 px-3">✔ What is OK</th>
+                    <th className="py-2 px-3">✖ What is the Issue</th>
+                    <th className="py-2 px-3 text-center">Verdict</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800/80">
+                  {strideThreats.map((st) => {
+                    const okC = st.ok_count ?? (st.what_passed?.length || 1);
+                    const issC = st.issue_count ?? (st.status === "MITIGATED" ? 0 : 1);
+                    const totC = st.total_checks_count ?? okC + issC;
+                    const obsC = st.observations?.length ?? st.observations_count ?? 0;
+                    const isOk = issC === 0 && st.status === "MITIGATED";
+                    return (
+                      <tr key={st.id} className="hover:bg-zinc-900/70">
+                        <td className="py-2 px-3 font-mono font-bold text-purple-300">
+                          [{st.stride_letter}] {st.stride_category.replace(/_/g, " ")}
+                        </td>
+                        <td className="py-2 px-3 text-center font-mono font-bold text-zinc-200">
+                          {totC}
+                        </td>
+                        <td className="py-2 px-3 text-center font-mono font-extrabold text-emerald-300">
+                          ✔ {okC} OK
+                        </td>
+                        <td
+                          className={`py-2 px-3 text-center font-mono font-extrabold ${
+                            issC > 0 ? "text-rose-300" : "text-emerald-400"
+                          }`}
+                        >
+                          {issC > 0 ? `✖ ${issC} Issue${issC > 1 ? "s" : ""}` : "0 Issues"}
+                        </td>
+                        <td className="py-2 px-3 text-center font-mono text-cyan-300">
+                          {obsC} Obs
+                        </td>
+                        <td className="py-2 px-3 text-emerald-200/90 max-w-xs">
+                          {st.ok_summary || st.what_passed?.[0] || "Controls verified OK."}
+                        </td>
+                        <td
+                          className={`py-2 px-3 max-w-xs ${
+                            issC > 0 ? "text-rose-200 font-medium" : "text-zinc-400"
+                          }`}
+                        >
+                          {st.issue_summary || (issC > 0 ? st.what_failed?.[0] : "0 Issues — All checks OK.")}
+                        </td>
+                        <td className="py-2 px-3 text-center">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
+                              isOk
+                                ? "bg-emerald-950 text-emerald-300 border-emerald-700"
+                                : "bg-rose-950 text-rose-300 border-rose-700"
+                            }`}
+                          >
+                            {isOk ? "✔ OK" : `✖ ISSUE (${st.severity})`}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4">
+              {strideThreats.map((threat) => {
+                const okC = threat.ok_count ?? (threat.what_passed?.length || 1);
+                const issC =
+                  threat.issue_count ??
+                  (threat.status === "MITIGATED" ? 0 : threat.linked_finding_ids?.length || 1);
+                const totC = threat.total_checks_count ?? okC + issC;
+                const obsList = threat.observations || [];
+                const isOk = issC === 0 && threat.status === "MITIGATED";
+                return (
+                  <div
+                    key={threat.id}
+                    className={`rounded-xl p-4 border space-y-3 ${
+                      !isOk
+                        ? "bg-amber-950/20 border-amber-700/70"
+                        : "bg-emerald-950/20 border-emerald-800/60"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2 flex-wrap border-b border-zinc-800 pb-2.5">
                       <div className="flex items-center gap-2">
-                        <span className="w-6 h-6 rounded-lg bg-purple-950 border border-purple-600 text-purple-200 font-mono text-xs font-extrabold flex items-center justify-center">
+                        <span className="w-7 h-7 rounded-lg bg-purple-950 border border-purple-600 text-purple-200 font-mono text-xs font-extrabold flex items-center justify-center">
                           {threat.stride_letter}
                         </span>
-                        <span className="text-[11px] font-mono font-bold text-purple-300">
-                          {threat.stride_category.replace(/_/g, " ")}
+                        <div>
+                          <span className="text-[11px] font-mono font-bold text-purple-300">
+                            STRIDE [{threat.stride_letter}] • {threat.stride_category.replace(/_/g, " ")}
+                          </span>
+                          <h3 className="text-sm font-bold text-white leading-snug">
+                            {threat.title}
+                          </h3>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-wrap font-mono text-[11px]">
+                        <span className="px-2 py-0.5 rounded bg-zinc-950 text-zinc-200 border border-zinc-700">
+                          Total: {totC}
+                        </span>
+                        <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700 font-bold">
+                          ✔ OK: {okC}
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded font-bold border ${
+                            issC > 0
+                              ? "bg-rose-950 text-rose-300 border-rose-700"
+                              : "bg-zinc-900 text-emerald-300 border-zinc-700"
+                          }`}
+                        >
+                          ✖ Issues: {issC}
+                        </span>
+                        <span className="px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-700 font-bold">
+                          Observations: {obsList.length}
                         </span>
                       </div>
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
-                          threat.status === "ACTION_REQUIRED"
-                            ? "bg-amber-950 text-amber-300 border-amber-600"
-                            : threat.status === "MITIGATED"
-                            ? "bg-emerald-950 text-emerald-300 border-emerald-700"
-                            : "bg-zinc-900 text-zinc-300 border-zinc-700"
-                        }`}
-                      >
-                        {threat.status.replace(/_/g, " ")}
-                      </span>
                     </div>
 
-                    <h3 className="text-xs font-bold text-white leading-snug">
-                      {threat.title}
-                    </h3>
+                    {/* Two-column What is OK vs What is the Issue */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                      <div className="bg-emerald-950/25 border border-emerald-700/50 rounded-lg p-3 space-y-1.5">
+                        <div className="font-bold text-emerald-300 uppercase text-[10px]">
+                          ✔ What is OK ({okC} Checks Passed)
+                        </div>
+                        <ul className="space-y-1 text-zinc-200">
+                          {(threat.what_passed || [threat.ok_summary || "Verified OK"]).map(
+                            (pItem, pIdx) => (
+                              <li key={pIdx} className="flex items-start gap-1.5">
+                                <span className="text-emerald-400 font-bold">✔</span>
+                                <span>{pItem}</span>
+                              </li>
+                            )
+                          )}
+                        </ul>
+                      </div>
+                      <div
+                        className={`rounded-lg p-3 space-y-1.5 border ${
+                          issC > 0
+                            ? "bg-rose-950/25 border-rose-700/60"
+                            : "bg-zinc-950/70 border-zinc-800"
+                        }`}
+                      >
+                        <div
+                          className={`font-bold uppercase text-[10px] ${
+                            issC > 0 ? "text-rose-300" : "text-emerald-300"
+                          }`}
+                        >
+                          ✖ What is the Issue ({issC} Issue{issC === 1 ? "" : "s"} Detected)
+                        </div>
+                        <ul className="space-y-1 text-zinc-200">
+                          {(threat.what_failed || [threat.issue_summary || "0 Issues Detected"]).map(
+                            (fItem, fIdx) => (
+                              <li key={fIdx} className="flex items-start gap-1.5">
+                                <span className={issC > 0 ? "text-rose-400 font-bold" : "text-emerald-400 font-bold"}>
+                                  {issC > 0 ? "✖" : "✔"}
+                                </span>
+                                <span>{fItem}</span>
+                              </li>
+                            )
+                          )}
+                        </ul>
+                      </div>
+                    </div>
 
-                    {threat.affected_components && threat.affected_components.length > 0 && (
-                      <div className="flex items-center gap-1 flex-wrap">
-                        <span className="text-[9px] font-mono uppercase text-zinc-400">
-                          Components:
-                        </span>
-                        {threat.affected_components.map((comp, cIdx) => (
-                          <button
-                            key={cIdx}
-                            type="button"
-                            onClick={() => openCodeLocationInIde(comp, threat.primary_line || 1)}
-                            className="px-1.5 py-0.5 rounded bg-zinc-950 hover:bg-amber-950/60 border border-zinc-800 hover:border-amber-600 text-[10px] font-mono text-cyan-300 hover:text-amber-200 cursor-pointer"
-                          >
-                            {comp}
-                          </button>
-                        ))}
+                    {/* Observations Breakdown */}
+                    {obsList.length > 0 && (
+                      <div className="bg-zinc-950/90 border border-zinc-800 rounded-lg p-3 space-y-2">
+                        <div className="text-[11px] font-bold text-cyan-300 uppercase">
+                          Observations Breakdown ({obsList.length} Recorded Observations)
+                        </div>
+                        <div className="space-y-2">
+                          {obsList.map((obs, oIdx) => (
+                            <div
+                              key={obs.id || oIdx}
+                              className={`p-2.5 rounded-lg border text-xs flex flex-wrap items-center justify-between gap-2 ${
+                                obs.verdict === "ISSUE"
+                                  ? "bg-rose-950/20 border-rose-800/60"
+                                  : "bg-emerald-950/15 border-emerald-800/50"
+                              }`}
+                            >
+                              <div className="space-y-0.5 max-w-3xl">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span
+                                    className={`px-1.5 py-0.5 rounded font-mono text-[10px] font-bold ${
+                                      obs.verdict === "ISSUE"
+                                        ? "bg-rose-950 text-rose-300 border border-rose-700"
+                                        : "bg-emerald-950 text-emerald-300 border border-emerald-700"
+                                    }`}
+                                  >
+                                    {obs.verdict === "ISSUE"
+                                      ? `✖ ISSUE [${obs.severity}]`
+                                      : "✔ OK [VERIFIED]"}
+                                  </span>
+                                  <span className="font-bold text-white">{obs.title}</span>
+                                  <span className="font-mono text-amber-300">
+                                    ({obs.filepath}:{obs.line})
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-zinc-300">
+                                  {obs.why_ok_or_issue}
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  openCodeLocationInIde(
+                                    obs.filepath,
+                                    obs.line || 1,
+                                    obs.linked_finding_id || undefined
+                                  )
+                                }
+                                className="px-2.5 py-1 rounded bg-amber-950 hover:bg-amber-900 border border-amber-700 text-amber-200 font-semibold text-[11px] flex items-center gap-1 shrink-0"
+                              >
+                                <Crosshair className="w-3 h-3 text-amber-400" />
+                                Inspect ({obs.filepath}:{obs.line})
+                              </button>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
 
-                    <p className="text-[11px] text-zinc-300 leading-relaxed">
-                      <strong className="text-amber-300">Why Issue / Rationale: </strong>
-                      {threat.why_issue_or_not || threat.threat_scenario}
-                    </p>
-                  </div>
-
-                  <div className="pt-2 border-t border-zinc-800/80 space-y-2 text-[11px] text-emerald-200/90 leading-relaxed">
-                    <div>
-                      <strong className="text-emerald-400">Corrective Action: </strong>
-                      {threat.mitigation_control}
-                    </div>
-                    <div className="flex items-center justify-between gap-2 pt-1">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          openCodeLocationInIde(
-                            threat.primary_filepath || threat.affected_components?.[0],
-                            threat.primary_line || 1,
-                            threat.linked_finding_ids?.[0]
-                          )
-                        }
-                        className="px-2.5 py-1 rounded bg-amber-950/80 hover:bg-amber-900 border border-amber-700 text-amber-200 font-semibold text-[11px] flex items-center gap-1"
-                      >
-                        <Crosshair className="w-3 h-3 text-amber-400" />
-                        Inspect Linked Code
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setWorkspaceViewMode("THREAT_MODELING")}
-                        className="px-2.5 py-1 rounded bg-purple-950/80 hover:bg-purple-900 border border-purple-700 text-purple-200 font-semibold text-[11px]"
-                      >
-                        Full Threat Dossier →
-                      </button>
+                    <div className="pt-2 border-t border-zinc-800/80 flex items-center justify-between gap-2 flex-wrap text-[11px] text-emerald-200/90">
+                      <div>
+                        <strong className="text-emerald-400">Corrective Action: </strong>
+                        {threat.mitigation_control}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openCodeLocationInIde(
+                              threat.primary_filepath || threat.affected_components?.[0],
+                              threat.primary_line || 1,
+                              threat.linked_finding_ids?.[0]
+                            )
+                          }
+                          className="px-2.5 py-1 rounded bg-amber-950/80 hover:bg-amber-900 border border-amber-700 text-amber-200 font-semibold text-[11px] flex items-center gap-1"
+                        >
+                          <Crosshair className="w-3 h-3 text-amber-400" />
+                          Inspect Linked Code
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setWorkspaceViewMode("THREAT_MODELING")}
+                          className="px-2.5 py-1 rounded bg-purple-950/80 hover:bg-purple-900 border border-purple-700 text-purple-200 font-semibold text-[11px]"
+                        >
+                          Open Full Threat Modeling View →
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 

@@ -151,6 +151,22 @@ export const ThreatModelingView: React.FC = () => {
 
   const passedStrideCount = strideThreats.filter((t) => t.status === "MITIGATED").length;
   const actionStrideCount = strideThreats.filter((t) => t.status !== "MITIGATED").length;
+  const totalChecksSum = strideThreats.reduce(
+    (acc, t) => acc + (t.total_checks_count ?? (t.ok_count || 1) + (t.issue_count || 0)),
+    0
+  );
+  const totalOkSum = strideThreats.reduce(
+    (acc, t) => acc + (t.ok_count ?? (t.what_passed?.length || 1)),
+    0
+  );
+  const totalIssueSum = strideThreats.reduce(
+    (acc, t) => acc + (t.issue_count ?? (t.status === "MITIGATED" ? 0 : t.linked_finding_ids?.length || 1)),
+    0
+  );
+  const totalObsSum = strideThreats.reduce(
+    (acc, t) => acc + (t.observations?.length ?? t.observations_count ?? 0),
+    0
+  );
 
   const toggleRevealSecret = (id: string) => {
     if (!canRevealSecrets) return;
@@ -294,25 +310,43 @@ export const ThreatModelingView: React.FC = () => {
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
         <div className="bg-slate-900/80 border border-emerald-500/30 rounded-xl p-3.5">
           <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-300 flex items-center gap-1">
-            <CheckCircle2 className="w-3 h-3" /> STRIDE Vectors Passed
+            <CheckCircle2 className="w-3 h-3" /> What is OK (Total Count)
           </div>
           <div className="text-2xl font-extrabold text-emerald-400 mt-1">
-            {passedStrideCount}/{strideThreats.length || 6}
+            {totalOkSum}{" "}
+            <span className="text-xs font-mono text-emerald-300/80">
+              / {totalChecksSum} Checks
+            </span>
           </div>
           <div className="text-[11px] text-slate-400 mt-0.5">
-            Verified mitigated in CPG
+            {passedStrideCount}/6 STRIDE Categories 100% OK
           </div>
         </div>
 
         <div className="bg-slate-900/80 border border-rose-500/30 rounded-xl p-3.5">
           <div className="text-[10px] font-bold uppercase tracking-wider text-rose-300 flex items-center gap-1">
-            <XCircle className="w-3 h-3" /> STRIDE Action Required
+            <XCircle className="w-3 h-3" /> What is the Issue (Count)
           </div>
           <div className="text-2xl font-extrabold text-rose-400 mt-1">
-            {actionStrideCount}/{strideThreats.length || 6}
+            {totalIssueSum}{" "}
+            <span className="text-xs font-mono text-rose-300/80">
+              Issues
+            </span>
           </div>
           <div className="text-[11px] text-slate-400 mt-0.5">
-            Failing / monitored vectors
+            Across {actionStrideCount}/6 STRIDE Categories
+          </div>
+        </div>
+
+        <div className="bg-slate-900/80 border border-cyan-500/30 rounded-xl p-3.5">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-cyan-300 flex items-center gap-1">
+            <FileCode className="w-3 h-3" /> Recorded Observations
+          </div>
+          <div className="text-2xl font-extrabold text-cyan-400 mt-1">
+            {totalObsSum}
+          </div>
+          <div className="text-[11px] text-slate-400 mt-0.5">
+            File:line OK &amp; Issue evidence items
           </div>
         </div>
 
@@ -324,19 +358,7 @@ export const ThreatModelingView: React.FC = () => {
             {secretFindings.length}
           </div>
           <div className="text-[11px] text-slate-400 mt-0.5">
-            Hardcoded keys & tokens
-          </div>
-        </div>
-
-        <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5">
-          <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">
-            Attack Entrypoints
-          </div>
-          <div className="text-2xl font-extrabold text-emerald-400 mt-1">
-            {endpoints.length}
-          </div>
-          <div className="text-[11px] text-slate-400 mt-0.5">
-            Routes & input handlers
+            Hardcoded keys &amp; tokens ({endpoints.length} entrypoints)
           </div>
         </div>
 
@@ -422,7 +444,182 @@ export const ThreatModelingView: React.FC = () => {
 
       {/* TAB 1: DETAILED STRIDE THREAT MATRIX */}
       {activeSubTab === "STRIDE_BOARD" && (
-        <div className="space-y-4">
+        <div className="space-y-5">
+          {/* STRIDE Framework Executive Summary & Count Matrix Table (What is OK vs What is the Issue) */}
+          <div className="bg-slate-900/95 border border-slate-800 rounded-xl p-4 space-y-3 shadow-xl">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-extrabold text-slate-100 flex items-center gap-2">
+                  <ShieldAlert className="w-4 h-4 text-rose-400" />
+                  <span>
+                    STRIDE Framework Executive Count &amp; Verdict Matrix — What is OK vs. What is the Issue
+                  </span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Per-category STRIDE breakdown showing exact inspected check counts,{" "}
+                  <span className="text-emerald-300 font-semibold">✔ What is OK (Passed Count)</span>,{" "}
+                  <span className="text-rose-300 font-semibold">✖ What is the Issue (Failed Count)</span>, and{" "}
+                  <span className="text-cyan-300 font-semibold">Recorded Observations</span>.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 text-xs font-mono">
+                <span className="px-2.5 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-bold">
+                  ✔ Total OK: {totalOkSum}
+                </span>
+                <span className="px-2.5 py-1 rounded-lg bg-rose-500/15 border border-rose-500/40 text-rose-300 font-bold">
+                  ✖ Total Issues: {totalIssueSum}
+                </span>
+                <span className="px-2.5 py-1 rounded-lg bg-cyan-500/15 border border-cyan-500/40 text-cyan-300 font-bold">
+                  Observations: {totalObsSum}
+                </span>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto rounded-xl border border-slate-800">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-slate-950 text-slate-300 border-b border-slate-800 text-[10px] uppercase tracking-wider font-extrabold">
+                    <th className="py-2.5 px-3">STRIDE Category &amp; Property</th>
+                    <th className="py-2.5 px-3 text-center">Total Checks</th>
+                    <th className="py-2.5 px-3 text-center text-emerald-300">✔ OK Count</th>
+                    <th className="py-2.5 px-3 text-center text-rose-300">✖ Issue Count</th>
+                    <th className="py-2.5 px-3 text-center text-cyan-300">Observations</th>
+                    <th className="py-2.5 px-3">✔ What is OK (Verified Safe)</th>
+                    <th className="py-2.5 px-3">✖ What is the Issue (Detected Flaws)</th>
+                    <th className="py-2.5 px-3 text-center">STRIDE Verdict</th>
+                    <th className="py-2.5 px-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/80">
+                  {strideThreats.map((st) => {
+                    const m = STRIDE_META[st.stride_category] || {
+                      letter: st.stride_letter || "T",
+                      label: st.stride_category,
+                      securityProperty: st.security_property || "Security Control",
+                      color: "text-amber-400",
+                      badgeBg: "bg-amber-500/15 border-amber-500/40 text-amber-300",
+                    };
+                    const okC = st.ok_count ?? (st.what_passed?.length || 1);
+                    const issC = st.issue_count ?? (st.status === "MITIGATED" ? 0 : st.linked_finding_ids?.length || 1);
+                    const totC = st.total_checks_count ?? okC + issC;
+                    const obsC = st.observations?.length ?? st.observations_count ?? 0;
+                    const isOk = issC === 0 && st.status === "MITIGATED";
+                    return (
+                      <tr
+                        key={st.id}
+                        className={`transition-colors ${
+                          isOk ? "bg-slate-900/40 hover:bg-slate-900/80" : "bg-rose-950/10 hover:bg-rose-950/20"
+                        }`}
+                      >
+                        <td className="py-2.5 px-3">
+                          <div className="flex items-center gap-2">
+                            <span className={`w-7 h-7 rounded-lg border flex items-center justify-center font-mono font-black text-xs shrink-0 ${m.badgeBg}`}>
+                              {m.letter}
+                            </span>
+                            <div>
+                              <div className="font-bold text-slate-100">{m.label}</div>
+                              <div className="text-[10px] text-slate-400">{st.security_property || m.securityProperty}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3 text-center font-mono font-bold text-slate-200">
+                          {totC}
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-mono font-extrabold">
+                            ✔ {okC} OK
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span
+                            className={`px-2 py-0.5 rounded font-mono font-extrabold border ${
+                              issC > 0
+                                ? "bg-rose-500/20 text-rose-300 border-rose-500/50"
+                                : "bg-slate-800/80 text-emerald-400 border-slate-700"
+                            }`}
+                          >
+                            {issC > 0 ? `✖ ${issC} Issue${issC > 1 ? "s" : ""}` : "0 Issues"}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span className="px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/40 font-mono font-bold">
+                            {obsC} Obs
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-emerald-200/90 max-w-xs">
+                          {st.ok_summary || st.what_passed?.[0] || "Controls verified OK."}
+                        </td>
+                        <td className={`py-2.5 px-3 max-w-xs ${issC > 0 ? "text-rose-200 font-medium" : "text-slate-400"}`}>
+                          {st.issue_summary || (issC > 0 ? st.what_failed?.[0] : "0 Issues — All checks OK.")}
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span
+                            className={`px-2 py-1 rounded-md text-[10px] font-mono font-extrabold border inline-flex items-center gap-1 ${
+                              isOk
+                                ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/50"
+                                : "bg-rose-500/20 text-rose-300 border-rose-500/50"
+                            }`}
+                          >
+                            {isOk ? "✔ OK (PASS)" : `✖ ISSUE (${st.severity})`}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedStrideCategory(st.stride_category)}
+                              className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-[10px] font-bold"
+                            >
+                              Focus [{m.letter}]
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleInspectThreatCode(st)}
+                              className="px-2 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-[10px] font-bold flex items-center gap-1"
+                            >
+                              <Code2 className="w-3 h-3" />
+                              Inspect
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-slate-950 border-t-2 border-slate-700 font-mono text-xs font-extrabold text-slate-100">
+                    <td className="py-2.5 px-3">TOTAL ACROSS ALL 6 STRIDE DOMAINS</td>
+                    <td className="py-2.5 px-3 text-center">{totalChecksSum} Checks</td>
+                    <td className="py-2.5 px-3 text-center text-emerald-400">✔ {totalOkSum} OK</td>
+                    <td className="py-2.5 px-3 text-center text-rose-400">✖ {totalIssueSum} Issues</td>
+                    <td className="py-2.5 px-3 text-center text-cyan-300">{totalObsSum} Observations</td>
+                    <td className="py-2.5 px-3 text-emerald-300 font-sans text-[11px]">
+                      {passedStrideCount} of 6 STRIDE categories 100% OK
+                    </td>
+                    <td className="py-2.5 px-3 text-rose-300 font-sans text-[11px]">
+                      {actionStrideCount} of 6 STRIDE categories have active issues
+                    </td>
+                    <td className="py-2.5 px-3 text-center">
+                      {actionStrideCount === 0 ? "✔ ALL OK" : `${actionStrideCount} ACTION REQ`}
+                    </td>
+                    <td className="py-2.5 px-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedStrideCategory("ALL");
+                          setStatusFilter("ALL");
+                        }}
+                        className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 text-[10px]"
+                      >
+                        Show All 6
+                      </button>
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+
           {/* Category & Verdict Filter Pills */}
           <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900/60 border border-slate-800/80 rounded-xl p-3">
             <div className="flex flex-wrap items-center gap-1.5">
@@ -437,12 +634,14 @@ export const ThreatModelingView: React.FC = () => {
                     : "bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200"
                 }`}
               >
-                All ({strideThreats.length})
+                All 6 STRIDE ({totalOkSum} OK / {totalIssueSum} Issues)
               </button>
               {Object.entries(STRIDE_META).map(([catKey, meta]) => {
-                const count = strideThreats.filter(
+                const matchThreat = strideThreats.find(
                   (t) => t.stride_category === catKey
-                ).length;
+                );
+                const okC = matchThreat?.ok_count ?? 1;
+                const issC = matchThreat?.issue_count ?? 0;
                 return (
                   <button
                     key={catKey}
@@ -457,7 +656,18 @@ export const ThreatModelingView: React.FC = () => {
                       [{meta.letter}]
                     </span>
                     <span>{meta.label}</span>
-                    <span className="text-[10px] opacity-80">({count})</span>
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-950/80 text-emerald-300">
+                      ✔{okC}
+                    </span>
+                    <span
+                      className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+                        issC > 0
+                          ? "bg-rose-500/30 text-rose-200 font-extrabold"
+                          : "bg-slate-950/60 text-slate-400"
+                      }`}
+                    >
+                      ✖{issC}
+                    </span>
                   </button>
                 );
               })}
@@ -473,7 +683,7 @@ export const ThreatModelingView: React.FC = () => {
                     : "bg-slate-950 text-slate-400 border-slate-800"
                 }`}
               >
-                All Verdicts
+                All Verdicts (6)
               </button>
               <button
                 onClick={() => setStatusFilter("FAIL_ONLY")}
@@ -484,7 +694,7 @@ export const ThreatModelingView: React.FC = () => {
                 }`}
               >
                 <XCircle className="w-3 h-3 text-rose-400" />
-                Action Required ({actionStrideCount})
+                Has Issues ({actionStrideCount})
               </button>
               <button
                 onClick={() => setStatusFilter("PASS_ONLY")}
@@ -495,7 +705,7 @@ export const ThreatModelingView: React.FC = () => {
                 }`}
               >
                 <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                Passed / Mitigated ({passedStrideCount})
+                100% OK ({passedStrideCount})
               </button>
             </div>
           </div>
@@ -516,6 +726,15 @@ export const ThreatModelingView: React.FC = () => {
                 threat.affected_components?.[0] ||
                 "workspace";
               const primaryLn = threat.primary_line || 1;
+              const okCount = threat.ok_count ?? (threat.what_passed?.length || 1);
+              const issueCount =
+                threat.issue_count ??
+                (isPassed ? 0 : threat.linked_finding_ids?.length || 1);
+              const totalCount = threat.total_checks_count ?? okCount + issueCount;
+              const obsList = threat.observations || [];
+              const issueObsCount = obsList.filter((o) => o.verdict === "ISSUE").length;
+              const okObsCount = obsList.filter((o) => o.verdict === "OK").length;
+
               const whatPassedList =
                 threat.what_passed && threat.what_passed.length > 0
                   ? threat.what_passed
@@ -527,7 +746,7 @@ export const ThreatModelingView: React.FC = () => {
                   ? threat.what_failed
                   : isPassed
                   ? [
-                      "0 Failing Checks — All inspected components passed verification.",
+                      "0 Issues Detected — All inspected components passed verification (100% OK).",
                     ]
                   : [threat.threat_scenario];
               const whyText =
@@ -553,7 +772,7 @@ export const ThreatModelingView: React.FC = () => {
                       : "border-rose-500/40 hover:border-rose-500/60"
                   }`}
                 >
-                  {/* Top Row: STRIDE Badge, Title, Verdict Status, Severity & Direct Code Inspect Button */}
+                  {/* Top Row: STRIDE Badge, Title, Count Pills, Verdict Status & Severity */}
                   <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800/90 pb-3.5">
                     <div className="flex items-start gap-3">
                       <span
@@ -566,7 +785,7 @@ export const ThreatModelingView: React.FC = () => {
                           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
                             STRIDE [{meta.letter}] • {meta.label} • Security Property:{" "}
                             <span className="text-slate-200">
-                              {meta.securityProperty}
+                              {threat.security_property || meta.securityProperty}
                             </span>
                           </span>
                           {threat.compliance_mapping && (
@@ -581,7 +800,27 @@ export const ThreatModelingView: React.FC = () => {
                       </div>
                     </div>
 
+                    {/* Explicit Count Details & Verdict Pills */}
                     <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <span className="px-2.5 py-1 text-xs font-mono font-bold rounded-lg bg-slate-950 text-slate-200 border border-slate-700">
+                        Total Inspected: {totalCount}
+                      </span>
+                      <span className="px-2.5 py-1 text-xs font-mono font-extrabold rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/50">
+                        ✔ OK Count: {okCount}
+                      </span>
+                      <span
+                        className={`px-2.5 py-1 text-xs font-mono font-extrabold rounded-lg border ${
+                          issueCount > 0
+                            ? "bg-rose-500/20 text-rose-300 border-rose-500/50"
+                            : "bg-slate-800 text-emerald-300 border-slate-700"
+                        }`}
+                      >
+                        ✖ Issue Count: {issueCount}
+                      </span>
+                      <span className="px-2.5 py-1 text-xs font-mono font-bold rounded-lg bg-cyan-500/15 text-cyan-300 border border-cyan-500/40">
+                        Observations: {obsList.length}
+                      </span>
+
                       {/* Pass / Fail Verdict Pill */}
                       <span
                         className={`px-2.5 py-1 text-xs font-extrabold rounded-lg border flex items-center gap-1.5 ${
@@ -593,35 +832,30 @@ export const ThreatModelingView: React.FC = () => {
                         {isPassed ? (
                           <>
                             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                            PASS • MITIGATED
+                            {threat.verdict_label || `OK • ALL ${okCount} PASSED`}
                           </>
                         ) : (
                           <>
                             <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
-                            FAIL • {threat.status.replace("_", " ")}
+                            {threat.verdict_label || `ISSUE • ${issueCount} FAILED`}
                           </>
                         )}
                       </span>
-
-                      <span className="px-2.5 py-1 text-xs font-mono font-bold rounded-lg bg-slate-800 text-slate-200 border border-slate-700">
-                        Severity: {threat.severity}
-                      </span>
-
-                      {threat.likelihood && (
-                        <span className="px-2.5 py-1 text-xs font-mono rounded-lg bg-slate-950 text-amber-300 border border-slate-800">
-                          Likelihood: {threat.likelihood}
-                        </span>
-                      )}
                     </div>
                   </div>
 
-                  {/* Section 1: What Passed vs. What Failed (2-Column Comparison) */}
+                  {/* Section 1: What is OK vs. What is the Issue (2-Column Comparison with Counts) */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-                    {/* What Passed */}
+                    {/* What is OK */}
                     <div className="bg-emerald-950/15 border border-emerald-500/30 rounded-xl p-3.5 space-y-2">
-                      <div className="text-xs font-extrabold uppercase tracking-wider text-emerald-300 flex items-center gap-1.5">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                        What Passed Inspection (Verified Controls)
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-extrabold uppercase tracking-wider text-emerald-300 flex items-center gap-1.5">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                          ✔ What is OK as per STRIDE [{meta.letter}] (Verified Safe Controls)
+                        </div>
+                        <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono text-[11px] font-bold">
+                          {okCount} OK / Passed
+                        </span>
                       </div>
                       <ul className="space-y-1.5 text-xs text-slate-200">
                         {whatPassedList.map((item, i) => (
@@ -633,7 +867,7 @@ export const ThreatModelingView: React.FC = () => {
                       </ul>
                     </div>
 
-                    {/* What Failed */}
+                    {/* What is the Issue */}
                     <div
                       className={`rounded-xl p-3.5 space-y-2 border ${
                         isPassed
@@ -641,17 +875,28 @@ export const ThreatModelingView: React.FC = () => {
                           : "bg-rose-950/20 border-rose-500/40"
                       }`}
                     >
-                      <div
-                        className={`text-xs font-extrabold uppercase tracking-wider flex items-center gap-1.5 ${
-                          isPassed ? "text-slate-400" : "text-rose-300"
-                        }`}
-                      >
-                        {isPassed ? (
-                          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                        ) : (
-                          <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                        )}
-                        What Failed Inspection (Detected Flaws & Gaps)
+                      <div className="flex items-center justify-between gap-2">
+                        <div
+                          className={`text-xs font-extrabold uppercase tracking-wider flex items-center gap-1.5 ${
+                            isPassed ? "text-emerald-300" : "text-rose-300"
+                          }`}
+                        >
+                          {isPassed ? (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                          ) : (
+                            <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                          )}
+                          ✖ What is the Issue as per STRIDE [{meta.letter}] (Detected Flaws &amp; Gaps)
+                        </div>
+                        <span
+                          className={`px-2 py-0.5 rounded font-mono text-[11px] font-bold ${
+                            issueCount > 0
+                              ? "bg-rose-500/25 text-rose-200 border border-rose-500/40"
+                              : "bg-emerald-500/15 text-emerald-300"
+                          }`}
+                        >
+                          {issueCount} Issue{issueCount === 1 ? "" : "s"}
+                        </span>
                       </div>
                       <ul className="space-y-1.5 text-xs text-slate-200">
                         {whatFailedList.map((item, i) => (
@@ -661,7 +906,7 @@ export const ThreatModelingView: React.FC = () => {
                                 isPassed ? "text-emerald-400" : "text-rose-400"
                               }`}
                             >
-                              {isPassed ? "•" : "✖"}
+                              {isPassed ? "✔" : "✖"}
                             </span>
                             <span>{item}</span>
                           </li>
@@ -670,7 +915,118 @@ export const ThreatModelingView: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Section 2: Why It Is / Is Not an Issue + Business & Technical Risk */}
+                  {/* Section 2: Detailed STRIDE Observations Breakdown (Issues & Verified-OK Evidence) */}
+                  {obsList.length > 0 && (
+                    <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-4 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-xs font-extrabold uppercase tracking-wider text-cyan-300 flex items-center gap-2">
+                          <FileCode className="w-4 h-4 text-cyan-400" />
+                          <span>
+                            Detailed STRIDE [{meta.letter}] Observations Breakdown ({obsList.length} Observations:{" "}
+                            <span className="text-rose-300">{issueObsCount} Issue(s)</span> •{" "}
+                            <span className="text-emerald-300">{okObsCount} Verified OK</span>)
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-slate-400">
+                          Click <strong className="text-amber-300">Inspect Code</strong> on any observation to jump to its exact file &amp; line in the IDE
+                        </span>
+                      </div>
+
+                      <div className="space-y-2.5">
+                        {obsList.map((obs, oIdx) => {
+                          const isObsIssue = obs.verdict === "ISSUE";
+                          return (
+                            <div
+                              key={obs.id || oIdx}
+                              className={`rounded-xl p-3.5 border space-y-2 ${
+                                isObsIssue
+                                  ? "bg-rose-950/20 border-rose-500/40"
+                                  : "bg-emerald-950/10 border-emerald-500/30"
+                              }`}
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-[10px] font-mono text-slate-300">
+                                    Obs #{oIdx + 1}
+                                  </span>
+                                  <span
+                                    className={`px-2 py-0.5 rounded text-[10px] font-mono font-extrabold border ${
+                                      isObsIssue
+                                        ? "bg-rose-500/25 text-rose-200 border-rose-500/50"
+                                        : "bg-emerald-500/20 text-emerald-300 border-emerald-500/50"
+                                    }`}
+                                  >
+                                    {isObsIssue
+                                      ? `✖ ISSUE DETECTED • ${obs.severity}`
+                                      : "✔ OK • CONTROL VERIFIED"}
+                                  </span>
+                                  <span className="px-2 py-0.5 rounded bg-slate-900 text-cyan-300 border border-slate-800 text-[10px] font-mono">
+                                    {obs.control_domain}
+                                  </span>
+                                  {obs.cwe_or_standard && (
+                                    <span className="px-2 py-0.5 rounded bg-slate-900 text-purple-300 border border-slate-800 text-[10px] font-mono">
+                                      {obs.cwe_or_standard}
+                                    </span>
+                                  )}
+                                  <span className="text-xs font-mono font-bold text-amber-300">
+                                    {obs.filepath}:{obs.line}
+                                  </span>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    openCodeLocationInIde(
+                                      obs.filepath,
+                                      obs.line || 1,
+                                      obs.linked_finding_id || undefined
+                                    )
+                                  }
+                                  className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-[11px] font-bold flex items-center gap-1 cursor-pointer shrink-0"
+                                >
+                                  <Code2 className="w-3 h-3" />
+                                  Inspect Code ({obs.filepath}:{obs.line})
+                                </button>
+                              </div>
+
+                              <div className="text-xs font-bold text-slate-100">
+                                {obs.title}
+                              </div>
+
+                              {obs.code_snippet && (
+                                <pre className="text-[11px] font-mono text-amber-200 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 overflow-x-auto">
+                                  {obs.filepath}:{obs.line} → {obs.code_snippet}
+                                </pre>
+                              )}
+
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+                                <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2.5">
+                                  <span
+                                    className={`font-bold ${
+                                      isObsIssue ? "text-rose-300" : "text-emerald-300"
+                                    }`}
+                                  >
+                                    {isObsIssue ? "Why This is an Issue: " : "Why This is OK: "}
+                                  </span>
+                                  <span className="text-slate-200">{obs.why_ok_or_issue}</span>
+                                </div>
+                                <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2.5">
+                                  <span className="font-bold text-amber-300">Risk &amp; Impact: </span>
+                                  <span className="text-slate-200">{obs.risk_impact}</span>
+                                </div>
+                                <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2.5">
+                                  <span className="font-bold text-cyan-300">Corrective Action: </span>
+                                  <span className="text-slate-200">{obs.corrective_action}</span>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Section 3: Why It Is / Is Not an Issue + Business & Technical Risk */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
                     <div className="bg-slate-950/80 border border-amber-500/30 rounded-xl p-3.5 space-y-1.5">
                       <div className="text-xs font-extrabold uppercase tracking-wider text-amber-300">
@@ -683,7 +1039,7 @@ export const ThreatModelingView: React.FC = () => {
 
                     <div className="bg-slate-950/80 border border-rose-500/30 rounded-xl p-3.5 space-y-1.5">
                       <div className="text-xs font-extrabold uppercase tracking-wider text-rose-300">
-                        Technical & Business Risk Analysis (Blast Radius)
+                        Technical &amp; Business Risk Analysis (Blast Radius)
                       </div>
                       <p className="text-xs text-slate-200 leading-relaxed">
                         {riskText}
@@ -691,12 +1047,12 @@ export const ThreatModelingView: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Section 3: Step-by-Step Corrective Actions & Mitigation Plan */}
+                  {/* Section 4: Step-by-Step Corrective Actions & Mitigation Plan */}
                   <div className="bg-cyan-950/15 border border-cyan-500/30 rounded-xl p-4 space-y-2.5">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="text-xs font-extrabold uppercase tracking-wider text-cyan-300 flex items-center gap-1.5">
                         <Wrench className="w-4 h-4 text-cyan-400" />
-                        Corrective Actions & Architectural Remediation Plan
+                        Corrective Actions &amp; Architectural Remediation Plan
                       </div>
                       <span className="text-[11px] text-slate-400">
                         Target Location:{" "}

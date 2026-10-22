@@ -618,6 +618,24 @@ export interface RemediationRoadmapItem {
   line: number;
 }
 
+export interface StrideObservationItem {
+  id: string;
+  stride_letter: string;
+  verdict: "OK" | "ISSUE";
+  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "PASS";
+  control_domain: string;
+  title: string;
+  filepath: string;
+  line: number;
+  code_snippet: string;
+  observation_detail: string;
+  why_ok_or_issue: string;
+  risk_impact: string;
+  corrective_action: string;
+  cwe_or_standard: string;
+  linked_finding_id?: string | null;
+}
+
 export interface StrideThreatItem {
   id: string;
   stride_category:
@@ -628,9 +646,17 @@ export interface StrideThreatItem {
     | "DENIAL_OF_SERVICE"
     | "ELEVATION_OF_PRIVILEGE";
   stride_letter: string;
+  security_property?: string;
   title: string;
   status: "MITIGATED" | "ACTION_REQUIRED" | "MONITORED";
+  verdict_label?: string;
   severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  total_checks_count?: number;
+  ok_count?: number;
+  issue_count?: number;
+  observations_count?: number;
+  ok_summary?: string;
+  issue_summary?: string;
   affected_components: string[];
   threat_scenario: string;
   mitigation_control: string;
@@ -645,6 +671,7 @@ export interface StrideThreatItem {
   likelihood?: string;
   compliance_mapping?: string;
   corrective_actions?: string[];
+  observations?: StrideObservationItem[];
 }
 
 export interface PipelineSecurityCheck {

@@ -825,6 +825,24 @@ class RemediationRoadmapItem(BaseModel):
     line: int
 
 
+class StrideObservationItem(BaseModel):
+    id: str
+    stride_letter: str = "T"
+    verdict: Literal["OK", "ISSUE"] = "OK"
+    severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW", "PASS"] = "PASS"
+    control_domain: str = ""
+    title: str = ""
+    filepath: str = ""
+    line: int = 1
+    code_snippet: str = ""
+    observation_detail: str = ""
+    why_ok_or_issue: str = ""
+    risk_impact: str = ""
+    corrective_action: str = ""
+    cwe_or_standard: str = ""
+    linked_finding_id: Optional[str] = None
+
+
 class StrideThreatItem(BaseModel):
     id: str
     stride_category: Literal[
@@ -836,9 +854,17 @@ class StrideThreatItem(BaseModel):
         "ELEVATION_OF_PRIVILEGE"
     ]
     stride_letter: str = "T"
+    security_property: str = "Integrity"
     title: str
     status: Literal["MITIGATED", "ACTION_REQUIRED", "MONITORED"] = "MONITORED"
+    verdict_label: str = "OK (ALL CONTROLS PASSED)"
     severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"] = "MEDIUM"
+    total_checks_count: int = 0
+    ok_count: int = 0
+    issue_count: int = 0
+    observations_count: int = 0
+    ok_summary: str = ""
+    issue_summary: str = ""
     affected_components: List[str] = Field(default_factory=list)
     threat_scenario: str = ""
     mitigation_control: str = ""
@@ -853,6 +879,7 @@ class StrideThreatItem(BaseModel):
     likelihood: str = "LOW (Mitigated)"
     compliance_mapping: str = "OWASP Top 10 / MITRE CWE"
     corrective_actions: List[str] = Field(default_factory=list)
+    observations: List[StrideObservationItem] = Field(default_factory=list)
 
 
 class PipelineSecurityCheck(BaseModel):

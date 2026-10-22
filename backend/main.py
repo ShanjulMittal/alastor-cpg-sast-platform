@@ -852,7 +852,7 @@ def get_or_compute_findings(force_refresh: bool = False) -> List[Finding]:
                         fp = sf.path_nodes[-1].get("filepath", "") if sf.path_nodes else ""
                         if fp and os.path.exists(os.path.join(root_check, fp)):
                             sast_findings.append(sf)
-                else:
+                if not sast_findings and _last_neo4j_ingested_dir != _norm_target_dir:
                     cached_proj = enterprise_mgr.get_cached_scan_for_project(target_dir)
                     if cached_proj and isinstance(cached_proj.get("latest_findings"), list):
                         for cf_dict in cached_proj["latest_findings"]:
