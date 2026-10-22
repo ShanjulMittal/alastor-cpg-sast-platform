@@ -1,17 +1,18 @@
 <div align="center">
 
-# ALASTOR (`Ἀλάστωρ`) — Deterministic Code Property Graph (CPG), SAST, SCA, IaC & ASPM Security Platform
+# ALASTOR (`Ἀλάστωρ`) v2.5.0 — Enterprise Deterministic Code Property Graph (CPG), SAST, SCA, IaC, STRIDE Threat Modeling & ASPM Platform
 
 <img src="./docs/screenshots/alastor_demon_logo.jpg" alt="ALASTOR Demon Crest" width="180" />
 
-**Open-Source Deterministic Code Property Graph (Tree-Sitter AST + CFG + DFG over Neo4j) • Unified SAST, SCA & IaC • Call-Graph Reachability • EPSS v4 • Side-by-Side Remediation Diffs • Automated STRIDE Threat Modeling • CycloneDX v1.5 SBOM & CI/CD PBOM • Interactive PMI/COBIT RACI Governance**
+**Open-Source Deterministic Code Property Graph (Tree-Sitter AST + CFG + DFG + Call Graph over Neo4j) • Unified SAST, SCA, IaC & Secret Keys Hunter • STRIDE Count & Observation Matrix • Custom Rule Profiles • Multi-Tenant RBAC Account Separation • Call-Graph Reachability • EPSS v4 • CycloneDX v1.5 SBOM & CI/CD PBOM • Interactive PMI/COBIT RACI Governance**
 
+[![Version: 2.5.0](https://img.shields.io/badge/Version-v2.5.0%20Enterprise-violet.svg)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-amber.svg)](./LICENSE)
 [![Self-Audit: 0 Findings](https://img.shields.io/badge/Self--Audit-0%20Findings%20(100%25%20Pass)-emerald.svg)](./verify_harness.py)
 [![SARIF: v2.1.0](https://img.shields.io/badge/OASIS-SARIF%20v2.1.0-cyan.svg)](./backend/main.py)
 [![SBOM: CycloneDX v1.5](https://img.shields.io/badge/SBOM-CycloneDX%20v1.5-indigo.svg)](./backend/engine/enterprise_manager.py)
 
-[**📖 Full Master Product Guide & Standard Operating Procedure (SOP)**](./docs/ALASTOR_Master_SOP_and_Product_Guide.md) • [**🔬 Contributing Guide for Security Researchers**](./CONTRIBUTING.md) • [**🛡️ Security Policy**](./SECURITY.md)
+[**📖 Full Master Product Guide & Standard Operating Procedure (SOP)**](./docs/ALASTOR_Master_SOP_and_Product_Guide.md) • [**📋 Release History & Changelog (v2.5.0)**](./CHANGELOG.md) • [**🔬 Contributing Guide**](./CONTRIBUTING.md) • [**🛡️ Security Policy**](./SECURITY.md)
 
 </div>
 
@@ -19,31 +20,46 @@
 
 ## 🔥 Overview
 
-Named after **Alastor (`Ἀλάστωρ`)**, the relentless Greek mythological spirit of retribution who hunts down hidden corruptions, **ALASTOR** is a next-generation, 100% local-first **Code Property Graph (CPG) & Application Security Posture Management (ASPM)** platform built for **Security Researchers, AppSec Engineers, Developers, and CISOs**.
+Named after **Alastor (`Ἀλάστωρ`)**, the relentless Greek mythological spirit of retribution who hunts down hidden corruptions, **ALASTOR v2.5.0** is a 100% local-first **Code Property Graph (CPG), Threat Modeling & Application Security Posture Management (ASPM)** platform built for **Security Researchers, AppSec Architects, Red Teamers, Developers, and CISOs**.
 
-Unlike regex-based scanners that flood teams with false positives and cryptic rule IDs, ALASTOR compiles source code into a unified **Abstract Syntax Tree (AST)**, **Control-Flow Graph (CFG)**, and **Data-Flow Graph (DFG)** inside **Neo4j + APOC**, and pairs every finding with a complete **Written Observation Dossier**, **Call-Graph Reachability Proof**, **EPSS v4 30-Day Exploit Probability**, and a **Side-by-Side Before (`-`) vs. After (`+`) Code Diff**.
+Unlike regex-based scanners that flood teams with false positives and cryptic rule IDs, ALASTOR compiles source code into a unified **Abstract Syntax Tree (AST)**, **Control-Flow Graph (CFG)**, **Data-Flow Graph (DFG)**, and **Inter-Procedural Call Graph (`:CALLS`)** inside **Neo4j + APOC**. Every finding is paired with a **Written Observation Dossier**, **Secret Key Entropy & Vault Unmasking**, **STRIDE Threat & Observation Counts**, **Call-Graph Reachability Proof**, **EPSS v4 30-Day Exploit Probability**, and a **Side-by-Side Before (`-`) vs. After (`+`) Code Diff**.
 
 ![ALASTOR Code & Graph Review with Written Observation Dossier](./docs/screenshots/alastor_02_code_review_dossier.png)
 
 ---
 
-## ✨ Key Capabilities
+## 🚀 What's New in v2.5.0 (Enterprise Release)
 
-1. **Deterministic Code Property Graph (CPG) Engine (`AST + CFG + DFG`)**
-   - Multi-language **Tree-Sitter** parser (`Python`, `TypeScript`, `JavaScript`, `React/Next.js`, `JSON/YAML/Dockerfile`) backed by **Neo4j + APOC**.
-   - Detects inter-procedural taint vulnerabilities (`RULE-1-TAINT`), dormant zero-day gadgets (`RULE-2-ORPHAN`), dead stores (`RULE-3-DEADSTORE`), non-terminating loops (`RULE-4-INFINITE-LOOP`), and unreachable code (`RULE-5-UNREACHABLE`) with **0% false positives on sanitized flows**.
-2. **Always-Visible Written Observation Dossier & Side-by-Side Code Diff**
-   - Every SAST, SCA, and IaC finding explicitly lists affected third-party packages/lines, lockfile-resolved versions, *What Is Wrong*, *Why It Matters*, a *Real-World Analogy*, and a **Side-by-Side Before (`-`) vs. After (`+`) Remediation Code Diff** with 1-click copy.
-3. **Call-Graph Reachability & EPSS v4 Exploitability Prioritization**
-   - Classifies every finding as `🎯 RUNTIME REACHABLE`, `⚙️ BUILD / DEV REACHABLE`, or `💤 DORMANT / UNREACHABLE` with a written reachability proof alongside **30-Day EPSS Exploit Probability** and percentile ranking.
-4. **Saved Scan Snapshots & Continuous Track Changes Mode**
-   - Persists scan snapshots with `Last Scanned` timestamps so users can inspect historical findings immediately without rescanning every time, and computes automatic **Track Changes Deltas** (`✅ Old Fixed`, `🆕 New Came`, `⏳ Unchanged`) across rescans.
-5. **Automated Microsoft STRIDE Threat Model, CycloneDX v1.5 SBOM & CI/CD PBOM**
-   - Dynamically maps application entrypoints, manifests, and findings across all **6 STRIDE Threat Categories** (`S`, `T`, `R`, `I`, `D`, `E`), generates a live **CycloneDX v1.5 SBOM**, and audits **5 CI/CD Pipeline Bill of Materials (PBOM)** controls.
-6. **Interactive PMI / COBIT RACI Governance Matrix**
-   - Live `7 Roles × 9 Security Lifecycle Activities` RACI matrix with automated Golden Rule validation (`100% Governance Health Score`).
-7. **Adaptive Dual-Mode UI (`Simple Clean View` vs. `Pro Detailed View` + 6 Light/Dark Mythic Themes)**
-   - Switch effortlessly between **Simple View** (clutter-free workflow) and **Pro View** (full desktop menus & query inspector), and toggle between **Olympian Daylight (Light Mode)** and **Alastor Infernal (Dark Mythic Mode)**.
+1. **Streamlined Enterprise Shell (`Top Menu Bar` + `Left Side Function Bar`)**
+   - **7-Dropdown Top Application Menu Bar** ([`AppMenuBar.tsx`](./frontend/src/components/AppMenuBar.tsx)): `File & Scan`, `Workspace`, `CPG & Graphs`, `Threat Model & Secrets`, `Rule Engine & Profiles`, `Accounts & Users`, and `Reports & Connectors`.
+   - **Vertical Left Activity Rail** ([`LeftFunctionBar.tsx`](./frontend/src/components/LeftFunctionBar.tsx)): 1-click switching across all **8 Enterprise Modules** (`Review`, `Threats`, `Rules`, `Accounts`, `Projects`, `Analytics`, `RACI`, `ASPM`) plus direct launchers for `Secrets`, `Call Graph`, and `Entrypoints`.
+2. **STRIDE Executive Count Matrix & File-Anchored Observations Dossier**
+   - Available in both the dedicated **Threat Modeling** workspace ([`ThreatModelingView.tsx`](./frontend/src/components/ThreatModelingView.tsx)) and **SAST++++++ Suite Tab 5** ([`SastPlusSuiteView.tsx`](./frontend/src/components/SastPlusSuiteView.tsx)):
+     - **Top STRIDE Count & Verdict Matrix Table**: Displays `Total Checks`, `✔ OK Count`, `✖ Issue Count`, `Observations Count`, `✔ What is OK (Summary)`, `✖ What is the Issue (Summary)`, and `STRIDE Verdict (PASS / FAIL)` across all 6 STRIDE domains (`S`, `T`, `R`, `I`, `D`, `E`) with a grand-total rollup row.
+     - **Detailed STRIDE Observations Breakdown (`StrideObservationItem`)**: Every active SAST/SCA/IaC/Secret issue (`ISSUE`) and verified security control (`OK`) is itemized with `filepath:line`, live code snippet, *Why It Is an Issue / Why It Is OK*, *Risk & Business Impact*, *Corrective Action*, and a working **`Inspect Code`** button.
+3. **Secret Keys Hunter & Cryptographic Vault (`RULE-8-HARDCODED-SECRET`)**
+   - Detects hardcoded API keys, JWT secrets, cloud tokens, and container credentials (`CWE-798`), displaying the **Detected Secret Key Name**, **Masked Preview**, **Secret Provider Type**, and **Shannon Entropy** bits/char on finding cards instead of generic reachability badges, with RBAC-controlled **Reveal / Mask Raw Secret**.
+4. **Rule Engine & Test Profiles Matrix (`RuleEngineProfilesView`)**
+   - Switch between 4 built-in test profiles (`Checkmarx-Style Optimized`, `Strict Zero-Trust Enterprise`, `Secret & Credential Hunter`, `Fast CI/CD PR Gate`), create custom test profiles, toggle `SAST` / `SCA` / `IaC` engines, and check/uncheck individual security rules (`RULE-1` through `RULE-9`, `SCA-1`, `IAC-1`, `IAC-2`).
+5. **User Profiling, RBAC & Multi-Tenant Account Separation (`UserAccountProfileView`)**
+   - Manage isolated organizational tenant accounts (`Enterprise Security HQ`, `CISO & Executive Governance Division`, `Threat Intelligence & SecOps Division`, or custom enclaves), partition repositories across accounts, toggle live RBAC capabilities (`Reveal Secrets`, `Edit Rules`, `Triage Findings`, `Tenant Admin`), and audit operator session actions.
+6. **7-Mode Decluttered Graph Canvas (`Call Graph`, `Entrypoints Graph` & `360° Spider Map`)**
+   - Added **Inter-Procedural Call Graph (`CALL_GRAPH`)** and **Attack Surface Entry Points Graph (`ENTRYPOINT_GRAPH`)** alongside **Smart Folder-Clustered 360° Application Spider Map (`APP_TREE`)** so large applications remain crystal-clear.
+
+---
+
+## ✨ Core Platform Capabilities
+
+| Module | Workspace ID | Key Capabilities |
+| :--- | :--- | :--- |
+| **1. Code & CPG Workbench** | `REMEDIATION_IDE` | Tree-Sitter `AST + CFG + DFG + Call Graph` in Neo4j, Written Observation Dossier, Best Fix Location (`BFL`), Side-by-Side Before/After Code Diff, 7 Graph Modes. |
+| **2. Threat Modeling & Secret Vault** | `THREAT_MODELING` | Microsoft STRIDE Count & Verdict Matrix, `✔ What is OK` vs `✖ What is the Issue`, Detailed File-Anchored Observations, Secret Keys Vault, Trust Boundaries & Entrypoints, CI/CD PBOM. |
+| **3. Rule Engine & Test Profiles** | `RULE_ENGINE_PROFILES` | Built-in & Custom Test Profiles, Per-Rule Checkbox Matrix (`12 SAST/SCA/IaC/Secret Rules`), Engine Toggles, Custom Sanitizers & Cypher Rule Editor. |
+| **4. User Profiling & Accounts** | `USER_PROFILES` | Multi-Tenant Account Separation (`STRICT` / `SHARED_READ`), Repository Partitioning, 5 RBAC Operator Tiers, Live Permission Toggles & Audit Trail. |
+| **5. Projects & Saved Scans Hub** | `PROJECTS_HUB` | Local Repository Auto-Discovery, Persistent Scan Snapshots (`Last Scanned`), Track Changes Deltas (`Fixed` / `New` / `Unchanged`), Live OSV/NVD/CISA Web Advisories. |
+| **6. Deep Dive Analytics** | `DEEP_DIVE` | Severity & Ecosystem Breakdown, SLA Aging Buckets, OWASP Top 10 / PCI-DSS v4.0 / NIST 800-53 / SOC 2 Compliance Readiness, Unified Engine Table. |
+| **7. RACI Governance Matrix** | `RACI_GOVERNANCE` | Interactive `7 Roles × 9 Security Lifecycle Activities` PMI/COBIT RACI Matrix with Golden Rule validation (`100% Governance Health Score`). |
+| **8. SAST++++++ ASPM Suite** | `SAST_PLUS_SUITE` | Plain-English Risk Translator, Live CycloneDX v1.5 SBOM, API Attack Surface, Remediation Roadmap, STRIDE & PBOM, and Security Academy. |
 
 ---
 
@@ -105,7 +121,7 @@ Then open **`http://localhost:3000`** in your browser.
 
 ## 🧪 Running the 17-Assertion Autonomous Verification Suite
 
-ALASTOR includes an end-to-end verification harness ([`verify_harness.py`](./verify_harness.py)) that tests Neo4j APOC, all CPG rules, multi-site advisory extraction, BFL, RACI, SBOM, STRIDE, PBOM, SARIF v2.1.0 export, Track Changes, and performs a **full self-audit of `cpg-sast-platform` asserting 0 unpatched findings**:
+ALASTOR includes an end-to-end verification harness ([`verify_harness.py`](./verify_harness.py)) that tests Neo4j APOC, all CPG rules, multi-site advisory extraction, BFL, RACI, SBOM, STRIDE counts & observations, PBOM, Call Graph, Entrypoints Graph, Multi-Tenant RBAC Accounts, SARIF v2.1.0 export, Track Changes, and performs a **full self-audit of `cpg-sast-platform` asserting 0 unpatched findings**:
 
 ```bash
 .\.venv\Scripts\python.exe verify_harness.py
@@ -113,12 +129,18 @@ ALASTOR includes an end-to-end verification harness ([`verify_harness.py`](./ver
 
 ---
 
-## 📚 Full Documentation & Standard Operating Procedure (SOP)
+## 📋 Version History & Changelog Summary
 
-See [**`docs/ALASTOR_Master_SOP_and_Product_Guide.md`**](./docs/ALASTOR_Master_SOP_and_Product_Guide.md) for the complete competitive benchmark, architectural reference, and 7-part step-by-step operator manual.
+| Version | Date | Highlights |
+| :--- | :--- | :--- |
+| **`v2.5.0`** | **2026-10-22** | **Enterprise Shell (`AppMenuBar` + `LeftFunctionBar`), STRIDE Count & Observation Matrix (`✔ OK` vs `✖ Issue`), Secret Keys Vault (`RULE-8`), Rule Engine Test Profiles (`RuleEngineProfilesView`), Multi-Tenant RBAC Accounts (`UserAccountProfileView`), Call Graph (`CALL_GRAPH`), Entrypoints Graph (`ENTRYPOINT_GRAPH`), and Decluttered 360° Spider Map.** |
+| **`v2.0.0`** | 2026-10-19 | SAST++++++ ASPM Suite, Written Observation Dossiers, Side-by-Side Before/After Code Diffs, Call-Graph Reachability, EPSS v4, RACI Matrix, CycloneDX v1.5 SBOM, and Continuous Track Changes Mode. |
+| **`v1.0.0`** | 2026-10-17 | Core Tree-Sitter AST + CFG + DFG Code Property Graph over Neo4j + APOC, deterministic CPG taint & structural rules, BFL calculation, and OASIS SARIF v2.1.0 export. |
+
+See [**`CHANGELOG.md`**](./CHANGELOG.md) for the complete release notes.
 
 ---
 
-## 🤝 Contributing for Security Researchers
+## 📚 Full Documentation & Standard Operating Procedure (SOP)
 
-We warmly invite security researchers to contribute new CPG taint queries, language parsers, reachability rules, and autofix templates! See [**`CONTRIBUTING.md`**](./CONTRIBUTING.md) to get started.
+See [**`docs/ALASTOR_Master_SOP_and_Product_Guide.md`**](./docs/ALASTOR_Master_SOP_and_Product_Guide.md) for the complete competitive benchmark, architectural reference, and 10-part step-by-step operator manual.

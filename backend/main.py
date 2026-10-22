@@ -79,9 +79,9 @@ def update_progress(
     )
 
 app = FastAPI(
-    title="Enterprise Deterministic CPG & SAST Engine",
-    version="1.0.0",
-    description="Compiler-grade deterministic Code Property Graph and vulnerability analysis platform."
+    title="ALASTOR Enterprise Deterministic CPG, STRIDE Threat Modeling & SAST++++++ Engine",
+    version="2.5.0",
+    description="Compiler-grade deterministic Code Property Graph, STRIDE Threat Modeling, Secret Keys Vault, Rule Engine Profiles, Multi-Tenant RBAC, and ASPM platform."
 )
 
 # CORS setup

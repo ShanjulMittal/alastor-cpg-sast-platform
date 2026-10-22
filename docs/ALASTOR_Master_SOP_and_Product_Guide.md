@@ -1,13 +1,14 @@
-# ALASTOR (`Ἀλάστωρ`) — Enterprise Product Guide, Feature Catalog & Master Standard Operating Procedure (SOP)
+# ALASTOR (`Ἀλάστωρ`) v2.5.0 — Enterprise Product Guide, Feature Catalog & Master Standard Operating Procedure (SOP)
 
-**Deterministic Code Property Graph (CPG) • Unified SAST, SCA & IaC • Call-Graph Reachability • EPSS v4 • STRIDE Threat Modeling • CI/CD PBOM • PMI/COBIT RACI Governance**
+**Deterministic Code Property Graph (AST + CFG + DFG + Call Graph) • Unified SAST, SCA, IaC & Secret Keys Hunter • STRIDE Threat & Observation Matrix • Custom Rule Profiles • Multi-Tenant RBAC Account Separation • Call-Graph Reachability • EPSS v4 • CI/CD PBOM • PMI/COBIT RACI Governance**
 
 ![ALASTOR Mythological Demon Crest](./screenshots/alastor_demon_logo.jpg)
 
 > [!IMPORTANT]
-> **Dual-Purpose Executive & Operator Document**:
+> **Dual-Purpose Executive & Operator Document (Updated for Release v2.5.0)**:
 > 1. **Part I & II (Executive Pitch & Competitive Differentiation)**: Designed for CISOs, VPs of Engineering, Enterprise Architects, and Procurement Leaders evaluating why ALASTOR outperforms legacy static analyzers and fragmented cloud scanners.
-> 2. **Part III, IV & V (Complete Feature Reference & Master SOP)**: A step-by-step Standard Operating Procedure enabling Security Engineers, Developers, and Non-Coder Managers/Students to master every workspace, workflow, and API in under 15 minutes.
+> 2. **Part III, IV & V (Complete 8-Module Feature Reference & 10-Step Master SOP)**: A step-by-step Standard Operating Procedure enabling Security Engineers, Red Teamers, Developers, and Non-Coder Managers/Students to master every workspace, workflow, and API.
+> 3. **Part VI (Version History & Release Changelog)**: Detailed breakdown of `v2.5.0`, `v2.0.0`, and `v1.0.0` releases.
 
 ---
 
@@ -15,51 +16,50 @@
 
 In Greek mythology, **Alastor (`Ἀλάστωρ`)** is the relentless *Daimon of Retribution*—the unforgetting spirit who hunts down hidden corruptions so that no unseen flaw escapes judgment.
 
-Modern engineering organizations suffer from three systemic failures in Application Security (AppSec):
+Modern engineering organizations suffer from four systemic failures in Application Security (AppSec):
 1. **Alert Fatigue & False-Positive Flood**: Regex-based SAST scanners and naive SCA tools flag hundreds of theoretical issues without checking if untrusted input actually reaches a sink without sanitization, or if a flagged third-party library is even reachable at runtime.
 2. **Cryptic Jargon & Zero Written Context**: Traditional scanners output terse rule IDs (e.g., `CWE-1395: Vulnerable Component`) without naming the exact third-party packages, line numbers, lockfile-resolved versions, business impact, or copy-pasteable code replacements.
-3. **Siloed Tools Across Personas**: Engineers live in IDEs and call graphs; CISOs and Program Managers live in compliance frameworks (`OWASP Top 10`, `PCI-DSS v4.0`, `NIST 800-53`), `RACI` accountability matrices, and `STRIDE` threat models. No single local-first platform bridged both worlds—until **ALASTOR**.
+3. **Opaque Threat Modeling & Secret Sprawl**: Most scanners cannot generate a live **Microsoft STRIDE Count & Observation Matrix** (`What is OK` vs. `What is the Issue`) anchored to actual code lines, nor do they separate **Secret Key Vault Unmasking** by operator RBAC clearance.
+4. **Siloed Tools Across Personas & Tenants**: Engineers live in IDEs, call graphs, and rule profiles; CISOs and Program Managers live in multi-tenant account boundaries, compliance frameworks (`OWASP Top 10`, `PCI-DSS v4.0`, `NIST 800-53`), `RACI` accountability matrices, and `STRIDE` threat models. **ALASTOR v2.5.0** unifies all of them into one 100% local-first platform.
 
-### The ALASTOR Core Value Proposition
+### The ALASTOR v2.5.0 Core Value Proposition
 
-| Business Outcome | How ALASTOR Delivers It |
+| Business Outcome | How ALASTOR v2.5.0 Delivers It |
 | :--- | :--- |
-| **Mathematical Zero-Noise Precision** | Compiles source code via **Tree-Sitter** into a unified **Code Property Graph (AST + CFG + DFG)** inside **Neo4j + APOC**, proving inter-procedural source-to-sink exploitability and filtering out sanitized flows automatically. |
-| **100% Written Clarity on Every Finding** | Every SAST, SCA, and IaC observation includes a full **Written Observation Dossier**: exact affected packages/lines, *What Is Wrong*, *Why It Matters*, a *Real-World Non-Coder Analogy*, and a **Side-by-Side Before (`-`) vs. After (`+`) Code Diff** with 1-click copy. |
-| **Instant Saved Scans & Continuous Track Changes** | Never wait for redundant scans. ALASTOR persists full scan snapshots with `Last Scanned` timestamps and automatically computes **Track Changes Deltas** (`✅ Old Fixed`, `🆕 New Came`, `⏳ Unchanged`) across every rescan. |
-| **Dual-Persona Adaptive UI (`Simple View` vs. `Pro View`)** | Switch seamlessly between **Simple Clean View** (clutter-free workflow with plain-English student/manager guidance) and **Pro Detailed View** (full desktop menus, Cypher/Tree-Sitter query inspector, and multi-engine controls) with zero feature loss. |
-| **100% Local-First Sovereignty** | Runs entirely on your local workstation or private network (`FastAPI` + `Neo4j` + `Next.js`) with **zero source code exfiltration** to external cloud vendors and **zero synthetic/demo data pollution**. |
+| **Mathematical Zero-Noise Precision** | Compiles source code via **Tree-Sitter** into a unified **Code Property Graph (AST + CFG + DFG + Inter-Procedural Call Graph)** inside **Neo4j + APOC**, proving source-to-sink exploitability and filtering out sanitized flows automatically. |
+| **Streamlined Enterprise Navigation Shell** | Combines a **7-Dropdown Top Application Menu Bar** (`File & Scan`, `Workspace`, `CPG & Graphs`, `Threat Model & Secrets`, `Rule Engine & Profiles`, `Accounts & Users`, `Reports & Connectors`) with a **Vertical Left Side Function Bar** for 1-click access to all 8 modules. |
+| **STRIDE Count Matrix & Detailed Observations** | Displays per-category and total counts (`Total Checks`, `✔ OK Count`, `✖ Issue Count`, `Observations Count`), side-by-side **`✔ What is OK`** vs. **`✖ What is the Issue`**, and file-anchored **Observation Cards** with 1-click **`Inspect Code`**. |
+| **Secret Keys Hunter & RBAC Vault** | Detects hardcoded credentials (`RULE-8-HARDCODED-SECRET` / `CWE-798`), displaying the **Secret Key Name**, **Masked Key Preview**, **Provider Type**, and **Shannon Entropy** on finding cards instead of generic reachability badges. |
+| **Rule Engine & Custom Test Profiles** | Lets teams choose or create custom **Test Profiles** and check/uncheck individual security rules (`SAST`, `SCA`, `IaC`, `Secret Hunter`) with instant live rescanning. |
+| **Multi-Tenant Account Separation & RBAC** | Partitions repositories across isolated organizational **Tenant Accounts** (`STRICT` / `SHARED_READ`) and enforces 5-tier **RBAC Operator Profiles** with live-toggleable capabilities (`Reveal Secrets`, `Edit Rules`, `Triage`, `Tenant Admin`). |
 
 ---
 
-## Part II: Competitive Benchmark — ALASTOR vs. Legacy & Cloud AppSec Tools
+## Part II: Competitive Benchmark — ALASTOR v2.5.0 vs. Legacy & Cloud AppSec Tools
 
-We benchmarked ALASTOR against leading industry tools (**Checkmarx**, **Snyk**, **Semgrep Supply Chain**, **Endor Labs**, **Wiz Code**, **Apiiro**, and **GitHub Advanced Security**) and unified their best capabilities into one cohesive platform:
-
-| Enterprise Capability | Legacy SAST (Checkmarx / Fortify) | Cloud SCA (Snyk / Dependabot) | ASPM Platforms (Apiiro / Wiz) | **ALASTOR (`SAST++++++`)** |
+| Enterprise Capability | Legacy SAST (Checkmarx / Fortify) | Cloud SCA (Snyk / Dependabot) | ASPM Platforms (Apiiro / Wiz) | **ALASTOR v2.5.0 (`SAST++++++`)** |
 | :--- | :---: | :---: | :---: | :---: |
-| **True AST + CFG + DFG Code Property Graph (Neo4j)** | Partial (Proprietary) | ❌ No | ❌ No | ✅ **Yes (Open Cypher + Tree-Sitter)** |
-| **Best Fix Location (BFL) Chokepoint Calculation** | ✅ Yes | ❌ No | ❌ No | ✅ **Yes (Dominator Node Chokepoint)** |
-| **Call-Graph & Toolchain Reachability (`REACHABLE` vs. `DORMANT`)** | ❌ No | Partial | ✅ Yes | ✅ **Yes (Written Reachability Proof)** |
-| **EPSS v4 (30-Day Exploit Probability & Percentile) + CISA KEV** | ❌ No | ✅ Yes | ✅ Yes | ✅ **Yes (Built into Every Card & Table)** |
-| **Side-by-Side Before (`-`) vs. After (`+`) Code Diff & 1-Click Copy** | ❌ No | Partial | ❌ No | ✅ **Yes (Exact Lockfile & Header Patches)** |
+| **True AST + CFG + DFG + Call Graph CPG (Neo4j)** | Partial (Proprietary) | ❌ No | ❌ No | ✅ **Yes (Open Cypher + Tree-Sitter)** |
+| **Inter-Procedural Call Graph (`CALL_GRAPH`) & Entrypoints Graph** | Partial | ❌ No | Partial | ✅ **Yes (Dedicated Interactive Views)** |
+| **Decluttered 360° Application Spider Map (Smart Folder Clustering)** | ❌ No | ❌ No | ❌ No | ✅ **Yes (Scales to Large Repos)** |
+| **STRIDE Count Matrix (`✔ OK` vs `✖ Issue`) + Observation Dossiers** | ❌ No | ❌ No | Partial | ✅ **Yes (File-Anchored + `Inspect Code`)** |
+| **Secret Keys Vault with Key Names, Entropy & RBAC Unmasking** | ❌ No | ❌ No | Partial | ✅ **Yes (Dedicated Vault + Card Badges)** |
+| **Granular Rule Engine & Custom Test Profiles Matrix** | ✅ Yes | ❌ No | ❌ No | ✅ **Yes (Per-Rule Checkbox + Presets)** |
+| **Multi-Tenant Account Separation & Live RBAC Clearance Matrix** | Partial | Partial | ✅ Yes | ✅ **Yes (Isolated Enclaves + Audit Log)** |
+| **Best Fix Location (BFL) + Side-by-Side Before/After Code Diff** | Partial | Partial | ❌ No | ✅ **Yes (1-Click Copy Fixed Code)** |
 | **Continuous Track Changes (`Fixed` / `New` / `Unchanged` Delta)** | Partial | Partial | ✅ Yes | ✅ **Yes (Persistent Snapshot History)** |
 | **Live CycloneDX v1.5 SBOM + CI/CD Pipeline BOM (PBOM)** | ❌ No | Partial (SBOM only) | ✅ Yes | ✅ **Yes (SBOM + 5-Control CI/CD PBOM)** |
-| **Automated Microsoft STRIDE Architectural Threat Model** | ❌ No | ❌ No | ✅ Yes | ✅ **Yes (6 STRIDE Categories Mapped Live)** |
 | **Interactive PMI/COBIT RACI Governance Matrix** | ❌ No | ❌ No | ❌ No | ✅ **Yes (7 Roles × 9 Lifecycle Activities)** |
-| **Non-Coder Plain-English Translator & Real-World Analogies** | ❌ No | ❌ No | ❌ No | ✅ **Yes (Dedicated Student/Manager Mode)** |
 | **100% Local Execution (Zero Cloud Code Upload Required)** | ❌ Heavy Server | ❌ Cloud SaaS | ❌ Cloud SaaS | ✅ **Yes (Self-Contained Local Stack)** |
 
 ---
 
 ## Part III: Visual Tour of the ALASTOR Platform (Live Screenshots)
 
-Explore all 11 live screens captured directly from the running ALASTOR platform auditing the real `C:\Projects\CISO` application:
-
 ````carousel
 ![1. ALASTOR Portal Gate — Active App, Saved Scan Snapshot & Track Changes Mode](./screenshots/alastor_01_portal_gate.png)
 <!-- slide -->
-![2. Workspace 3: Code & Graph Review — Always-Visible Written Observation Dossier, Affected Third-Party Packages, Reachability & EPSS Badges](./screenshots/alastor_02_code_review_dossier.png)
+![2. Code & Graph Review — Always-Visible Written Observation Dossier, Affected Third-Party Packages, Reachability & EPSS Badges](./screenshots/alastor_02_code_review_dossier.png)
 <!-- slide -->
 ![3. Side-by-Side Before (-) vs. After (+) Remediation Code Diff, 1-Click Fix Guide & 360° Application Architecture Spider Map](./screenshots/alastor_10_before_after_diff_and_spider_map.png)
 <!-- slide -->
@@ -67,280 +67,200 @@ Explore all 11 live screens captured directly from the running ALASTOR platform 
 <!-- slide -->
 ![5. Dark Mythic Theme (Alastor Infernal) — Obsidian, Molten Gold & Crimson High-Contrast Engineering View](./screenshots/alastor_11_dark_mythic_theme.png)
 <!-- slide -->
-![6. Workspace 1: Projects & Saved Scans Hub + Multi-Site Web & URL Vulnerability Scanner](./screenshots/alastor_04_projects_hub.png)
+![6. Projects & Saved Scans Hub + Multi-Site Web & URL Vulnerability Scanner](./screenshots/alastor_04_projects_hub.png)
 <!-- slide -->
-![7. Workspace 2: Overview & Deep-Dive Analytics — Severity, SLA Aging & OWASP/PCI-DSS/NIST Compliance](./screenshots/alastor_05_deep_dive_analytics.png)
+![7. Deep-Dive Analytics — Severity, SLA Aging & OWASP/PCI-DSS/NIST Compliance](./screenshots/alastor_05_deep_dive_analytics.png)
 <!-- slide -->
-![8. Workspace 4: Interactive RACI Security Governance & Accountability Matrix (PMI / COBIT Validated)](./screenshots/alastor_06_raci_governance_matrix.png)
+![8. Interactive RACI Security Governance & Accountability Matrix (PMI / COBIT Validated)](./screenshots/alastor_06_raci_governance_matrix.png)
 <!-- slide -->
-![9. Workspace 5 (SAST++++++ Pillar 1): Plain-English Business Risk & Impact Translator](./screenshots/alastor_07_sast_plus_risk_translator.png)
+![9. SAST++++++ Pillar 1: Plain-English Business Risk & Impact Translator](./screenshots/alastor_07_sast_plus_risk_translator.png)
 <!-- slide -->
-![10. Workspace 5 (SAST++++++ Pillar 5): Automated Microsoft STRIDE Threat Model & CI/CD Pipeline BOM (PBOM)](./screenshots/alastor_08_stride_threat_model_pbom.png)
+![10. Automated Microsoft STRIDE Threat Model & CI/CD Pipeline BOM (PBOM)](./screenshots/alastor_08_stride_threat_model_pbom.png)
 <!-- slide -->
-![11. Workspace 5 (SAST++++++ Pillar 2): Live CycloneDX v1.5 Software Bill of Materials (SBOM) & Supply-Chain Inspector](./screenshots/alastor_09_live_sbom_cyclonedx.png)
+![11. Live CycloneDX v1.5 Software Bill of Materials (SBOM) & Supply-Chain Inspector](./screenshots/alastor_09_live_sbom_cyclonedx.png)
 ````
 
 ---
 
-## Part IV: System Architecture & Complete Feature Catalog
+## Part IV: System Architecture & 8-Module Feature Catalog
 
 ```mermaid
 flowchart LR
-    subgraph Input["1. Target Ingestion & Saved Snapshots"]
-        A["Local Folder / Repo / File / Snippet"]
-        B["Live Web Advisories (OSV, NVD, CWE, OWASP)"]
+    subgraph Input["1. Target Ingestion & Multi-Tenant Scope"]
+        A["Local Repo / Folder / File / Snippet"]
+        B["Live Web Advisories (OSV, NVD, CISA)"]
+        T["Isolated Tenant Account & RBAC Profile"]
     end
 
-    subgraph Engine["2. Deterministic CPG & Unified Scan Engines"]
-        C["Tree-Sitter Multi-Language Parser (AST + CFG + DFG)"]
+    subgraph Engine["2. Deterministic CPG & Rule Profile Engine"]
+        C["Tree-Sitter Parser (AST + CFG + DFG + Call Graph)"]
         D["Neo4j + APOC Graph Database"]
-        E["SAST Engine (Taint, Orphans, Dead Stores, Loops)"]
+        E["SAST Engine (Taint, Orphans, Dead Stores, Loops, XSS)"]
+        S["Secret Keys Hunter (RULE-8 + Entropy + Masking)"]
         F["SCA Engine (Manifests, Lockfiles, Pinning, CVEs)"]
         G["IaC & Runtime Engine (Containers, Next.js/Web Headers)"]
     end
 
-    subgraph Enrichment["3. ASPM & Executive Intelligence Enrichment"]
+    subgraph Enrichment["3. Threat Modeling & ASPM Intelligence"]
         H["Best Fix Location (BFL) + Before/After Code Diff"]
         I["Call-Graph Reachability + EPSS v4 30d Scoring"]
-        J["Plain-English Translator + Real-World Analogies"]
-        K["STRIDE Threat Model + CycloneDX SBOM + CI/CD PBOM"]
+        K["STRIDE Count & Observation Matrix + CI/CD PBOM"]
         L["PMI/COBIT RACI Matrix + Track Changes Delta"]
     end
 
-    subgraph Workspaces["4. 5-Module Adaptive UI & Exports"]
-        M["1. Projects Hub | 2. Overview | 3. Code & Graph | 4. RACI | 5. SAST++++++"]
-        N["Exports: Markdown, JSON, SARIF v2.1.0, CycloneDX v1.5, Jira/GitHub Tickets"]
+    subgraph Shell["4. 8-Module Enterprise Shell (AppMenuBar + LeftFunctionBar)"]
+        M["1. Review | 2. Threats | 3. Rules | 4. Accounts | 5. Projects | 6. Analytics | 7. RACI | 8. ASPM"]
     end
 
     A --> C
     B --> F
+    T --> C
     C --> D
     D --> E
+    D --> S
     A --> F
     A --> G
     E --> H
+    S --> K
     F --> H
     G --> H
     H --> I
-    I --> J
-    J --> K
+    I --> K
     K --> L
     L --> M
-    M --> N
 ```
 
-### Complete Feature Matrix by Module
+### Complete Feature Matrix Across All 8 Enterprise Modules
 
-#### Module 0: Global Context, Navigation & Adaptive UX
-- **Persistent Active Application Under Review Banner**: Displayed across all 5 workspaces so you never lose track of which application is being discussed. Shows:
-  - Application Name badge (e.g., `CISO`) and full filesystem path (`C:\Projects\CISO`)
-  - Instant **Switch Application Dropdown** to jump between registered projects
-  - **Last Scanned Timestamp & Scan Counter** (`Last Scanned: 2026-10-19 21:45:26 (Scan #6)`)
-  - **Track Changes Delta Pills** (`✅ 1 Fixed`, `🆕 0 New`, `⏳ 2 Unchanged`)
-  - **Saved Scan Details Drawer** button (view full historical diff without rescanning) and **1-Click Re-Scan** button
-- **Simple View vs. Pro View Density Toggle (`✨ Simple View` / `🎛️ Pro View`)**:
-  - **Simple Clean View (Default)**: Hides complex top menu ribbons, simplifies the target selector to a single `Select Target...` button, defaults to `Code & Fix Focus`, and keeps the Written Observation Dossier front-and-center.
-  - **Pro Detailed View**: Expands the full multi-dropdown `SAST++++++ Desktop Menu Bar`, quick-settings ribbon, inline path/URL input bar, and split CPG graph controls.
-- **Audience Persona Switcher (`🎓 Simple Student / Manager` vs. `⚡ Pro Engineer`)**:
-  - Tailors descriptions between non-coder analogies/executive action steps and low-level AST/CFG/DFG technical traces.
-- **6 Curated Light & Dark Mythological Themes**:
-  - **Light Themes**: *Olympian Daylight* (Default crisp white/alabaster), *Athena Parchment* (warm ivory), *Hyperborean Frost* (cool azure).
-  - **Dark/Mythic Themes**: *Alastor Infernal* (obsidian, molten gold & crimson), *Hecate Arcane* (amethyst void), *Stygian Abyss* (cyber zinc & cyan).
-- **Global Command Palette (`Ctrl+K` / `Cmd+K`)**: Instant keyboard navigation to any workspace, scan preset, theme, export format, or finding.
+#### Module 0: Enterprise Navigation Shell (`AppMenuBar` + `LeftFunctionBar` + `ActiveApplicationBanner`)
+- **Top Application Menu Bar (`AppMenuBar.tsx`)**:
+  - `File & Scan`: Run Full CPG + Secret Scan, Open Projects Hub, Pull Live Web Advisories, Open Command Palette (`Ctrl+K`), Return to Alastor Portal Gate.
+  - `Workspace`: Direct switcher across all 8 Enterprise Modules + Workbench Panel Layout (`Split Code+Graph`, `Code Only`, `Graph Only`).
+  - `CPG & Graphs`: Switch between all 7 Graph Visualizations (`1. Attack Path`, `2. 360° Spider Map`, `3. Call Graph`, `4. Entrypoints Graph`, `5. Data-Flow DFG`, `6. Control-Flow CFG`, `7. Full CPG`) + Fullscreen Presentation launch.
+  - `Threat Model & Secrets`: Open STRIDE Threat Modeling Workspace, Filter Detected Secret Keys, Inspect Entrypoints Graph, Inspect Call Graph.
+  - `Rule Engine & Profiles`: Open Rule Engine & Test Profiles Matrix, Quick-Switch Active Test Profile, Toggle `SAST` / `SCA` / `IaC` engines.
+  - `Accounts & Users`: Open User Profiling & Account Separation, Quick-Switch Isolated Tenant Account, Assume RBAC User Profile.
+  - `Reports & Connectors`: Export Markdown (`.md`), JSON (`.json`), OASIS SARIF v2.1.0 (`.sarif.json`), CycloneDX v1.5 SBOM (`.cdx.json`), RACI Matrix (`.json`), and open Jira/GitHub Issues Connectors.
+- **Left Side Function Bar (`LeftFunctionBar.tsx`)**:
+  - Vertical activity rail with live count badges for `Review`, `Threats (STRIDE)`, `Rules (Enabled/Total)`, `Accounts`, `Projects`, `Analytics`, `RACI`, and `ASPM`, plus 1-click launchers for `Secrets`, `Call Graph`, and `Entrypoints`.
 
-#### Module 1: Projects & Saved Scans Hub (`PROJECTS_HUB`)
-- **Zero Demo/Synthetic Clutter**: Automatically discovers real local repositories in `C:\Projects` (e.g., `CISO`, `cpg-sast-platform`, `MISP`, `NewsLetter`) and calculates live risk scores (`0–100`) and risk levels (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`).
-- **Saved Scan Snapshot Loader**: Click **Open Saved Scan** on any previously scanned project to load its cached findings and metrics instantaneously without re-running the scanner.
-- **Multi-Site Web & URL Vulnerability Scanner**: Extracts live advisories from **Google OSV.dev**, **NIST NVD**, **CISA KEV / OWASP Top 10**, and custom URLs (e.g., `https://cwe.mitre.org/...`) and cross-matches them against your codebase.
+#### Module 1: Code & CPG Review Workbench (`REMEDIATION_IDE`)
+- **Flaw Explorer Sidebar**: Filter by engine (`SAST`, `SCA`, `IaC`), **Secret Keys Only (`🔑 Secrets`)**, or **Track Changes Delta** (`Active`, `🆕 New`, `✅ Fixed`, `⏳ Same`).
+- **Secret Key Finding Cards**: For hardcoded credentials (`RULE-8-HARDCODED-SECRET` / `CWE-798`), displays the **Secret Key Name** (e.g., `AWS_SECRET_ACCESS_KEY`, `JWT_SIGNING_SECRET`), **Masked Key Value**, **Secret Provider Type**, and **Shannon Entropy** instead of generic runtime reachability badges.
+- **Always-Visible Written Observation Dossier & Side-by-Side Code Diff**: Positioned directly above Monaco Editor with clickable affected-package pills, reachability proof, and **Side-by-Side Before (`-`) vs. After (`+`) Code Diff**.
+- **7-Mode Decluttered Graph Canvas (`ReactFlowGraphPane.tsx`)**:
+  1. `FINDING_PATH`: Vulnerability Attack Path (`Source → Sanitizer/Propagation → Sink`)
+  2. `APP_TREE`: Decluttered 360° Application Spider Map with **Smart Folder Clustering** (`<= 35` top-level nodes) and click-to-expand directory inspection
+  3. `CALL_GRAPH`: Inter-Procedural Function Call Graph (`:CALLS` relationships)
+  4. `ENTRYPOINT_GRAPH`: Attack Surface Entry Points Graph (`Routes / CLI / Sources → Sinks`)
+  5. `DFG_ONLY`: Data-Flow Slice (`:DFG_FLOWS_TO`)
+  6. `CFG_ONLY`: Control-Flow Slice (`:CFG_NEXT`)
+  7. `FULL_CPG`: Unified Code Property Graph (`AST + CFG + DFG + CALLS`)
 
-#### Module 2: Overview & Deep-Dive Analytics (`DEEP_DIVE`)
-- **Executive "What To Fix First" Action Plan**: Ranks top remediation priorities with effort estimates, RACI owners, and 1-click jump to code.
-- **Multi-Dimensional Vulnerability Breakdown**: Interactive severity donut (`Critical`, `High`, `Medium`, `Low`), language/ecosystem distribution, and **SLA Aging Buckets** (`0–1 Days`, `2–7 Days`, `8–30 Days`, `31–90 Days`, `>90 Days SLA Breached`) computed from real file modification timestamps (`os.path.getmtime`).
-- **Real-Time Compliance Framework Readiness**: Maps findings automatically against **OWASP Top 10 (2021)**, **PCI-DSS v4.0**, **NIST SP 800-53 Rev 5**, and **SOC 2 Type II**.
-- **Unified Scan Engine Manager Table (`SAST` + `SCA` + `IaC`)**: Filterable table showing every observation with its affected component list, **Reachability badge**, **EPSS 30-day probability**, written explanation preview, BFL line, and triage status.
+#### Module 2: STRIDE Threat Modeling & Secret Keys Vault (`THREAT_MODELING`)
+- **STRIDE Framework Executive Count & Verdict Matrix Table**:
+  - Displays all 6 Microsoft STRIDE categories (`[S] Spoofing`, `[T] Tampering`, `[R] Repudiation`, `[I] Information Disclosure`, `[D] Denial of Service`, `[E] Elevation of Privilege`) with exact counts:
+    - `Total Checks` (`total_checks_count`)
+    - `✔ OK Count` (`ok_count` — passed security controls)
+    - `✖ Issue Count` (`issue_count` — active vulnerabilities/gaps)
+    - `Observations Count` (`observations_count` — total itemized observations)
+    - `✔ What is OK (Summary)` & `✖ What is the Issue (Summary)`
+    - `STRIDE Verdict` (`PASS` / `FAIL`) + `TOTAL ACROSS ALL 6 STRIDE DOMAINS` footer row.
+- **Per-STRIDE Category Cards**:
+  - Side-by-side **`✔ What is OK — Passed Controls`** vs. **`✖ What is the Issue — Detected Gaps`** panels.
+  - **`Detailed STRIDE Observations Breakdown`**: Itemizes every individual `ISSUE` and `OK` observation (`StrideObservationItem`) with `filepath:line`, live code snippet, *Why It Is an Issue / Why It Is OK*, *Risk & Business Impact*, *Corrective Action*, and a working **`Inspect Code`** button.
+- **Tab 2 — Secret Keys & Credentials Vault**: Lists all detected secret keys with masked previews, entropy scores, RBAC-gated **Reveal / Mask Raw Secret** buttons, and 1-click **Inspect in Code**.
+- **Tab 3 — Attack Surface Entrypoints & Trust Boundaries**: Maps discovered HTTP routes, CLI handlers, and trust zones with working **Inspect Code** buttons.
+- **Tab 4 — CI/CD Pipeline BOM (PBOM) Verification**: Audits 5 supply-chain controls (`PASS` / `WARNING` / `FAIL`) with file-anchored evidence.
 
-#### Module 3: Code & Graph Review IDE (`REMEDIATION_IDE`)
-- **3 Flexible Layout Modes**:
-  1. `Code & Fix Focus` (full-width source code + Written Observation Dossier)
-  2. `Visual Graph Focus` (full-width interactive CPG & 360° Architecture Spider Map)
-  3. `Split View (Code + Graph)` (side-by-side synchronized code and graph)
-- **Flaw Explorer Sidebar**:
-  - Group findings by **Flat List**, **Language**, **Severity**, or **Scan Engine (`SAST`, `SCA`, `IaC`)**.
-  - Filter by **Track Changes Delta** (`Active`, `🆕 New`, `✅ Fixed`, `⏳ Same`).
-  - Every card displays the **Reachability Badge**, **EPSS 30d Score**, **Affected Third-Party Software / Code Callout**, **Reachability Explanation**, and **What Is Wrong** summary directly on the card.
-- **Always-Visible Written Observation Dossier**:
-  - Positioned directly above the Monaco source editor so you never have to hunt through tabs to understand a finding.
-  - Lists every affected third-party package or code node as clickable pills (e.g., `typescript: ^5 (pin -> 5.9.3) (package.json:L17)`) that jump the editor straight to that line.
-  - Displays **Reachability & Exploitability Analysis**, **What Is Wrong (Written Explanation)**, **How to Fix It**, **Real-World Analogy**, **Business Impact**, and **Side-by-Side Before (`-`) vs. After (`+`) Remediation Code Diff** with a **1-Click Copy Fixed Code** button.
-- **Best Fix Location (BFL) & Triage Workflow**:
-  - Highlights the mathematical **Best Fix Location** line in emerald inside Monaco Editor.
-  - Supports instant status triage (`To Verify`, `Confirmed`, `Not Exploitable`, `Proposed Not Exploitable`) with mandatory audit reasoning and 1-click **Jira / GitHub Issue** ticket creation.
-- **6-Mode Interactive Graph Canvas**:
-  1. `1. Attack Path` (Source $\rightarrow$ Sanitizer/Propagation $\rightarrow$ Sink taint story with step-by-step playback tour)
-  2. `2. 360° Spider Map` (Interactive application architecture web, Mind-Map LR, Hierarchy TB, and Spider Radar Profile)
-  3. `3. Data Flow (DFG)`
-  4. `4. Control Flow (CFG)`
-  5. `5. Function Calls (CG)`
-  6. `6. Full CPG`
+#### Module 3: Rule Engine & Test Profiles Matrix (`RULE_ENGINE_PROFILES`)
+- **Built-In & Custom Test Profiles**:
+  - Switch between `Checkmarx-Style Optimized`, `Strict Zero-Trust Enterprise`, `Secret & Credential Hunter`, and `Fast CI/CD PR Gate`, or create a new custom Test Profile (`+ New Test Profile`).
+- **Interactive Rule Selection Matrix**:
+  - Filter across all 12 rules (`RULE-1-TAINT` through `RULE-9-DOM-XSS`, `SCA-1-MANIFEST-AUDIT`, `IAC-1-COMPOSE-SECRET`, `IAC-2-CONTAINER-ROOT`), check/uncheck individual rules, click **Apply Selection & Re-Evaluate**, or add custom Cypher/Sanitizer rules.
 
-#### Module 4: Interactive RACI Security Governance Matrix (`RACI_GOVERNANCE`)
-- **PMI / COBIT / ISO 27001 Governance Engine**:
-  - Maps **7 Organizational Roles** (`CISO / Exec`, `Product / PM`, `Security Lead`, `Lead Dev`, `DevOps / Infra`, `QA Lead`, `GRC / Audit`) across **9 Security Lifecycle Activities**.
-  - Click any cell to cycle `R` (Responsible), `A` (Accountable), `C` (Consulted), or `I` (Informed) live.
-  - Automatically validates the Golden Rules of Governance (every activity has **exactly one `A`** and **at least one `R`**) and computes a real-time **Governance Health Score (`100%`)**.
-  - Includes a **Live Vulnerability Ownership & Sprint Assignment** tab and a **Student & Manager Study Guide**.
+#### Module 4: User Profiling, RBAC & Multi-Tenant Account Separation (`USER_PROFILES`)
+- **Isolated Organizational Tenant Accounts**:
+  - Built-in enclaves (`Enterprise Security HQ`, `CISO & Executive Governance Division`, `Threat Intelligence & SecOps Division`) plus custom tenant creation (`+ New Tenant Account`) with `STRICT` or `SHARED_READ` isolation.
+  - **Interactive Repository Partitioning**: Move any discovered repository (`cpg-sast-platform`, `NewsLetter`, `FRR`, `MISP`, etc.) into any Tenant Account via the card dropdown, or launch **Code** / **STRIDE** directly from the tenant card.
+- **RBAC User Profiles & Interactive Clearance Matrix**:
+  - 5 operator tiers (`APPSEC_ARCHITECT`, `CISO_EXEC`, `SECURITY_AUDITOR`, `DEVSECOPS_ENG`, `DEVELOPER`) plus custom user creation (`+ New User Profile`).
+  - Click any capability badge (`Secrets: Reveal/Masked`, `Rules: Write/Read-Only`, `Triage: Allowed/View`, `Tenants: Admin/Scoped`) to toggle permissions live, or click **Assume Operator Profile**.
+- **Multi-Tenant Security Audit Log**: Tracks every account switch, profile assumption, permission change, and repository assignment with timestamps.
 
-#### Module 5: SAST++++++ ASPM & Non-Coder Command Center (`SAST_PLUS_SUITE`)
-- **Pillar 1 — Plain-English Business Risk & Impact Translator**: Translates every technical finding into executive summaries, real-world analogies, business risks, RACI owners, and numbered management action checklists.
-- **Pillar 2 — Live CycloneDX v1.5 SBOM & Supply-Chain Inspector**: Parses real workspace manifests (`package.json`, `package-lock.json`, `requirements.txt`, source imports) to catalog every component, version pinning status (`Pinned` vs. `Floating ^/~`), license tier, and 1-click `CycloneDX v1.5 JSON` download.
-- **Pillar 3 — API & Entrypoint Attack Surface Discovery**: Automatically discovers HTTP routes, Next.js pages, CLI entrypoints, and auth-guard postures across the active codebase.
-- **Pillar 4 — Prioritized Management Remediation Roadmap**: Groups findings into **Phase 1 (Immediate <72h)**, **Phase 2 (Current Sprint <14d)**, and **Phase 3 (Architectural Hardening <30d)**.
-- **Pillar 5 — Automated Microsoft STRIDE Threat Model & CI/CD Pipeline BOM (PBOM)**:
-  - Evaluates all 6 Microsoft STRIDE categories (`Spoofing`, `Tampering`, `Repudiation`, `Information Disclosure`, `Denial of Service`, `Elevation of Privilege`) against discovered files, manifests, and findings.
-  - Audits 5 CI/CD PBOM supply-chain controls (`Dependency Version Pinning`, `Cryptographic Lockfile Presence`, `Secret & Credential Hygiene`, `Runtime & Container Hardening`, and `Call-Graph Reachability Prioritization`).
-- **Pillar 6 — Non-Coder Security Academy & Interactive Glossary**: Built-in educational cards explaining `SAST`, `SCA`, `IaC`, `CPG`, `Taint Analysis`, `BFL`, `SBOM`, `RACI`, `CWE`, and `CVSS` with real-world metaphors.
+#### Module 5–8: Projects Hub (`PROJECTS_HUB`), Deep Dive Analytics (`DEEP_DIVE`), RACI Matrix (`RACI_GOVERNANCE`), and SAST++++++ ASPM Suite (`SAST_PLUS_SUITE`)
+- All synchronized with the active application, cached scan snapshots, and STRIDE Count & Observation Matrix.
 
 ---
 
 ## Part V: Master Standard Operating Procedure (SOP) — Step-by-Step User Manual
 
-Follow these 7 standard operating procedures to master every workflow in ALASTOR.
+### SOP 1: Navigating via the Top Menu Bar & Left Side Function Bar
+1. Use the **Left Side Function Bar** (`68px` vertical rail on the far left) to switch between `Review`, `Threats`, `Rules`, `Accounts`, `Projects`, `Analytics`, `RACI`, and `ASPM` in 1 click, or click the direct `Secrets`, `Call Graph`, or `Entrypoints` shortcuts.
+2. Use the **Top Application Menu Bar (`ALASTOR MENU`)** at the very top of the screen for dropdown access to scan actions, graph modes, active test profile switching, tenant/user switching, and report exports.
+
+### SOP 2: Inspecting the STRIDE Threat Model (`✔ What is OK` vs `✖ What is the Issue`) & Secret Keys Vault
+1. Click **`Threats`** in the Left Side Function Bar (or `Threat Modeling` in the top bar, or `ASPM` $\rightarrow$ `5. STRIDE Threat Model & PBOM`).
+2. **Review the Top STRIDE Executive Count & Verdict Matrix Table**:
+   - Check the per-domain counts for `[S] Spoofing`, `[T] Tampering`, `[R] Repudiation`, `[I] Information Disclosure`, `[D] Denial of Service`, and `[E] Elevation of Privilege`:
+     - `Total Checks`: Total security checks evaluated in that domain.
+     - `✔ OK Count`: Number of verified passing controls.
+     - `✖ Issue Count`: Number of active vulnerabilities/gaps.
+     - `Observations Count`: Total detailed observation cards below.
+   - Click any row in the matrix (or use the filter pills `All 6 STRIDE Domains`, `✖ Issues Only`, `✔ OK / Passed Only`) to focus on a specific category.
+3. **Inspect Individual STRIDE Observations & Jump to Code**:
+   - Inside each STRIDE card, compare the green **`✔ What is OK — Passed Controls`** box against the red **`✖ What is the Issue — Detected Gaps`** box.
+   - Scroll to **`Detailed STRIDE Observations Breakdown`** inside the card to inspect every individual `ISSUE` and `OK` observation, including its `filepath:line`, code snippet, *Why It Is an Issue / Why It Is OK*, *Risk & Impact*, and *Corrective Action*.
+   - Click **`Inspect Code`** on any observation card (or category header) to jump directly to that file and line in the Monaco Code & Dossier workbench.
+4. **Audit Detected Secret Keys (`Secret Keys Vault` Tab)**:
+   - Click **`2. Secret Keys Vault`** inside Threat Modeling (or click `Secrets` on the Left Side Function Bar) to inspect hardcoded keys, their Shannon entropy, and click **Reveal Raw** (if your active RBAC profile has `can_reveal_secrets: true`) or **Inspect in Code**.
+
+### SOP 3: Configuring the Rule Engine & Custom Test Profiles (`Rules`)
+1. Click **`Rules`** in the Left Side Function Bar (or `Rule Engine & Profiles` in the Top Menu Bar).
+2. **Select or Create a Test Profile**:
+   - Click any Test Profile card (`Checkmarx-Style Optimized`, `Strict Zero-Trust Enterprise`, `Secret & Credential Hunter`, `Fast CI/CD PR Gate`) to activate its rule set, or click **`+ New Test Profile`** to define your own custom profile.
+3. **Check / Uncheck Individual Rules**:
+   - In the **Rule Selection Matrix**, filter by engine (`SAST`, `SCA`, `IaC`) or search by CWE/name.
+   - Check or uncheck any rule checkbox (`RULE-1-TAINT` through `RULE-9-DOM-XSS`, `SCA-1`, `IAC-1`, `IAC-2`) and click **`Apply Selection & Re-Evaluate`** to immediately re-filter and recompute findings.
+
+### SOP 4: Managing Multi-Tenant Accounts & RBAC User Profiles (`Accounts`)
+1. Click **`Accounts`** in the Left Side Function Bar (or `Accounts & Users` in the Top Menu Bar).
+2. **Switch or Create Isolated Tenant Accounts**:
+   - Use the **Tenant Boundary Filter** bar or click **`Switch to Account`** on any Tenant Account card (`Enterprise Security HQ`, `CISO & Executive Governance Division`, `Threat Intelligence & SecOps Division`), or click **`+ New Tenant Account`** to provision a new isolated enclave.
+   - Use the **`+ Assign repository to <Account>...`** dropdown inside any Tenant Account card to move repositories between tenant partitions, or click **`Code`** / **`STRIDE`** next to any assigned repository to open it directly.
+3. **Assume RBAC User Profiles & Toggle Clearance Capabilities**:
+   - Click **`Assume Operator Profile`** on any user card (`Shanjul Mittal`, `Vikram Rathore (CISO)`, `Elena Rostova`, `Marcus Vance`, `Aarav Sharma`) or create a new profile via **`+ New User Profile`**.
+   - Click any of the 4 capability badges (`Secrets: Reveal/Masked`, `Rules: Write/Read-Only`, `Triage: Allowed/View`, `Tenants: Admin/Scoped`) on a user card to live-toggle that user's RBAC clearance.
+4. **Review the Operator Audit Trail**:
+   - Scroll to **Section 3 (`Account Separation & Operator Audit Trail`)** to verify every logged session switch, permission update, and repository assignment.
+
+### SOP 5: Exploring the Call Graph, Entrypoints Graph & Decluttered 360° Spider Map
+1. From the Left Side Function Bar, click **`Call Graph`** or **`Entrypoints`** (or open the **`CPG & Graphs`** menu in the Top Menu Bar).
+2. **7 Graph Modes**:
+   - **`1. Attack Path`**: Source-to-sink taint flow with step-by-step tour playback.
+   - **`2. 360° Spider Map`**: Decluttered folder-first radial architecture map. Click any folder cluster node to expand/collapse its files on demand.
+   - **`3. Call Graph`**: Inter-procedural `:CALLS` graph connecting caller functions to callee functions across modules.
+   - **`4. Entrypoints`**: Attack surface ingress map highlighting HTTP routes, CLI entrypoints, and taint sources flowing into sinks.
+   - **`5. DFG` / `6. CFG` / `7. Full CPG`**: Low-level compiler slices.
 
 ---
 
-### SOP 1: Launching ALASTOR & Reviewing a Saved Scan (Zero-Wait Startup)
+## Part VI: Release History & Version Changelog
 
-![ALASTOR Portal Gate Screen](./screenshots/alastor_01_portal_gate.png)
+### Version `2.5.0` (2026-10-22) — Enterprise Shell, STRIDE Count & Observation Matrix, Secret Keys Vault, Rule Engine Profiles, Multi-Tenant RBAC & Call/Entrypoint Graphs
+- **Added**: Top Application Menu Bar (`AppMenuBar.tsx`) and Left Side Function Bar (`LeftFunctionBar.tsx`) across all 8 enterprise modules.
+- **Added**: Executive STRIDE Count & Verdict Matrix Table (`Total Checks`, `✔ OK Count`, `✖ Issue Count`, `Observations Count`) and itemized `StrideObservationItem` cards (`✔ What is OK` vs `✖ What is the Issue`) across both `ThreatModelingView.tsx` and `SastPlusSuiteView.tsx`.
+- **Added**: Secret Keys Hunter (`RULE-8-HARDCODED-SECRET`), DOM XSS rule (`RULE-9-DOM-XSS`), Shannon entropy calculation, and RBAC-gated Secret Keys Vault.
+- **Added**: Dedicated `RuleEngineProfilesView.tsx` for custom test profiles and per-rule checkbox selection.
+- **Added**: Dedicated `UserAccountProfileView.tsx` for multi-tenant account separation, interactive repository partitioning, and live RBAC permission toggles.
+- **Added**: Inter-Procedural Call Graph (`CALL_GRAPH`), Attack Surface Entrypoints Graph (`ENTRYPOINT_GRAPH`), and smart-clustered 360° Spider Map (`APP_TREE`).
+- **Fixed**: `Inspect Code` navigation from Threat Modeling into Monaco Editor, Accounts page `TenantAccount` / `UserProfileRecord` schema synchronization, cached SAST findings restoration on project switch, and non-blocking subprocess timeouts on large scans.
 
-1. **Open the Platform**: Navigate to `http://localhost:3000` in your browser (with FastAPI running on `http://127.0.0.1:8000` and Neo4j running on `bolt://localhost:7687`).
-2. **Check the Active Application & Last Scanned Banner**:
-   - In the **Active Application Under Review** banner at the top (or on the Portal Gate screen via `Menus` $\rightarrow$ `Workspace` $\rightarrow$ `Return to Alastor Portal Screen`), confirm the active application name (e.g., `CISO`), its path (`C:\Projects\CISO`), and the `Last Scanned` timestamp.
-3. **Inspect Without Rescanning**:
-   - Because ALASTOR persists scan snapshots in `.alastor_scan_history.json`, you **do not** need to rescan every time you open the app.
-   - Click **Saved Scan Details** in the top banner to open the **Track Changes & Scan History Drawer**, showing:
-     - `✅ Fixed Issues` (vulnerabilities from the previous scan that have been resolved)
-     - `🆕 Newly Introduced Issues` (new flaws introduced since the prior scan)
-     - `⏳ Unchanged Active Issues` (existing flaws still awaiting remediation)
-4. **Switch Between Applications**:
-   - Use the **`Switch: <App Name>`** dropdown on the left side of the Active Application Banner (or open the `1. Projects` tab) to switch between `CISO`, `cpg-sast-platform`, `MISP`, `NewsLetter`, or `synthetic_test_target`.
+### Version `2.0.0` (2026-10-19) — SAST++++++ ASPM Suite, Written Observation Dossiers, Reachability, EPSS v4, RACI Matrix & Track Changes
+- **Added**: Always-visible Written Observation Dossier, Side-by-Side Before/After Remediation Code Diff, Call-Graph Reachability badges, EPSS v4 30-day probability, interactive PMI/COBIT RACI Governance Matrix, CycloneDX v1.5 SBOM, and Continuous Track Changes Mode.
 
----
-
-### SOP 2: Scanning a New Local Application, File, Code Snippet, or Web URL
-
-![Projects Hub & Multi-Site Scanner](./screenshots/alastor_04_projects_hub.png)
-
-1. **Click `Select Target...` in the Top Bar**:
-   - Opens the **Visual Target Browser Modal** with 4 tabs:
-     - **Tab 1 — `Local Folder`**: Browse any drive or directory on your machine (or click **Open Native Windows Folder Dialog**) and click **Scan This Folder**.
-     - **Tab 2 — `Single File`**: Pick any individual `.py`, `.ts`, `.tsx`, `.js`, `.json`, or `.yaml` file to audit in isolation.
-     - **Tab 3 — `URL / Git Repo`**: Paste a public Git repository URL or advisory web page URL to clone/extract and scan.
-     - **Tab 4 — `Upload / Paste Snippet`**: Upload local files from disk or paste a raw code snippet directly into the browser for instant CPG taint & AST analysis.
-2. **Trigger a Rescan with Track Changes**:
-   - When auditing an existing project after making code edits, click the **`Re-Scan`** button on the right side of the Active Application Banner.
-   - ALASTOR compares the new scan against the prior snapshot and updates the `✅ Fixed`, `🆕 New`, and `⏳ Unchanged` counters automatically.
-
----
-
-### SOP 3: Reviewing Observations & Applying Fixes in `Code & Graph` (`REMEDIATION_IDE`)
-
-![Code & Graph Review with Written Observation Dossier](./screenshots/alastor_02_code_review_dossier.png)
-
-> [!TIP]
-> **Answering "What Is Wrong?" and "Which Third-Party Software Is Affected?" in 1 Second**:
-> Whenever you click any finding in the left sidebar, look at the **Written Observation Dossier** banner directly above the source code editor. It always writes out in full prose:
-> 1. Every affected third-party package, version specifier, line number, and lockfile-resolved version.
-> 2. Whether the flaw is **Runtime Reachable (`🎯 RUNTIME REACHABLE`)**, **Build/Dev Reachable (`⚙️ BUILD / DEV REACHABLE`)**, or **Dormant (`💤 DORMANT / UNREACHABLE`)**, plus its **30-Day EPSS Exploit Probability**.
-> 3. The exact **Side-by-Side Before (`-`) vs. After (`+`) Remediation Code Diff**.
-
-![Side-by-Side Before vs. After Remediation Code Diff & 360° Spider Map](./screenshots/alastor_10_before_after_diff_and_spider_map.png)
-
-1. **Select a Finding in the Left Sidebar (`1. Findings`)**:
-   - Filter by engine (`All`, `SAST`, `SCA`, `IaC`), severity (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`), or Track Changes Delta (`Active`, `New`, `Fixed`, `Same`).
-2. **Read the Written Observation Dossier (Top of Code Pane)**:
-   - Click any yellow **Affected Third-Party Software / Component** pill (e.g., `typescript: ^5 (pin -> 5.9.3) (package.json:L17)`) to jump the Monaco Editor directly to that line.
-   - Scroll down slightly inside the Written Observation Dossier to view the **Side-by-Side Before (`-`) vs. After (`+`) Remediation Code Diff**.
-   - Click **`Copy Fixed Code`** in the green `+ AFTER` box to copy the exact pinned dependencies or hardened configuration block to your clipboard.
-3. **Explore the Interactive Graph (`Split View` or `Visual Graph Focus`)**:
-   - Click **`Split View (Code + Graph)`** in the sub-toolbar to view the code alongside the graph canvas.
-   - Switch between **`1. Attack Path`** (step-by-step taint trace with the **`Play Step Tour`** button) and **`2. 360° Spider Map`** (complete architectural spider web of all application files, manifests, UI views, and vulnerability satellites).
-4. **Triage & Create Sprint Tickets**:
-   - In the bottom drawer bar, update **`Mark As:`** (`To Verify` $\rightarrow$ `Confirmed` or `Not Exploitable`) or click **`+ Jira Ticket`** / **`+ GitHub Issue`** to generate a tracked engineering ticket pre-populated with the BFL line and code diff.
-
----
-
-### SOP 4: Executive Posture, SLA Aging & Compliance Audit (`Overview` / `DEEP_DIVE`)
-
-![Overview & Deep-Dive Analytics](./screenshots/alastor_05_deep_dive_analytics.png)
-
-1. Click **`Overview`** in the top workspace switcher.
-2. **Review Top-Line Risk & SLA Posture**:
-   - Inspect the **Overall Risk Score**, **Mean File Age**, and **SLA Breaches** counter in the header card.
-3. **Check the "What To Fix First" Executive Action Plan**:
-   - Each card summarizes the business risk in plain English, lists the `RACI Responsible` and `Accountable` roles, shows the estimated fix effort (e.g., `~10–15 mins`), and provides a **`View & Fix in Code →`** button.
-4. **Verify Regulatory Compliance Readiness**:
-   - Scroll to **Compliance Standards & Security Benchmarks** to inspect pass/warning status across **OWASP Top 10 (2021)**, **PCI-DSS v4.0**, **NIST SP 800-53 Rev 5**, and **SOC 2 Type II**.
-5. **Filter the Unified Scan Engine Manager Table**:
-   - Scroll to the bottom table to filter across `SAST`, `SCA`, and `IaC` engines, inspect **Reachability** and **EPSS** badges side-by-side, and click **`Inspect & Remediate`** on any row.
-
----
-
-### SOP 5: Managing Organizational Accountability (`RACI` Governance Matrix)
-
-![RACI Security Governance & Accountability Matrix](./screenshots/alastor_06_raci_governance_matrix.png)
-
-1. Click **`RACI`** in the top workspace switcher.
-2. **Understand the 4 Role Badges**:
-   - **`R` — Responsible ("The Doer")**: Executes the task hands-on (e.g., Lead Developer or DevOps Lead).
-   - **`A` — Accountable ("The Approver")**: Single final authority who signs off on completion (Golden Rule: **exactly one `A` per row**).
-   - **`C` — Consulted ("The Advisor")**: Subject-matter expert consulted before decisions are finalized.
-   - **`I` — Informed ("Kept Updated")**: Leadership or audit stakeholders notified of outcomes.
-3. **Customize Role Assignments Live**:
-   - Click any `R / A / C / I` cell in Tab 1 (**`1. Interactive Security Lifecycle RACI Matrix`**) to cycle its assignment.
-   - Watch the **PMI / COBIT Rule Check** column and **RACI Governance Health (`100%`)** indicator validate your governance structure in real time.
-4. **Review Finding-Level Ownership**:
-   - Click Tab 2 (**`2. Live Vulnerability Ownership & Sprint Assignment`**) to see which specific roles own each active finding in the current application.
-   - Click **`Export Matrix (.json)`** to save the governance charter for ISO 27001 / SOC 2 auditors.
-
----
-
-### SOP 6: Mastering the `SAST++++++` Suite (Risk Translator, Live SBOM, Attack Surface, STRIDE & CI/CD PBOM)
-
-````carousel
-![SAST++++++ Pillar 1: Plain-English Impact Translator](./screenshots/alastor_07_sast_plus_risk_translator.png)
-<!-- slide -->
-![SAST++++++ Pillar 5: Automated STRIDE Threat Model & CI/CD PBOM](./screenshots/alastor_08_stride_threat_model_pbom.png)
-<!-- slide -->
-![SAST++++++ Pillar 2: Live CycloneDX v1.5 SBOM & Supply Chain](./screenshots/alastor_09_live_sbom_cyclonedx.png)
-````
-
-1. Click **`SAST++++++`** in the top workspace switcher.
-2. **Pillar 1 (`1. Plain-English Impact Translator`)**:
-   - Read non-technical executive translations, real-world analogies, business impact statements, and step-by-step management checklists for every finding.
-3. **Pillar 2 (`2. Live SBOM & Supply Chain`)**:
-   - Filter discovered third-party packages by ecosystem (`npm`, `pypi`) or pinning status (`Pinned` vs. `Floating ^/~`).
-   - Click **`Download CycloneDX v1.5 SBOM (.cdx.json)`** in the header when customers or regulators request a formal Software Bill of Materials.
-4. **Pillar 3 (`3. API & Entrypoint Attack Surface`)**:
-   - Review all discovered web routes, UI pages, and API handlers along with their exposure level (`PUBLIC_WEB`, `API_ENDPOINT`, `CLI_ENTRYPOINT`).
-5. **Pillar 4 (`4. Management Remediation Roadmap`)**:
-   - Track phased sprint remediation across Phase 1 (`Immediate <72h`), Phase 2 (`Current Sprint <14d`), and Phase 3 (`Hardening <30d`).
-6. **Pillar 5 (`5. STRIDE Threat Model & CI/CD PBOM`)**:
-   - Review the **Automated Microsoft STRIDE Architectural Threat Model** across `Spoofing`, `Tampering`, `Repudiation`, `Information Disclosure`, `Denial of Service`, and `Elevation of Privilege`, complete with affected workspace files and compensating controls.
-   - Audit the **CI/CD Pipeline & Supply-Chain Integrity Scorecard (PBOM)** covering manifest version pinning, lockfile integrity, secret hygiene, runtime hardening, and call-graph reachability.
-7. **Pillar 6 (`6. Non-Coder Security Academy & Glossary`)**:
-   - Use as a self-paced training reference for onboarding new team members, interns, or management students.
-
----
-
-### SOP 7: Exporting Audit Reports (`Markdown`, `JSON`, `SARIF v2.1.0`) & Customizing Rules
-
-1. **Export Unified Audit Reports**:
-   - Click **`Export`** in the top-right bar and choose:
-     - **Markdown Audit Report (`.md`)**: Executive summary, compliance scorecard, and full written finding dossiers ready for PDF conversion or stakeholder distribution.
-     - **JSON Full Data (`.json`)**: Machine-readable findings, metrics, and advisories for custom dashboards.
-     - **GitHub / IDE SARIF v2.1.0 (`.sarif.json`)**: OASIS standard payload enriched with `codeFlows` (taint paths), automated `fixes` (Before/After replacements), `reachability_status`, and `epss_score` for direct upload to GitHub Advanced Security or VS Code SARIF Viewer.
-2. **Customize Scan Presets, Queries & Sanitizers**:
-   - Click the **Gear Icon (`Settings`)** in the top-right bar to switch between scan presets (`Checkmarx-Style Optimized`, `High-Sensitivity Zero-Trust`, `Fast CI/CD PR Gate`, `OWASP Top 10 Compliance`), inspect active Cypher/AST rules in the **Query Viewer**, or register **Custom Sanitizers** (e.g., `shlex.quote` for `CWE-78`).
+### Version `1.0.0` (2026-10-17) — Core Deterministic CPG Engine & Neo4j APOC Foundation
+- **Added**: Tree-Sitter multi-language AST normalizer, CFG/DFG builders, Neo4j 5 + APOC batch ingestion, deterministic CPG taint & structural queries, Best Fix Location (`BFL`), and OASIS SARIF v2.1.0 export.
 
 ---
 
@@ -351,5 +271,7 @@ Follow these 7 standard operating procedures to master every workflow in ALASTOR
 | **Start FastAPI Backend (Port 8000)** | `.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000` (in `backend/`) |
 | **Build & Start Next.js Frontend (Port 3000)** | `npm run build && npm run start` (in `frontend/`) |
 | **Run Full 17-Assertion E2E Verification Suite** | `.venv\Scripts\python.exe verify_harness.py` |
-| **Trigger Scan via REST API** | `POST http://127.0.0.1:8000/api/scan` with `{"target_path": "C:\\Projects\\CISO"}` |
+| **Trigger Scan via REST API** | `POST http://127.0.0.1:8000/api/scan` with `{"target_path": "C:\\Projects\\NewsLetter"}` |
+| **Query STRIDE & ASPM Suite via API** | `GET http://127.0.0.1:8000/api/aspm/suite` |
+| **Query Multi-Tenant Accounts & RBAC via API** | `GET http://127.0.0.1:8000/api/accounts` |
 | **Download SARIF v2.1.0 Report via API** | `GET http://127.0.0.1:8000/api/export/report?format=sarif` |
