@@ -563,39 +563,71 @@ class TenantAccount(BaseModel):
     id: str
     name: str
     division: str = "Enterprise Security"
-    compliance_tier: str = "SOC2 / ISO-27001 / PCI-DSS"
+    organization_unit: str = "Enterprise Security"
+    environment_tier: str = "PRODUCTION"
+    compliance_tier: str = "SOC2 Type II / ISO-27001 / PCI-DSS v4.0"
+    compliance_mandate: str = "SOC2 Type II / ISO-27001 / PCI-DSS v4.0"
     owner_email: str = "secops@enterprise.local"
-    isolation_mode: Literal["STRICT_TENANT", "SHARED_GOVERNANCE"] = "STRICT_TENANT"
+    isolation_mode: str = "STRICT"
     project_count: int = 0
+    assigned_project_ids: List[str] = Field(default_factory=list)
+    allowed_preset_ids: List[str] = Field(
+        default_factory=lambda: [
+            "preset-optimized",
+            "preset-strict-enterprise",
+            "preset-secret-hunter",
+            "preset-fast-ci",
+        ]
+    )
+    created_at: str = "2026-10-18"
 
 
 class UserProfileRecord(BaseModel):
     id: str
     name: str
     email: str
-    role: Literal["CISO_EXEC", "APPSEC_ARCHITECT", "SECURITY_AUDITOR", "DEVSECOPS_ENG", "DEVELOPER"] = "APPSEC_ARCHITECT"
-    title: str
+    role: str = "APPSEC_ARCHITECT"
+    title: str = "Principal AppSec Architect"
+    department: str = "Application Security"
     account_id: str = "acct-enterprise-hq"
     account_name: str = "Enterprise Security HQ"
     avatar_color: str = "cyan"
+    avatar_badge: str = "SM"
+    clearance_level: str = "LEVEL-5 ARCHITECT CLEARANCE"
     permissions: List[str] = Field(default_factory=list)
+    default_test_profile_id: str = "preset-optimized"
+    can_reveal_secrets: bool = True
+    can_edit_rules: bool = True
+    can_triage_findings: bool = True
+    can_manage_accounts: bool = True
+    last_active_at: str = "Active Session"
     is_active: bool = False
 
 
 class CreateAccountRequest(BaseModel):
     name: str
-    division: str = "Core Engineering"
-    compliance_tier: str = "SOC2 Type II"
-    owner_email: str = "lead@enterprise.local"
-    isolation_mode: Literal["STRICT_TENANT", "SHARED_GOVERNANCE"] = "STRICT_TENANT"
+    division: Optional[str] = None
+    organization_unit: Optional[str] = None
+    environment_tier: Optional[str] = "PRODUCTION"
+    compliance_tier: Optional[str] = None
+    compliance_mandate: Optional[str] = None
+    owner_email: Optional[str] = "lead@enterprise.local"
+    isolation_mode: Optional[str] = "STRICT"
+    assigned_project_ids: Optional[List[str]] = None
 
 
 class CreateUserProfileRequest(BaseModel):
     name: str
     email: str
-    role: Literal["CISO_EXEC", "APPSEC_ARCHITECT", "SECURITY_AUDITOR", "DEVSECOPS_ENG", "DEVELOPER"] = "SECURITY_AUDITOR"
-    title: str = "Security Engineer"
+    role: str = "SECURITY_AUDITOR"
+    title: Optional[str] = "Security Engineer"
+    department: Optional[str] = "Application Security"
     account_id: str = "acct-enterprise-hq"
+    default_test_profile_id: Optional[str] = "preset-optimized"
+    can_reveal_secrets: Optional[bool] = None
+    can_edit_rules: Optional[bool] = None
+    can_triage_findings: Optional[bool] = None
+    can_manage_accounts: Optional[bool] = None
 
 
 class SwitchUserOrAccountRequest(BaseModel):
@@ -603,10 +635,12 @@ class SwitchUserOrAccountRequest(BaseModel):
     account_id: Optional[str] = None
     assign_project_id: Optional[str] = None
     target_account_id: Optional[str] = None
+    toggle_permission_user_id: Optional[str] = None
+    toggle_permission_field: Optional[str] = None
 
 
 class UserAccountsStateResponse(BaseModel):
-    active_account_id: str = "ALL"
+    active_account_id: str = "acct-enterprise-hq"
     active_user_id: str = "usr-architect"
     accounts: List[TenantAccount] = Field(default_factory=list)
     users: List[UserProfileRecord] = Field(default_factory=list)

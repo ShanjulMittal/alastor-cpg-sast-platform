@@ -759,12 +759,16 @@ export interface TrackChangesSummary {
 export interface TenantAccount {
   id: string;
   name: string;
+  division?: string;
   organization_unit: string;
   environment_tier: string;
+  compliance_tier?: string;
+  compliance_mandate: string;
+  owner_email?: string;
   isolation_mode: "STRICT" | "SHARED_READ" | string;
+  project_count?: number;
   assigned_project_ids: string[];
   allowed_preset_ids: string[];
-  compliance_mandate: string;
   created_at: string;
 }
 
@@ -777,6 +781,7 @@ export interface UserProfileRecord {
   department: string;
   account_id: string;
   account_name: string;
+  avatar_color?: string;
   clearance_level: string;
   permissions: string[];
   default_test_profile_id: string;

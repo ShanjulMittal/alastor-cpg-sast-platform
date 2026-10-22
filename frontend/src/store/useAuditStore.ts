@@ -192,6 +192,10 @@ interface AuditState {
   switchUserOrAccount: (payload: {
     account_id?: string;
     user_id?: string;
+    assign_project_id?: string;
+    target_account_id?: string;
+    toggle_permission_user_id?: string;
+    toggle_permission_field?: string;
   }) => Promise<void>;
   addCustomSanitizer: (payload: {
     function_name: string;

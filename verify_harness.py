@@ -507,6 +507,14 @@ def run_assertions():
     assert acct_resp.status_code == 200, f"Assertion R FAILED: /api/accounts returned {acct_resp.status_code}"
     acct_data = acct_resp.json()
     assert len(acct_data.get("accounts", [])) >= 3 and len(acct_data.get("users", [])) >= 5, "Assertion R FAILED: Missing multi-tenant accounts or RBAC user profiles!"
+    for _acct in acct_data.get("accounts", []):
+        assert isinstance(_acct.get("assigned_project_ids"), list), f"Assertion R FAILED: Account {_acct.get('id')} missing assigned_project_ids list!"
+        assert _acct.get("organization_unit") and _acct.get("compliance_mandate"), f"Assertion R FAILED: Account {_acct.get('id')} missing organization_unit or compliance_mandate!"
+    for _usr in acct_data.get("users", []):
+        assert _usr.get("avatar_badge") and _usr.get("clearance_level"), f"Assertion R FAILED: User {_usr.get('id')} missing avatar_badge or clearance_level!"
+        assert isinstance(_usr.get("can_reveal_secrets"), bool) and isinstance(_usr.get("can_edit_rules"), bool), f"Assertion R FAILED: User {_usr.get('id')} missing boolean RBAC capability flags!"
+    sw_resp = requests.post(f"{BACKEND_URL}/api/accounts/switch", json={"account_id": "acct-enterprise-hq", "user_id": "usr-architect"}, timeout=15)
+    assert sw_resp.status_code == 200, f"Assertion R FAILED: POST /api/accounts/switch returned {sw_resp.status_code}"
     log(
         f"PASS: Assertion R (CALL_GRAPH={len(cg_data['nodes'])} nodes, ENTRYPOINT_GRAPH={len(ep_data['nodes'])} nodes, Accounts={len(acct_data['accounts'])}, RBAC Users={len(acct_data['users'])})."
     )

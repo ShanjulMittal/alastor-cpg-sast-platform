@@ -796,35 +796,65 @@ class EnterpriseManager:
         ]
 
         # Multi-Tenant Accounts & RBAC User Profiles
-        self.active_account_id: str = "ALL"
+        self.active_account_id: str = "acct-enterprise-hq"
         self.active_user_id: str = "usr-architect"
         self.accounts: List[TenantAccount] = [
             TenantAccount(
                 id="acct-enterprise-hq",
                 name="Enterprise Security HQ",
                 division="Global AppSec & Core Platform",
+                organization_unit="Global AppSec & Core Platform",
+                environment_tier="PRODUCTION",
                 compliance_tier="SOC2 Type II / ISO-27001 / PCI-DSS v4.0",
+                compliance_mandate="SOC2 Type II / ISO-27001 / PCI-DSS v4.0",
                 owner_email="shanjul.mittal@enterprise.local",
-                isolation_mode="STRICT_TENANT",
+                isolation_mode="STRICT",
                 project_count=2,
+                assigned_project_ids=["proj-alastor-enterprise"],
+                allowed_preset_ids=[
+                    "preset-optimized",
+                    "preset-strict-enterprise",
+                    "preset-secret-hunter",
+                    "preset-fast-ci",
+                ],
+                created_at="2026-10-18",
             ),
             TenantAccount(
                 id="acct-ciso-gov",
                 name="CISO & Executive Governance Division",
                 division="Enterprise Risk, GRC & Executive Portal",
+                organization_unit="Enterprise Risk, GRC & Executive Portal",
+                environment_tier="GOVERNANCE",
                 compliance_tier="NIST CSF 2.0 / ISO-27001",
+                compliance_mandate="NIST CSF 2.0 / ISO-27001 / OWASP ASVS L3",
                 owner_email="ciso.office@enterprise.local",
-                isolation_mode="STRICT_TENANT",
+                isolation_mode="STRICT",
                 project_count=2,
+                assigned_project_ids=[],
+                allowed_preset_ids=[
+                    "preset-strict-enterprise",
+                    "preset-optimized",
+                ],
+                created_at="2026-10-18",
             ),
             TenantAccount(
                 id="acct-threat-intel",
                 name="Threat Intelligence & SecOps Division",
                 division="Cyber Threat Intelligence & SOC",
+                organization_unit="Cyber Threat Intelligence & SOC",
+                environment_tier="RED_TEAM",
                 compliance_tier="FedRAMP High / CISA KEV",
+                compliance_mandate="FedRAMP High / CISA KEV / MITRE ATT&CK",
                 owner_email="secops.lead@enterprise.local",
-                isolation_mode="SHARED_GOVERNANCE",
+                isolation_mode="SHARED_READ",
                 project_count=2,
+                assigned_project_ids=[],
+                allowed_preset_ids=[
+                    "preset-secret-hunter",
+                    "preset-strict-enterprise",
+                    "preset-optimized",
+                ],
+                created_at="2026-10-18",
             ),
         ]
         self.user_profiles: List[UserProfileRecord] = [
@@ -834,13 +864,22 @@ class EnterpriseManager:
                 email="shanjul.mittal@enterprise.local",
                 role="APPSEC_ARCHITECT",
                 title="Principal AppSec Architect",
+                department="Global AppSec Architecture",
                 account_id="acct-enterprise-hq",
                 account_name="Enterprise Security HQ",
                 avatar_color="cyan",
+                avatar_badge="SM",
+                clearance_level="LEVEL-5 ARCHITECT CLEARANCE",
                 permissions=[
                     "FULL_ADMIN", "EDIT_RULE_PROFILES", "UNMASK_SECRETS",
                     "TRIAGE_SUPPRESS", "MANAGE_ACCOUNTS", "RUN_SCANS", "THREAT_MODELING"
                 ],
+                default_test_profile_id="preset-optimized",
+                can_reveal_secrets=True,
+                can_edit_rules=True,
+                can_triage_findings=True,
+                can_manage_accounts=True,
+                last_active_at="Active Now",
                 is_active=True,
             ),
             UserProfileRecord(
@@ -849,13 +888,22 @@ class EnterpriseManager:
                 email="ciso@enterprise.local",
                 role="CISO_EXEC",
                 title="Chief Information Security Officer",
+                department="Executive Security Governance",
                 account_id="acct-ciso-gov",
                 account_name="CISO & Executive Governance Division",
                 avatar_color="amber",
+                avatar_badge="VR",
+                clearance_level="LEVEL-5 EXECUTIVE CLEARANCE",
                 permissions=[
                     "VIEW_ALL_ACCOUNTS", "UNMASK_SECRETS", "APPROVE_GOVERNANCE",
                     "EXPORT_COMPLIANCE", "THREAT_MODELING"
                 ],
+                default_test_profile_id="preset-strict-enterprise",
+                can_reveal_secrets=True,
+                can_edit_rules=False,
+                can_triage_findings=True,
+                can_manage_accounts=True,
+                last_active_at="2026-10-22",
                 is_active=False,
             ),
             UserProfileRecord(
@@ -864,12 +912,21 @@ class EnterpriseManager:
                 email="elena.redteam@enterprise.local",
                 role="SECURITY_AUDITOR",
                 title="Lead Offensive Auditor & Secret Hunter",
+                department="Offensive Red Team & SecOps",
                 account_id="acct-threat-intel",
                 account_name="Threat Intelligence & SecOps Division",
                 avatar_color="rose",
+                avatar_badge="ER",
+                clearance_level="LEVEL-4 RED-TEAM CLEARANCE",
                 permissions=[
                     "RUN_SCANS", "UNMASK_SECRETS", "TRIAGE_SUPPRESS", "THREAT_MODELING"
                 ],
+                default_test_profile_id="preset-secret-hunter",
+                can_reveal_secrets=True,
+                can_edit_rules=True,
+                can_triage_findings=True,
+                can_manage_accounts=False,
+                last_active_at="2026-10-22",
                 is_active=False,
             ),
             UserProfileRecord(
@@ -878,12 +935,21 @@ class EnterpriseManager:
                 email="marcus.ci@enterprise.local",
                 role="DEVSECOPS_ENG",
                 title="Staff DevSecOps & PBOM Engineer",
+                department="CI/CD Pipeline Security",
                 account_id="acct-enterprise-hq",
                 account_name="Enterprise Security HQ",
                 avatar_color="indigo",
+                avatar_badge="MV",
+                clearance_level="LEVEL-3 PIPELINE CLEARANCE",
                 permissions=[
                     "RUN_SCANS", "EDIT_RULE_PROFILES", "MANAGE_INTEGRATIONS"
                 ],
+                default_test_profile_id="preset-fast-ci",
+                can_reveal_secrets=False,
+                can_edit_rules=True,
+                can_triage_findings=True,
+                can_manage_accounts=False,
+                last_active_at="2026-10-21",
                 is_active=False,
             ),
             UserProfileRecord(
@@ -892,12 +958,21 @@ class EnterpriseManager:
                 email="aarav.dev@enterprise.local",
                 role="DEVELOPER",
                 title="Senior Application Developer (Read/Remediate)",
+                department="Product Engineering",
                 account_id="acct-ciso-gov",
                 account_name="CISO & Executive Governance Division",
                 avatar_color="emerald",
+                avatar_badge="AS",
+                clearance_level="LEVEL-2 DEVELOPER CLEARANCE",
                 permissions=[
                     "VIEW_FINDINGS", "APPLY_BFL_PATCH"
                 ],
+                default_test_profile_id="preset-optimized",
+                can_reveal_secrets=False,
+                can_edit_rules=False,
+                can_triage_findings=False,
+                can_manage_accounts=False,
+                last_active_at="2026-10-21",
                 is_active=False,
             ),
         ]
@@ -906,8 +981,16 @@ class EnterpriseManager:
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "actor": "Shanjul Mittal (APPSEC_ARCHITECT)",
                 "account": "Enterprise Security HQ",
-                "action": "Initialized multi-tenant RBAC workspace & active rule profile",
-            }
+                "action": "SESSION_INIT",
+                "details": "Initialized multi-tenant RBAC workspace, tenant isolation boundaries & active rule profile (preset-optimized)",
+            },
+            {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "actor": "System Policy Enforcer",
+                "account": "All Tenant Enclaves",
+                "action": "RBAC_ENFORCEMENT",
+                "details": "Verified strict tenant repository partitioning across 3 organizational divisions and 5 RBAC operator clearance tiers",
+            },
         ]
 
         # Global & Project Settings
@@ -2606,40 +2689,104 @@ class EnterpriseManager:
     # -----------------------------------------------------------------------
     def get_accounts_and_users_state(self) -> UserAccountsStateResponse:
         for _acc in self.accounts:
-            _acc.project_count = sum(1 for _p in self.projects if _p.account_id == _acc.id)
+            _assigned = [
+                _p.id for _p in self.projects if _p.account_id == _acc.id
+            ]
+            for _existing_pid in (_acc.assigned_project_ids or []):
+                if _existing_pid not in _assigned and any(_p.id == _existing_pid for _p in self.projects):
+                    _assigned.append(_existing_pid)
+            _acc.assigned_project_ids = _assigned
+            _acc.project_count = len(_assigned)
+            if not _acc.organization_unit:
+                _acc.organization_unit = _acc.division or "Enterprise Security"
+            if not _acc.compliance_mandate:
+                _acc.compliance_mandate = _acc.compliance_tier or "SOC2 Type II / ISO-27001"
+            if not _acc.environment_tier:
+                _acc.environment_tier = "PRODUCTION"
+
+        for _usr in self.user_profiles:
+            if not _usr.avatar_badge:
+                _parts = [p for p in re.split(r"[\s()]+", _usr.name) if p]
+                _usr.avatar_badge = (
+                    (_parts[0][0] + (_parts[1][0] if len(_parts) > 1 else _parts[0][-1])).upper()
+                    if _parts
+                    else "OP"
+                )
+            _usr.is_active = (_usr.id == self.active_user_id)
+
+        _normalized_log: List[Dict[str, str]] = []
+        for _entry in self.account_audit_log[:30]:
+            _act = str(_entry.get("action") or "RBAC_EVENT")
+            _det = str(_entry.get("details") or "")
+            if not _det and len(_act) > 24:
+                _det = _act
+                _act = "ACCOUNT_AUDIT"
+            _normalized_log.append({
+                "timestamp": str(_entry.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                "actor": str(_entry.get("actor") or "Security Administrator"),
+                "account": str(_entry.get("account") or "Enterprise Security HQ"),
+                "action": _act,
+                "details": _det or _act,
+            })
+
         return UserAccountsStateResponse(
             active_account_id=self.active_account_id,
             active_user_id=self.active_user_id,
             accounts=self.accounts,
             users=self.user_profiles,
-            audit_log=self.account_audit_log[:30],
+            audit_log=_normalized_log,
         )
 
     def create_account(self, req: CreateAccountRequest) -> UserAccountsStateResponse:
         _slug = re.sub(r"[^a-z0-9]+", "-", req.name.lower()).strip("-") or "org"
         _aid = f"acct-{_slug}-{len(self.accounts) + 1}"
+        _org_unit = (req.organization_unit or req.division or "Core Security Operations").strip()
+        _comp = (
+            req.compliance_mandate
+            or req.compliance_tier
+            or "OWASP Top 10 2025 + PCI-DSS v4.0 + SOC2 Type II"
+        ).strip()
+        _tier = (req.environment_tier or "PRODUCTION").strip().upper()
+        _iso = (req.isolation_mode or "STRICT").strip().upper()
+        _assigned_pids = list(req.assigned_project_ids or [])
+
         _new_acc = TenantAccount(
             id=_aid,
-            name=req.name,
-            division=req.division,
-            compliance_tier=req.compliance_tier,
-            owner_email=req.owner_email,
-            isolation_mode=req.isolation_mode,
-            project_count=0,
+            name=req.name.strip(),
+            division=_org_unit,
+            organization_unit=_org_unit,
+            environment_tier=_tier,
+            compliance_tier=_comp,
+            compliance_mandate=_comp,
+            owner_email=(req.owner_email or "lead@enterprise.local").strip(),
+            isolation_mode=_iso,
+            project_count=len(_assigned_pids),
+            assigned_project_ids=_assigned_pids,
+            created_at=datetime.now().strftime("%Y-%m-%d"),
         )
+        for _p in self.projects:
+            if _p.id in _assigned_pids:
+                _p.account_id = _aid
+                _p.account_name = _new_acc.name
+
         self.accounts.append(_new_acc)
+        self.active_account_id = _aid
+        _actor_name = next((u.name for u in self.user_profiles if u.id == self.active_user_id), "Shanjul Mittal")
         self.account_audit_log.insert(0, {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "actor": next((u.name for u in self.user_profiles if u.is_active), "Admin"),
-            "account": req.name,
-            "action": f"Created isolated tenant account '{req.name}' ({req.isolation_mode})",
+            "actor": _actor_name,
+            "account": _new_acc.name,
+            "action": "TENANT_CREATED",
+            "details": f"Created isolated tenant account '{_new_acc.name}' ({_org_unit} • {_iso} Isolation • Tier: {_tier})",
         })
+        self._save_persisted_state()
         return self.get_accounts_and_users_state()
 
     def create_user_profile(self, req: CreateUserProfileRequest) -> UserAccountsStateResponse:
         _slug = re.sub(r"[^a-z0-9]+", "-", req.name.lower()).strip("-") or "user"
         _uid = f"usr-{_slug}-{len(self.user_profiles) + 1}"
         _acc = next((a for a in self.accounts if a.id == req.account_id), self.accounts[0])
+        _role_u = (req.role or "SECURITY_AUDITOR").strip().upper()
         _perm_map = {
             "CISO_EXEC": ["VIEW_ALL_ACCOUNTS", "UNMASK_SECRETS", "APPROVE_GOVERNANCE", "EXPORT_COMPLIANCE", "THREAT_MODELING"],
             "APPSEC_ARCHITECT": ["FULL_ADMIN", "EDIT_RULE_PROFILES", "UNMASK_SECRETS", "TRIAGE_SUPPRESS", "MANAGE_ACCOUNTS", "RUN_SCANS", "THREAT_MODELING"],
@@ -2647,63 +2794,149 @@ class EnterpriseManager:
             "DEVSECOPS_ENG": ["RUN_SCANS", "EDIT_RULE_PROFILES", "MANAGE_INTEGRATIONS"],
             "DEVELOPER": ["VIEW_FINDINGS", "APPLY_BFL_PATCH"],
         }
+        _clearance_map = {
+            "APPSEC_ARCHITECT": "LEVEL-5 ARCHITECT CLEARANCE",
+            "CISO_EXEC": "LEVEL-5 EXECUTIVE CLEARANCE",
+            "SECURITY_AUDITOR": "LEVEL-4 RED-TEAM CLEARANCE",
+            "DEVSECOPS_ENG": "LEVEL-3 PIPELINE CLEARANCE",
+            "DEVELOPER": "LEVEL-2 DEVELOPER CLEARANCE",
+        }
+        _parts = [p for p in re.split(r"[\s()]+", req.name.strip()) if p]
+        _badge = (
+            (_parts[0][0] + (_parts[1][0] if len(_parts) > 1 else _parts[0][-1])).upper()
+            if _parts
+            else "OP"
+        )
+        _allow_unmask = (
+            req.can_reveal_secrets
+            if req.can_reveal_secrets is not None
+            else (_role_u in ("APPSEC_ARCHITECT", "CISO_EXEC", "SECURITY_AUDITOR"))
+        )
+        _can_rules = (
+            req.can_edit_rules
+            if req.can_edit_rules is not None
+            else (_role_u in ("APPSEC_ARCHITECT", "SECURITY_AUDITOR", "DEVSECOPS_ENG"))
+        )
+        _can_triage = (
+            req.can_triage_findings
+            if req.can_triage_findings is not None
+            else (_role_u in ("APPSEC_ARCHITECT", "CISO_EXEC", "SECURITY_AUDITOR", "DEVSECOPS_ENG"))
+        )
+        _can_manage = (
+            req.can_manage_accounts
+            if req.can_manage_accounts is not None
+            else (_role_u in ("APPSEC_ARCHITECT", "CISO_EXEC"))
+        )
+
+        for _u in self.user_profiles:
+            _u.is_active = False
+
         _new_usr = UserProfileRecord(
             id=_uid,
-            name=req.name,
-            email=req.email,
-            role=req.role,
-            title=req.title,
+            name=req.name.strip(),
+            email=req.email.strip(),
+            role=_role_u,
+            title=(req.title or _role_u.replace("_", " ").title()).strip(),
+            department=(req.department or "Application Security").strip(),
             account_id=_acc.id,
             account_name=_acc.name,
-            avatar_color="cyan" if req.role == "APPSEC_ARCHITECT" else ("amber" if req.role == "CISO_EXEC" else "emerald"),
-            permissions=_perm_map.get(req.role, ["VIEW_FINDINGS"]),
-            is_active=False,
+            avatar_color="cyan" if _role_u == "APPSEC_ARCHITECT" else ("amber" if _role_u == "CISO_EXEC" else "violet"),
+            avatar_badge=_badge,
+            clearance_level=_clearance_map.get(_role_u, "LEVEL-3 SECURITY CLEARANCE"),
+            permissions=_perm_map.get(_role_u, ["VIEW_FINDINGS"]),
+            default_test_profile_id=req.default_test_profile_id or "preset-optimized",
+            can_reveal_secrets=_allow_unmask,
+            can_edit_rules=_can_rules,
+            can_triage_findings=_can_triage,
+            can_manage_accounts=_can_manage,
+            last_active_at="Active Now",
+            is_active=True,
         )
         self.user_profiles.append(_new_usr)
+        self.active_user_id = _uid
+        self.active_account_id = _acc.id
         self.account_audit_log.insert(0, {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "actor": next((u.name for u in self.user_profiles if u.is_active), "Admin"),
+            "actor": _new_usr.name,
             "account": _acc.name,
-            "action": f"Provisioned RBAC user profile '{req.name}' with role {req.role}",
+            "action": "USER_PROVISIONED",
+            "details": f"Provisioned & activated RBAC profile '{_new_usr.name}' ({_role_u}) in tenant '{_acc.name}'",
         })
+        self._save_persisted_state()
         return self.get_accounts_and_users_state()
 
     def switch_user_or_account(self, req: SwitchUserOrAccountRequest) -> UserAccountsStateResponse:
+        if req.toggle_permission_user_id and req.toggle_permission_field:
+            _target_u = next((u for u in self.user_profiles if u.id == req.toggle_permission_user_id), None)
+            if _target_u and hasattr(_target_u, req.toggle_permission_field):
+                _cur_val = bool(getattr(_target_u, req.toggle_permission_field))
+                setattr(_target_u, req.toggle_permission_field, not _cur_val)
+                self.account_audit_log.insert(0, {
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "actor": next((u.name for u in self.user_profiles if u.id == self.active_user_id), "Admin"),
+                    "account": _target_u.account_name,
+                    "action": "RBAC_CLEARANCE_UPDATED",
+                    "details": f"Updated '{req.toggle_permission_field}' to {not _cur_val} for operator {_target_u.name} ({_target_u.role})",
+                })
+
         if req.user_id:
             for _u in self.user_profiles:
                 if _u.id == req.user_id:
                     _u.is_active = True
+                    _u.last_active_at = "Active Now"
                     self.active_user_id = _u.id
+                    if req.account_id is None and _u.account_id:
+                        self.active_account_id = _u.account_id
+                    if _u.default_test_profile_id and any(p.id == _u.default_test_profile_id for p in self.presets):
+                        self.active_preset_id = _u.default_test_profile_id
                     self.account_audit_log.insert(0, {
                         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "actor": f"{_u.name} ({_u.role})",
                         "account": _u.account_name,
-                        "action": f"Switched active RBAC operator session to {_u.name} ({_u.title})",
+                        "action": "ASSUME_PROFILE",
+                        "details": f"Switched active RBAC operator session to {_u.name} ({_u.title} • Clearance: {_u.clearance_level})",
                     })
                 else:
                     _u.is_active = False
+
         if req.account_id is not None:
             self.active_account_id = req.account_id
-            _acc_label = "All Accounts (Global View)" if req.account_id == "ALL" else next((a.name for a in self.accounts if a.id == req.account_id), req.account_id)
+            _acc_label = (
+                "All Accounts (Global View)"
+                if req.account_id == "ALL"
+                else next((a.name for a in self.accounts if a.id == req.account_id), req.account_id)
+            )
             self.account_audit_log.insert(0, {
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "actor": next((u.name for u in self.user_profiles if u.is_active), "Admin"),
+                "actor": next((u.name for u in self.user_profiles if u.id == self.active_user_id), "Admin"),
                 "account": _acc_label,
-                "action": f"Switched workspace tenant scope to '{_acc_label}'",
+                "action": "TENANT_SWITCH",
+                "details": f"Switched workspace tenant isolation boundary to '{_acc_label}'",
             })
+
         if req.assign_project_id and req.target_account_id:
             _t_acc = next((a for a in self.accounts if a.id == req.target_account_id), None)
             if _t_acc:
+                for _a in self.accounts:
+                    if req.assign_project_id in (_a.assigned_project_ids or []):
+                        _a.assigned_project_ids = [
+                            pid for pid in _a.assigned_project_ids if pid != req.assign_project_id
+                        ]
+                if req.assign_project_id not in (_t_acc.assigned_project_ids or []):
+                    _t_acc.assigned_project_ids.append(req.assign_project_id)
                 for _p in self.projects:
                     if _p.id == req.assign_project_id:
                         _p.account_id = _t_acc.id
                         _p.account_name = _t_acc.name
                         self.account_audit_log.insert(0, {
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "actor": next((u.name for u in self.user_profiles if u.is_active), "Admin"),
+                            "actor": next((u.name for u in self.user_profiles if u.id == self.active_user_id), "Admin"),
                             "account": _t_acc.name,
-                            "action": f"Assigned project '{_p.name}' to tenant account '{_t_acc.name}'",
+                            "action": "REPO_PARTITION_ASSIGNED",
+                            "details": f"Assigned repository '{_p.name}' to isolated tenant account '{_t_acc.name}'",
                         })
+
+        self._save_persisted_state()
         return self.get_accounts_and_users_state()
 
     # -----------------------------------------------------------------------
@@ -2750,6 +2983,16 @@ class EnterpriseManager:
                                         row.assignments[rk] = rv
                 if "finding_raci_overrides" in data and isinstance(data["finding_raci_overrides"], dict):
                     self.finding_raci_overrides.update(data["finding_raci_overrides"])
+                if "accounts" in data and isinstance(data["accounts"], list) and len(data["accounts"]) > 0:
+                    self.accounts = [TenantAccount(**a) for a in data["accounts"] if isinstance(a, dict)]
+                if "user_profiles" in data and isinstance(data["user_profiles"], list) and len(data["user_profiles"]) > 0:
+                    self.user_profiles = [UserProfileRecord(**u) for u in data["user_profiles"] if isinstance(u, dict)]
+                if "active_account_id" in data and isinstance(data["active_account_id"], str):
+                    self.active_account_id = data["active_account_id"]
+                if "active_user_id" in data and isinstance(data["active_user_id"], str):
+                    self.active_user_id = data["active_user_id"]
+                if "account_audit_log" in data and isinstance(data["account_audit_log"], list):
+                    self.account_audit_log = [e for e in data["account_audit_log"] if isinstance(e, dict)]
         except Exception as e:
             logger.warning(f"Failed to load persisted integration hub state: {e}")
 
@@ -2762,6 +3005,11 @@ class EnterpriseManager:
                 "triage_store": self.triage_store,
                 "raci_activities": [a.model_dump() for a in self.raci_activities],
                 "finding_raci_overrides": self.finding_raci_overrides,
+                "accounts": [a.model_dump() for a in self.accounts],
+                "user_profiles": [u.model_dump() for u in self.user_profiles],
+                "active_account_id": self.active_account_id,
+                "active_user_id": self.active_user_id,
+                "account_audit_log": self.account_audit_log[:40],
                 "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
             with open(self.state_file, "w", encoding="utf-8") as f:
