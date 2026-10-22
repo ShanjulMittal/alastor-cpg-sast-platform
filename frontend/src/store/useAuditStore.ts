@@ -491,7 +491,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         set({ findings: data });
         if (data.length === 0) {
           set({ selectedFinding: null, selectedGraphNodeId: null });
-        } else if (updatedSel && !curSel) {
+        } else if (updatedSel && (!curSel || curSel.id !== updatedSel.id)) {
           get().selectFinding(updatedSel);
         } else if (updatedSel && curSel) {
           set({ selectedFinding: updatedSel });
@@ -606,7 +606,15 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       );
       if (res.ok) {
         const proj: ProjectConfig = await res.json();
-        set({ projectPath: proj.target_path });
+        set({
+          projectPath: proj.target_path,
+          selectedFinding: null,
+          selectedGraphNodeId: null,
+          selectedTreeFile: null,
+          activeFilepath: null,
+          activeStartLine: null,
+          activeEndLine: null,
+        });
         if (runScan) {
           await get().triggerScan(proj.target_path);
         }

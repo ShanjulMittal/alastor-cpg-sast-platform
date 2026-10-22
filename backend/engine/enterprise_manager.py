@@ -1727,6 +1727,39 @@ class EnterpriseManager:
                 p.unchanged_since_last_scan = int(cache_entry.get("unchanged_count", 0))
                 if cache_entry.get("tech_stack") and not p.languages:
                     p.languages = list(cache_entry["tech_stack"])
+                _lf = cache_entry.get("latest_findings")
+                if isinstance(_lf, list):
+                    _act_lf = [
+                        _d for _d in _lf
+                        if isinstance(_d, dict) and _d.get("triage_status") not in ("NOT_EXPLOITABLE", "RESOLVED")
+                    ]
+                    _c_cnt = sum(1 for _d in _act_lf if _d.get("severity") == "CRITICAL")
+                    _h_cnt = sum(1 for _d in _act_lf if _d.get("severity") == "HIGH")
+                    _m_cnt = sum(1 for _d in _act_lf if _d.get("severity") == "MEDIUM")
+                    _l_cnt = sum(1 for _d in _act_lf if _d.get("severity") in ("LOW", "INFO"))
+                    p.critical_count = _c_cnt
+                    p.high_count = _h_cnt
+                    p.medium_count = _m_cnt
+                    p.low_count = _l_cnt
+                    p.total_findings = len(_act_lf)
+                    p.sast_count = sum(1 for _d in _act_lf if _d.get("scan_engine", "SAST") == "SAST")
+                    p.sca_count = sum(1 for _d in _act_lf if _d.get("scan_engine") == "SCA")
+                    p.iac_count = sum(1 for _d in _act_lf if _d.get("scan_engine") == "IaC")
+                    if _c_cnt > 0:
+                        p.risk_level = "CRITICAL"
+                        p.risk_score = min(100, 75 + _c_cnt * 8 + _h_cnt * 3)
+                    elif _h_cnt > 0:
+                        p.risk_level = "HIGH"
+                        p.risk_score = min(74, 50 + _h_cnt * 6 + _m_cnt * 2)
+                    elif _m_cnt > 0:
+                        p.risk_level = "MEDIUM"
+                        p.risk_score = min(49, 25 + _m_cnt * 5)
+                    elif _l_cnt > 0:
+                        p.risk_level = "LOW"
+                        p.risk_score = 18
+                    else:
+                        p.risk_level = "SECURE"
+                        p.risk_score = 0
 
     def update_finding_triage(self, finding: Finding, req: TriageUpdateRequest) -> Finding:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

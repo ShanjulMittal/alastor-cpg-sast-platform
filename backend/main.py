@@ -7,6 +7,7 @@ import re
 import time
 import shutil
 import logging
+import threading
 import subprocess
 import urllib.request
 from urllib.parse import urlparse
@@ -199,11 +200,22 @@ def _resolve_remote_url_target(target_url: str, base_scan_dir: str) -> str:
 @app.on_event("startup")
 def startup_event():
     """Initializes Neo4j connection, verifies APOC, applies graph constraints, and restores cached scan state."""
-    global current_app_tree, _cached_findings, _cached_findings_time
+    global current_scan_dir, current_app_tree, _cached_findings, _cached_findings_time, _last_neo4j_ingested_dir
     try:
         neo4j_client.verify_connectivity_and_apoc()
         neo4j_client.init_schema()
         logger.info("Database initialized successfully.")
+        # Find the most recently scanned project in scan_history_cache.json if available
+        _latest_ts = ""
+        for _entry in enterprise_mgr.project_scan_cache.values():
+            _ep = str(_entry.get("project_path") or "")
+            _ts = str(_entry.get("last_scanned_at") or "")
+            if _ep and os.path.exists(_ep) and _ts > _latest_ts:
+                _latest_ts = _ts
+                current_scan_dir = os.path.abspath(_ep)
+        if current_scan_dir:
+            _last_neo4j_ingested_dir = os.path.normcase(os.path.abspath(current_scan_dir))
+            enterprise_mgr.set_active_scan_target(current_scan_dir)
         # Restore cached scan details for the active project so user can view last-scan results immediately
         cached = enterprise_mgr.get_cached_scan_for_project(current_scan_dir)
         if cached:
@@ -509,7 +521,7 @@ def scan_project(req: ScanRequest):
         total_discovered = current_app_tree.total_files
 
         # Ingest into Neo4j
-        global _cached_findings, _cached_external_findings, _cached_advisories
+        global _cached_findings, _cached_external_findings, _cached_advisories, _last_neo4j_ingested_dir
         _cached_findings = None
         _cached_external_findings = []
         _cached_advisories = []
@@ -603,10 +615,15 @@ def scan_project(req: ScanRequest):
                 node_map.update(normalizer.node_map)
                 file_nodes_map[sf.filepath] = f_nodes
 
-                # Index function parameters and returns for DFG Builder
+                # Index function parameters and returns for DFG Builder in O(N)
+                _params_by_scope: Dict[str, List[CPGNode]] = {}
+                for _pn in f_nodes:
+                    if _pn.label == "Parameter" and _pn.ast_type not in ("parameters", "formal_parameters"):
+                        _params_by_scope.setdefault(_pn.scope_id, []).append(_pn)
+
                 for n in f_nodes:
                     if n.label == "Function":
-                        params = [p for p in f_nodes if p.label == "Parameter" and p.scope_id == n.id and p.ast_type not in ("parameters", "formal_parameters")]
+                        params = _params_by_scope.get(n.id, [])
                         unique_params = []
                         seen_names = set()
                         for p in params:
@@ -724,6 +741,7 @@ def scan_project(req: ScanRequest):
         cpg_nodes_created, cpg_edges_created = ingestor.ingest(
             all_nodes, all_edges, progress_callback=cpg_callback
         )
+        _last_neo4j_ingested_dir = os.path.normcase(os.path.abspath(resolved_path))
 
         # Synchronize the active application in enterprise_mgr.projects and refresh findings/metrics
         enterprise_mgr.set_active_scan_target(resolved_path, current_app_tree.detected_tech_stack)
@@ -807,42 +825,44 @@ _cached_findings_time: float = 0.0
 _cached_external_findings: List[Finding] = []
 _cached_advisories: List[ExtractedAdvisory] = []
 _last_neo4j_ingested_dir: Optional[str] = None
+_findings_lock = threading.Lock()
 
 
 def get_or_compute_findings(force_refresh: bool = False) -> List[Finding]:
-    """Retrieves cached findings or executes SAST + SCA + IaC rules with a 30s TTL, merged with site-extracted code matches and enriched with BFL, Aging & Triage."""
+    """Retrieves cached findings or executes SAST + SCA + IaC rules when refreshed, merged with site-extracted code matches and enriched with BFL, Aging & Triage."""
     global _cached_findings, _cached_findings_time, _cached_external_findings, current_scan_dir, _last_neo4j_ingested_dir
     now = time.time()
     target_dir = current_scan_dir or enterprise_mgr.platform_root
     if not os.path.exists(target_dir):
         target_dir = enterprise_mgr.platform_root
-    norm_target_dir = os.path.normcase(os.path.abspath(target_dir))
-    if force_refresh:
-        _last_neo4j_ingested_dir = norm_target_dir
+    _norm_target_dir = os.path.normcase(os.path.abspath(target_dir))
 
-    if force_refresh or _cached_findings is None or (now - _cached_findings_time) >= 30.0:
-        executor = RuleExecutor(neo4j_client)
-        raw_sast = executor.run_all_rules()
-        root_check = os.path.dirname(target_dir) if os.path.isfile(target_dir) else target_dir
-        sast_findings: List[Finding] = []
-        for sf in raw_sast:
-            fp = sf.path_nodes[-1].get("filepath", "") if sf.path_nodes else ""
-            if fp and os.path.exists(os.path.join(root_check, fp)):
-                sast_findings.append(sf)
-        if not force_refresh and not sast_findings and _last_neo4j_ingested_dir != norm_target_dir:
-            cached_proj = enterprise_mgr.get_cached_scan_for_project(target_dir)
-            if cached_proj and isinstance(cached_proj.get("latest_findings"), list):
-                for cf_dict in cached_proj["latest_findings"]:
-                    if isinstance(cf_dict, dict) and cf_dict.get("scan_engine") == "SAST":
-                        fp = (cf_dict.get("path_nodes") or [{}])[-1].get("filepath", "")
+    if force_refresh or _cached_findings is None:
+        with _findings_lock:
+            if force_refresh or _cached_findings is None:
+                root_check = os.path.dirname(target_dir) if os.path.isfile(target_dir) else target_dir
+                sast_findings: List[Finding] = []
+                if _last_neo4j_ingested_dir is None or _last_neo4j_ingested_dir == _norm_target_dir:
+                    executor = RuleExecutor(neo4j_client)
+                    raw_sast = executor.run_all_rules()
+                    for sf in raw_sast:
+                        fp = sf.path_nodes[-1].get("filepath", "") if sf.path_nodes else ""
                         if fp and os.path.exists(os.path.join(root_check, fp)):
-                            try:
-                                sast_findings.append(Finding(**cf_dict))
-                            except Exception:
-                                pass
-        sca_iac_findings = enterprise_mgr.run_sca_and_iac_scanners(target_dir)
-        _cached_findings = sast_findings + sca_iac_findings
-        _cached_findings_time = now
+                            sast_findings.append(sf)
+                else:
+                    cached_proj = enterprise_mgr.get_cached_scan_for_project(target_dir)
+                    if cached_proj and isinstance(cached_proj.get("latest_findings"), list):
+                        for cf_dict in cached_proj["latest_findings"]:
+                            if isinstance(cf_dict, dict) and cf_dict.get("scan_engine") == "SAST":
+                                fp = (cf_dict.get("path_nodes") or [{}])[-1].get("filepath", "")
+                                if fp and os.path.exists(os.path.join(root_check, fp)):
+                                    try:
+                                        sast_findings.append(Finding(**cf_dict))
+                                    except Exception:
+                                        pass
+                sca_iac_findings = enterprise_mgr.run_sca_and_iac_scanners(target_dir)
+                _cached_findings = sast_findings + sca_iac_findings
+                _cached_findings_time = now
 
     combined: List[Finding] = [f.model_copy(deep=True) for f in (_cached_findings or [])]
     seen_ids = {f.id for f in combined}
@@ -867,8 +887,18 @@ def get_or_compute_findings(force_refresh: bool = False) -> List[Finding]:
 
 
 @app.get("/api/findings", response_model=List[Finding])
-def get_findings(include_suppressed: bool = Query(True)):
+def get_findings(include_suppressed: bool = Query(True), project_path: Optional[str] = Query(None)):
     """Runs all deterministic SAST, SCA, and IaC rules and merges any active site-extracted code findings."""
+    if project_path and os.path.exists(project_path):
+        _norm_req = os.path.normcase(os.path.abspath(project_path))
+        _norm_cur = os.path.normcase(os.path.abspath(current_scan_dir or enterprise_mgr.platform_root))
+        if _norm_req != _norm_cur:
+            _cached_p = enterprise_mgr.get_cached_scan_for_project(project_path)
+            if _cached_p and isinstance(_cached_p.get("latest_findings"), list):
+                _proj_f = enterprise_mgr.enrich_findings([Finding(**f) for f in _cached_p["latest_findings"]])
+                if not include_suppressed:
+                    return [f for f in _proj_f if f.triage_status != "NOT_EXPLOITABLE"]
+                return _proj_f
     all_f = get_or_compute_findings()
     if not include_suppressed:
         return [f for f in all_f if f.triage_status != "NOT_EXPLOITABLE"]
@@ -1336,9 +1366,15 @@ def export_security_report(format: str = Query("markdown", description="markdown
 def get_metrics():
     """Computes overall summary metrics for the TopMetricsBar."""
     global current_app_tree
-    with neo4j_client.driver.session() as session:
-        node_count = session.run("MATCH (n:CPGNode) RETURN count(n) AS c").single()["c"]
-        edge_count = session.run("MATCH ()-[r]->() RETURN count(r) AS c").single()["c"]
+    _norm_cur = os.path.normcase(os.path.abspath(current_scan_dir)) if current_scan_dir else ""
+    _cached_m = enterprise_mgr.get_cached_scan_for_project(current_scan_dir) if current_scan_dir else None
+    if _cached_m and _last_neo4j_ingested_dir != _norm_cur and int(_cached_m.get("nodes_created", 0)) > 0:
+        node_count = int(_cached_m.get("nodes_created", 0))
+        edge_count = int(_cached_m.get("edges_created", 0))
+    else:
+        with neo4j_client.driver.session() as session:
+            node_count = session.run("MATCH (n:CPGNode) RETURN count(n) AS c").single()["c"]
+            edge_count = session.run("MATCH ()-[r]->() RETURN count(r) AS c").single()["c"]
 
     findings = get_or_compute_findings()
     crit = sum(1 for f in findings if f.severity == "CRITICAL")
@@ -1620,7 +1656,7 @@ def activate_project(project_id: str):
     cached last-scan findings, application tree, and Track Changes history so the user
     can view saved scan details without having to re-scan every time.
     """
-    global current_scan_dir, current_app_tree, _cached_findings, _cached_findings_time
+    global current_scan_dir, current_app_tree, _cached_findings, _cached_findings_time, _cached_external_findings, _cached_advisories
     target = None
     for p in enterprise_mgr.projects:
         if p.id == project_id:
@@ -1634,6 +1670,9 @@ def activate_project(project_id: str):
 
     if target.target_path and os.path.exists(target.target_path):
         current_scan_dir = os.path.abspath(target.target_path)
+        _norm_act = os.path.normcase(current_scan_dir)
+        _cached_external_findings = []
+        _cached_advisories = []
         cached = enterprise_mgr.get_cached_scan_for_project(current_scan_dir)
         if cached and cached.get("app_tree"):
             try:
@@ -1642,7 +1681,15 @@ def activate_project(project_id: str):
                 current_app_tree = AppTreeAnalyzer(current_scan_dir).analyze()
         else:
             current_app_tree = AppTreeAnalyzer(current_scan_dir).analyze()
-        refreshed = get_or_compute_findings(force_refresh=True)
+        if cached and isinstance(cached.get("latest_findings"), list) and _last_neo4j_ingested_dir != _norm_act:
+            try:
+                _cached_findings = [Finding(**f) for f in cached["latest_findings"]]
+                _cached_findings_time = time.time()
+            except Exception:
+                _cached_findings = None
+            refreshed = get_or_compute_findings(force_refresh=False)
+        else:
+            refreshed = get_or_compute_findings(force_refresh=True)
         if current_app_tree:
             target.files_scanned_count = current_app_tree.total_files
         enterprise_mgr._sync_active_project_metrics(refreshed)

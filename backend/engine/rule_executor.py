@@ -6,6 +6,7 @@ dead stores, infinite loops, and unreachable logic.
 import hashlib
 import logging
 from typing import List, Dict, Any
+from neo4j import Query as Neo4jQuery
 from models import Finding
 from database.neo4j_client import Neo4jClient
 
@@ -22,15 +23,17 @@ RULES = [
         "remediation": "Validate or sanitize untrusted input using strict type conversion (e.g., int()), allowlists, or shlex.quote() before passing to execution sinks.",
         "description": "Untrusted input source flows into sensitive execution sink without required sanitizer.",
         "cypher": """
-        MATCH (source:CPGNode {is_source: true})
-        MATCH (sink:CPGNode {is_sink: true})
-        MATCH path = shortestPath((source)-[:DFG_FLOWS_TO*1..25]->(sink))
+        MATCH path = (source:CPGNode {is_source: true})-[:DFG_FLOWS_TO*1..15]->(sink:CPGNode {is_sink: true})
         WHERE NONE(n IN nodes(path) WHERE n.is_sanitizer = true)
+        WITH source, sink, path
+        ORDER BY length(path) ASC
+        WITH source, sink, head(collect(path)) AS shortest_p
         RETURN 
           'CRITICAL' AS severity,
           'Taint Vulnerability: Untrusted Input Flows to Sensitive Sink' AS title,
-          [n IN nodes(path) | properties(n)] AS path_nodes,
-          [r IN relationships(path) | {id: r.id, source: startNode(r).id, target: endNode(r).id, type: type(r)}] AS path_edges
+          [n IN nodes(shortest_p) | properties(n)] AS path_nodes,
+          [r IN relationships(shortest_p) | {id: r.id, source: startNode(r).id, target: endNode(r).id, type: type(r)}] AS path_edges
+        LIMIT 100
         """
     },
     {
@@ -71,6 +74,7 @@ RULES = [
           END AS title,
           [properties(f)] AS path_nodes,
           [] AS path_edges
+        LIMIT 150
         """
     },
     {
@@ -101,6 +105,7 @@ RULES = [
           'Dead Store / Unused Data Element: ' + target.name AS title,
           [properties(source), properties(target)] AS path_nodes,
           [{id: r.id, source: source.id, target: target.id, type: type(r)}] AS path_edges
+        LIMIT 150
         """
     },
     {
@@ -129,6 +134,7 @@ RULES = [
           'Logical Flaw: Non-Terminating Infinite Loop' AS title,
           [n IN nodes(cycle) | properties(n)] AS path_nodes,
           [r IN relationships(cycle) | {id: r.id, source: startNode(r).id, target: endNode(r).id, type: type(r)}] AS path_edges
+        LIMIT 150
         """
     },
     {
@@ -155,6 +161,7 @@ RULES = [
           'Logical Flaw: Unreachable Dead Code Block' AS title,
           [properties(stmt), properties(fn)] AS path_nodes,
           [] AS path_edges
+        LIMIT 150
         """
     },
     {
@@ -287,7 +294,7 @@ class RuleExecutor:
         with self.client.driver.session() as session:
             for rule in RULES:
                 try:
-                    result = session.run(rule["cypher"])
+                    result = session.run(Neo4jQuery(rule["cypher"], timeout=8.0))
                     for record in result:
                         severity = record["severity"]
                         title = record["title"]

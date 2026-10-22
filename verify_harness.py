@@ -433,7 +433,11 @@ def run_assertions():
         timeout=180,
     )
     assert self_scan_resp.status_code == 200, f"Assertion P FAILED: Self-audit scan returned {self_scan_resp.status_code}: {self_scan_resp.text}"
-    self_findings_resp = requests.get(f"{BACKEND_URL}/api/findings", timeout=20)
+    self_findings_resp = requests.get(
+        f"{BACKEND_URL}/api/findings",
+        params={"project_path": str(ROOT_DIR)},
+        timeout=20,
+    )
     assert self_findings_resp.status_code == 200
     self_findings = self_findings_resp.json()
     if len(self_findings) != 0:
