@@ -843,6 +843,16 @@ class StrideThreatItem(BaseModel):
     threat_scenario: str = ""
     mitigation_control: str = ""
     linked_finding_ids: List[str] = Field(default_factory=list)
+    primary_filepath: str = ""
+    primary_line: int = 1
+    code_snippet: str = ""
+    what_passed: List[str] = Field(default_factory=list)
+    what_failed: List[str] = Field(default_factory=list)
+    why_issue_or_not: str = ""
+    risk_impact: str = ""
+    likelihood: str = "LOW (Mitigated)"
+    compliance_mapping: str = "OWASP Top 10 / MITRE CWE"
+    corrective_actions: List[str] = Field(default_factory=list)
 
 
 class PipelineSecurityCheck(BaseModel):
@@ -853,6 +863,13 @@ class PipelineSecurityCheck(BaseModel):
     evidence_path: str = ""
     details: str = ""
     remediation: str = ""
+    primary_filepath: str = ""
+    primary_line: int = 1
+    what_passed: List[str] = Field(default_factory=list)
+    what_failed: List[str] = Field(default_factory=list)
+    why_issue_or_not: str = ""
+    risk_impact: str = ""
+    corrective_actions: List[str] = Field(default_factory=list)
 
 
 class SastPlusSuiteResponse(BaseModel):

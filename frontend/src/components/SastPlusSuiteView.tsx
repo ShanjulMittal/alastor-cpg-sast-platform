@@ -115,6 +115,7 @@ export function SastPlusSuiteView() {
   const appTree = useAuditStore((s) => s.appTree);
   const projectPath = useAuditStore((s) => s.projectPath);
   const jumpToBestFixLocation = useAuditStore((s) => s.jumpToBestFixLocation);
+  const openCodeLocationInIde = useAuditStore((s) => s.openCodeLocationInIde);
   const createTicketForFinding = useAuditStore((s) => s.createTicketForFinding);
   const setWorkspaceViewMode = useAuditStore((s) => s.setWorkspaceViewMode);
 
@@ -918,25 +919,52 @@ export function SastPlusSuiteView() {
                           Components:
                         </span>
                         {threat.affected_components.map((comp, cIdx) => (
-                          <span
+                          <button
                             key={cIdx}
-                            className="px-1.5 py-0.5 rounded bg-zinc-950 border border-zinc-800 text-[10px] font-mono text-cyan-300"
+                            type="button"
+                            onClick={() => openCodeLocationInIde(comp, threat.primary_line || 1)}
+                            className="px-1.5 py-0.5 rounded bg-zinc-950 hover:bg-amber-950/60 border border-zinc-800 hover:border-amber-600 text-[10px] font-mono text-cyan-300 hover:text-amber-200 cursor-pointer"
                           >
                             {comp}
-                          </span>
+                          </button>
                         ))}
                       </div>
                     )}
 
                     <p className="text-[11px] text-zinc-300 leading-relaxed">
-                      <strong className="text-amber-300">Threat Scenario: </strong>
-                      {threat.threat_scenario}
+                      <strong className="text-amber-300">Why Issue / Rationale: </strong>
+                      {threat.why_issue_or_not || threat.threat_scenario}
                     </p>
                   </div>
 
-                  <div className="pt-2 border-t border-zinc-800/80 text-[11px] text-emerald-200/90 leading-relaxed">
-                    <strong className="text-emerald-400">Compensating Control: </strong>
-                    {threat.mitigation_control}
+                  <div className="pt-2 border-t border-zinc-800/80 space-y-2 text-[11px] text-emerald-200/90 leading-relaxed">
+                    <div>
+                      <strong className="text-emerald-400">Corrective Action: </strong>
+                      {threat.mitigation_control}
+                    </div>
+                    <div className="flex items-center justify-between gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openCodeLocationInIde(
+                            threat.primary_filepath || threat.affected_components?.[0],
+                            threat.primary_line || 1,
+                            threat.linked_finding_ids?.[0]
+                          )
+                        }
+                        className="px-2.5 py-1 rounded bg-amber-950/80 hover:bg-amber-900 border border-amber-700 text-amber-200 font-semibold text-[11px] flex items-center gap-1"
+                      >
+                        <Crosshair className="w-3 h-3 text-amber-400" />
+                        Inspect Linked Code
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setWorkspaceViewMode("THREAT_MODELING")}
+                        className="px-2.5 py-1 rounded bg-purple-950/80 hover:bg-purple-900 border border-purple-700 text-purple-200 font-semibold text-[11px]"
+                      >
+                        Full Threat Dossier →
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}

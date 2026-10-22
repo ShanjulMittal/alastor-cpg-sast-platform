@@ -635,6 +635,16 @@ export interface StrideThreatItem {
   threat_scenario: string;
   mitigation_control: string;
   linked_finding_ids: string[];
+  primary_filepath?: string;
+  primary_line?: number;
+  code_snippet?: string;
+  what_passed?: string[];
+  what_failed?: string[];
+  why_issue_or_not?: string;
+  risk_impact?: string;
+  likelihood?: string;
+  compliance_mapping?: string;
+  corrective_actions?: string[];
 }
 
 export interface PipelineSecurityCheck {
@@ -645,6 +655,13 @@ export interface PipelineSecurityCheck {
   evidence_path: string;
   details: string;
   remediation: string;
+  primary_filepath?: string;
+  primary_line?: number;
+  what_passed?: string[];
+  what_failed?: string[];
+  why_issue_or_not?: string;
+  risk_impact?: string;
+  corrective_actions?: string[];
 }
 
 export interface SastPlusSuiteResponse {

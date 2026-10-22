@@ -125,6 +125,7 @@ interface AuditState {
   setGraphFullscreen: (val: boolean) => void;
   selectFinding: (finding: Finding) => void;
   jumpToBestFixLocation: (finding: Finding) => void;
+  openCodeLocationInIde: (filepath?: string, line?: number, findingId?: string) => void;
   selectTreeFile: (file: FilePurposeInfo) => void;
   selectGraphNode: (node: CPGNode) => void;
   selectCodeLine: (filepath: string, line: number) => Promise<void>;
@@ -458,6 +459,11 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     const bfl = finding.best_fix_location;
     if (!bfl) {
       get().selectFinding(finding);
+      set({
+        workspaceViewMode: "REMEDIATION_IDE",
+        ideLayoutMode: "SPLIT_BOTH",
+        isSidebarCollapsed: false,
+      });
       return;
     }
     set({
@@ -467,6 +473,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       activeStartLine: bfl.line,
       activeEndLine: bfl.line,
       workspaceViewMode: "REMEDIATION_IDE",
+      ideLayoutMode: "SPLIT_BOTH",
+      isSidebarCollapsed: false,
     });
     const rf = get().reactFlowInstance;
     if (rf && rf.getNode && bfl.node_id) {
@@ -478,6 +486,88 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         });
       }
     }
+  },
+
+  openCodeLocationInIde: (filepath?: string, line?: number, findingId?: string) => {
+    const allFindings = get().findings || [];
+    const treeFiles = get().appTree?.flat_files || [];
+
+    // 1. Try direct finding match by ID
+    if (findingId) {
+      const byId = allFindings.find((f) => f.id === findingId);
+      if (byId) {
+        get().jumpToBestFixLocation(byId);
+        return;
+      }
+    }
+
+    // 2. Parse clean filepath and line from string like "ciso/next.config.ts:1 (GET /)" or "app.py:42"
+    let rawPath = (filepath || "").trim();
+    rawPath = rawPath.replace(/\s*\(.*\)$/, "").trim();
+    let parsedLine = line && line > 0 ? line : 1;
+
+    const colonMatch = rawPath.match(/^(.+?):L?(\d+)$/i);
+    if (colonMatch) {
+      rawPath = colonMatch[1].trim();
+      if (!line) {
+        parsedLine = parseInt(colonMatch[2], 10) || 1;
+      }
+    }
+
+    // 3. Try matching a finding in the active findings list by filepath
+    if (rawPath) {
+      const normRaw = rawPath.replace(/\\/g, "/").toLowerCase();
+      const byPathFinding = allFindings.find((f) => {
+        const bflFp = (f.best_fix_location?.filepath || "").replace(/\\/g, "/").toLowerCase();
+        const nodeFp = (f.path_nodes?.[f.path_nodes.length - 1]?.filepath || "").replace(/\\/g, "/").toLowerCase();
+        return (
+          bflFp === normRaw ||
+          nodeFp === normRaw ||
+          (bflFp && normRaw.endsWith(bflFp)) ||
+          (nodeFp && normRaw.endsWith(nodeFp))
+        );
+      });
+      if (byPathFinding) {
+        set({
+          selectedFinding: byPathFinding,
+          activeFilepath: byPathFinding.best_fix_location?.filepath || rawPath,
+          activeStartLine: parsedLine || byPathFinding.best_fix_location?.line || 1,
+          activeEndLine: parsedLine || byPathFinding.best_fix_location?.line || 1,
+          workspaceViewMode: "REMEDIATION_IDE",
+          ideLayoutMode: "SPLIT_BOTH",
+          isSidebarCollapsed: false,
+        });
+        return;
+      }
+    }
+
+    // 4. Otherwise resolve against appTree flat_files or fallback to first available file/finding
+    let resolvedFile = rawPath;
+    if (!resolvedFile || resolvedFile === "application root" || resolvedFile === "workspace manifest") {
+      if (allFindings.length > 0) {
+        get().jumpToBestFixLocation(allFindings[0]);
+        return;
+      }
+      resolvedFile = treeFiles[0]?.filepath || get().activeFilepath || "";
+    } else if (treeFiles.length > 0) {
+      const normReq = resolvedFile.replace(/\\/g, "/").toLowerCase();
+      const matchedTree = treeFiles.find((tf) => {
+        const tfNorm = tf.filepath.replace(/\\/g, "/").toLowerCase();
+        return tfNorm === normReq || tfNorm.endsWith(normReq) || normReq.endsWith(tfNorm);
+      });
+      if (matchedTree) {
+        resolvedFile = matchedTree.filepath;
+      }
+    }
+
+    set({
+      activeFilepath: resolvedFile,
+      activeStartLine: parsedLine,
+      activeEndLine: parsedLine,
+      workspaceViewMode: "REMEDIATION_IDE",
+      ideLayoutMode: "SPLIT_BOTH",
+      isSidebarCollapsed: false,
+    });
   },
 
   selectTreeFile: (file: FilePurposeInfo) => {
