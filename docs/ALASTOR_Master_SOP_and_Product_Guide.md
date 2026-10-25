@@ -1,14 +1,14 @@
-# ALASTOR (`Ἀλάστωρ`) v2.6.0 — Enterprise Product Guide, Feature Catalog & Master Standard Operating Procedure (SOP)
+# ALASTOR (`Ἀλάστωρ`) v2.6.1 — Enterprise Product Guide, Feature Catalog & Master Standard Operating Procedure (SOP)
 
-**Deterministic Code Property Graph (AST + CFG + DFG + Call Graph) • Unified Inter-Procedural SAST (`18` Built-In Rules, `0%` FP), Live OSV.dev Lockfile CVE + CPG Import Reachability, CI/CD Workflow Security & Secret Keys Vault • STRIDE Threat & Observation Matrix • Custom Rule Profiles • Multi-Tenant RBAC Account Separation • EPSS v4 • CycloneDX v1.5 SBOM • PMI/COBIT RACI Governance**
+**Deterministic Code Property Graph (AST + CFG + DFG + Call Graph) • Unified Inter-Procedural SAST (`18` Built-In Rules, AST-Verified Sanitizer Summaries, `0%` FP), Live OSV.dev Lockfile CVE + CPG Import Reachability, CI/CD Workflow Security & Secret Keys Vault • STRIDE Threat & Observation Matrix • Custom Rule Profiles • Multi-Tenant RBAC Account Separation • EPSS v4 • CycloneDX v1.5 SBOM • PMI/COBIT RACI Governance**
 
 ![ALASTOR Mythological Demon Crest](./screenshots/alastor_demon_logo.jpg)
 
 > [!IMPORTANT]
-> **Dual-Purpose Executive & Operator Document (Updated for Release v2.6.0)**:
+> **Dual-Purpose Executive & Operator Document (Updated for Release v2.6.1)**:
 > 1. **Part I & II (Executive Pitch & Competitive Differentiation)**: Designed for CISOs, VPs of Engineering, Enterprise Architects, and Procurement Leaders evaluating why ALASTOR outperforms Semgrep, legacy static analyzers, and fragmented cloud scanners.
 > 2. **Part III, IV & V (Complete 8-Module Feature Reference & 10-Step Master SOP)**: A step-by-step Standard Operating Procedure enabling Security Engineers, Red Teamers, Developers, and Non-Coder Managers/Students to master every workspace, workflow, and API.
-> 3. **Part VI (Version History & Release Changelog)**: Detailed breakdown of `v2.6.0`, `v2.5.0`, `v2.0.0`, and `v1.0.0` releases.
+> 3. **Part VI (Version History & Release Changelog)**: Detailed breakdown of `v2.6.1`, `v2.6.0`, `v2.5.0`, `v2.0.0`, and `v1.0.0` releases.
 
 ---
 
@@ -246,6 +246,11 @@ flowchart LR
 ---
 
 ## Part VI: Release History & Version Changelog
+
+### Version `2.6.1` (2026-10-25) — AST-Verified Inter-Procedural Sanitizer Summary, `for`-Loop Iterator Taint & 100% Semgrep Pro/OSS Zero-Finding Parity
+- **Added**: **AST-Verified Inter-Procedural Sanitizer Summary Engine** in `main.py` Pass 3 + `ast_parser.py` + `dfg_builder.py` so custom helper functions earn `is_sanitizer=True` strictly when their AST body enforces stdlib `os.path.commonpath` / `os.path.basename` / `Path.is_relative_to`, `ipaddress.ip_address` private-IP SSRF guards, or CR/LF log stripping — catching weak/fake validators and unguarded `os.path.realpath()` while keeping `0%` False Positives where Semgrep OSS/Pro misfires on custom confinement helpers.
+- **Added**: `for`-loop iterator taint propagation (`for item in req.files:`) and call-site-routed inter-procedural DFG edges (`arg -> Call -> param`) in `dfg_builder.py`.
+- **Remediated**: Upgraded `_validate_safe_remote_url()`, `_safe_integration_http_request()`, and `_validate_safe_advisory_url()` with `https://` + `socket.getaddrinfo()` + `ipaddress.ip_address()` private/loopback/link-local blocking + `allow_redirects=False`, constant code-host HTTPS origin construction (`_build_trusted_https_fetch_url`), UUID-isolated remote/upload workspaces (`remote_<uuid>`, `upload_<uuid>`), and server-enumerated `os.walk` file opening (`_read_authorized_workspace_file`).
 
 ### Version `2.6.0` (2026-10-25) — Semgrep-Superiority Multi-Engine Release: Live OSV Lockfile CVE + CPG Reachability, Inter-Procedural Route Taint, CI/CD Workflow Security & Zero-FP Hardening
 - **Added**: Live OSV.dev Lockfile CVE & CPG Import Reachability Engine (`SCA-2-LIVE-CVE-LOCKFILE`) auditing all direct & transitive locked npm/PyPI packages and mapping AST `import`/`require` reachability (`REACHABLE`, `CONDITIONALLY_REACHABLE`, `UNREACHABLE_DORMANT`).

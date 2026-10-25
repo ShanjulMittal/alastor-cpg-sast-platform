@@ -10,6 +10,8 @@ Then correlates and identifies matching vulnerabilities directly in the scanned 
 import os
 import re
 import json
+import socket
+import ipaddress
 import hashlib
 import logging
 from urllib.parse import urlparse
@@ -108,16 +110,26 @@ CWE_SIGNATURE_CATALOG: Dict[str, Dict[str, Any]] = {
 
 
 def _validate_safe_advisory_url(raw_url: str) -> str:
-    """Validates external advisory URL scheme and blocks file:// and cloud metadata SSRF."""
+    """Validates external advisory URL scheme and resolved DNS IPs via ipaddress.ip_address() against SSRF."""
     clean = (raw_url or "").strip()
+    if not clean or re.search(r"[\r\n\x00\s]", clean):
+        raise ValueError("Invalid advisory URL")
     if not clean.startswith(("http://", "https://")):
         clean = "https://" + clean
     parsed = urlparse(clean)
-    if parsed.scheme not in ("https", "http"):
-        raise ValueError("Unsupported advisory URL scheme")
+    if parsed.scheme != "https":
+        raise ValueError("Unsupported advisory URL scheme; only https:// is allowed")
     host = (parsed.hostname or "").lower()
-    if not host or host in {"169.254.169.254", "metadata.google.internal", "127.0.0.1", "localhost"}:
+    if not host or host in {"169.254.169.254", "metadata.google.internal", "127.0.0.1", "localhost", "100.100.100.200"}:
         raise ValueError("Blocked local or metadata host in advisory URL")
+    try:
+        addr_infos = socket.getaddrinfo(host, parsed.port or 443, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise ValueError(f"Unable to resolve advisory host '{host}': {exc}") from exc
+    for info in addr_infos:
+        ip_obj = ipaddress.ip_address(info[4][0])
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_reserved or ip_obj.is_multicast:
+            raise ValueError(f"Blocked internal/private advisory IP ({ip_obj}) for host '{host}'")
     return clean
 
 
@@ -211,7 +223,7 @@ class VulnExtractorEngine:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Argon-CPG-SAST-Scanner/2.0",
                 "Accept": "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8"
             }
-            resp = requests.get(safe_url, headers=headers, timeout=10)
+            resp = requests.get(safe_url, headers=headers, timeout=10, allow_redirects=False)
             raw_text = resp.text[:250_000]  # Cap at 250KB for fast extraction
         except Exception as e:
             logger.warning("Failed to fetch custom URL %s: %s", domain, str(e)[:120])

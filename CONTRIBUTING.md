@@ -1,6 +1,6 @@
-# Contributing to ALASTOR (`Ἀλάστωρ`) v2.6.0 — Guide for Security Researchers
+# Contributing to ALASTOR (`Ἀλάστωρ`) v2.6.1 — Guide for Security Researchers
 
-Thank you for contributing to **ALASTOR v2.6.0**, the open-source Deterministic Code Property Graph (CPG), SAST, Live OSV SCA, CI/CD & IaC, STRIDE Threat Modeling & ASPM Security Platform! We welcome contributions from security researchers, compiler engineers, vulnerability hunters, and AppSec practitioners.
+Thank you for contributing to **ALASTOR v2.6.1**, the open-source Deterministic Code Property Graph (CPG), SAST, Live OSV SCA, CI/CD & IaC, STRIDE Threat Modeling & ASPM Security Platform! We welcome contributions from security researchers, compiler engineers, vulnerability hunters, and AppSec practitioners.
 
 ---
 

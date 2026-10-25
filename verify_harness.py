@@ -493,12 +493,28 @@ def run_assertions():
                 '    assert u.startswith("https://api.example.com/")\n'
                 '    return u\n'
                 '\n'
+                'def _weak_url_validator(u: str) -> str:\n'
+                '    # Weak check (only checks scheme prefix, allows 127.0.0.1 / RFC1918) -> ALASTOR must NOT treat as sanitizer!\n'
+                '    return u if u.startswith("http") else ""\n'
+                '\n'
+                'def _custom_confine_dir(raw_rel: str) -> str:\n'
+                '    cand = os.path.realpath(os.path.join("/srv/reports", raw_rel))\n'
+                '    if os.path.commonpath(["/srv/reports", cand]) != "/srv/reports":\n'
+                '        raise ValueError("escape")\n'
+                '    return cand\n'
+                '\n'
                 'def helper_read_report(rel_path: str):\n'
                 '    return open(rel_path, "r", encoding="utf-8").read()\n'
                 '\n'
                 '@app.get("/api/unsafe-report")\n'
                 'def unsafe_report_endpoint(filepath: str):\n'
                 '    return helper_read_report(filepath)\n'
+                '\n'
+                '@app.post("/api/unsafe-batch")\n'
+                'def unsafe_batch_write(batch_paths: list):\n'
+                '    for item_path in batch_paths:\n'
+                '        only_realpath = os.path.realpath(item_path)\n'
+                '        open(only_realpath, "w", encoding="utf-8").write("x")\n'
                 '\n'
                 '@app.get("/api/safe-report")\n'
                 'def safe_report_endpoint(safe_filepath: str):\n'
@@ -507,9 +523,19 @@ def run_assertions():
                 '        raise ValueError("blocked")\n'
                 '    return open(resolved, "r", encoding="utf-8").read()\n'
                 '\n'
+                '@app.get("/api/safe-helper-report")\n'
+                'def safe_helper_report_endpoint(user_rel: str):\n'
+                '    confined = _custom_confine_dir(user_rel)\n'
+                '    return open(confined, "r", encoding="utf-8").read()\n'
+                '\n'
                 '@app.post("/api/unsafe-webhook")\n'
                 'def unsafe_webhook_fetch(webhook_url: str):\n'
                 '    return urllib.request.urlopen(webhook_url, timeout=3).read()\n'
+                '\n'
+                '@app.post("/api/weak-ssrf")\n'
+                'def unsafe_weak_ssrf_fetch(target_url: str):\n'
+                '    checked_weak = _weak_url_validator(target_url)\n'
+                '    return requests.get(checked_weak, timeout=3).text\n'
                 '\n'
                 '@app.post("/api/safe-webhook")\n'
                 'def safe_webhook_fetch(clean_url: str):\n'
@@ -580,12 +606,12 @@ def run_assertions():
         for bf in bench_findings:
             by_rule.setdefault(bf["rule_id"], []).append(bf)
 
-        # Verify True Positives across all new v2.6.0 rules
-        assert len(by_rule.get("RULE-10-PATH-TRAVERSAL", [])) == 1, (
-            f"Assertion S FAILED: Expected 1 inter-procedural RULE-10-PATH-TRAVERSAL TP (0 FP on safe_report_endpoint), got: {by_rule.get('RULE-10-PATH-TRAVERSAL')}"
+        # Verify True Positives across all v2.6.1 rules + AST-Verified Sanitizer Summary (0% FP)
+        assert len(by_rule.get("RULE-10-PATH-TRAVERSAL", [])) == 2, (
+            f"Assertion S FAILED: Expected 2 RULE-10-PATH-TRAVERSAL TPs (inter-procedural + for-loop/unguarded-realpath) and 0 FPs on safe_report_endpoint/safe_helper_report_endpoint, got: {by_rule.get('RULE-10-PATH-TRAVERSAL')}"
         )
-        assert len(by_rule.get("RULE-11-SSRF-URLOPEN", [])) == 1, (
-            f"Assertion S FAILED: Expected 1 RULE-11-SSRF-URLOPEN TP (0 FP on safe_webhook_fetch), got: {by_rule.get('RULE-11-SSRF-URLOPEN')}"
+        assert len(by_rule.get("RULE-11-SSRF-URLOPEN", [])) == 2, (
+            f"Assertion S FAILED: Expected 2 RULE-11-SSRF-URLOPEN TPs (urlopen + weak validator requests.get) and 0 FP on safe_webhook_fetch, got: {by_rule.get('RULE-11-SSRF-URLOPEN')}"
         )
         assert len(by_rule.get("RULE-12-LOG-INJECTION", [])) == 1, (
             f"Assertion S FAILED: Expected 1 RULE-12-LOG-INJECTION TP (0 FP on safe_audit_log), got: {by_rule.get('RULE-12-LOG-INJECTION')}"

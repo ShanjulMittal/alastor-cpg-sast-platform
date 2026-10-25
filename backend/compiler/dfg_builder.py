@@ -126,11 +126,30 @@ class DFGBuilder:
             self._process_assignment(ts_node, current_scope)
             right = ts_node.child_by_field_name("right") or ts_node.child_by_field_name("value")
             if right:
+                if right.type in ("call", "call_expression"):
+                    self._process_call(right, current_scope)
                 for ch in right.children:
                     self._traverse_for_dataflow(ch, current_scope)
             return
 
-        # 2. Standalone Calls (e.g., helper_exec(formatted_cmd), os.system(cmd), document.write(...), IIFE (function(){...})())
+        # 2. For-loop iterator flow (e.g., `for item in req.files:` propagates taint from `req` -> `item`)
+        if node_type in ("for_statement", "for_in_statement"):
+            left_iter = ts_node.child_by_field_name("left")
+            right_iter = ts_node.child_by_field_name("right")
+            if left_iter and right_iter:
+                iter_target = self.find_cpg_node(left_iter)
+                if iter_target:
+                    for use_cpg in self._extract_variable_uses(right_iter):
+                        self._link_reaching_definitions(use_cpg, current_scope)
+                        self.emit_dfg_edge(use_cpg.id, iter_target.id, var_name=iter_target.name)
+                    if current_scope not in self.defs:
+                        self.defs[current_scope] = {}
+                    self.defs[current_scope][iter_target.name] = [iter_target.id]
+            for child in ts_node.children:
+                self._traverse_for_dataflow(child, current_scope)
+            return
+
+        # 3. Standalone Calls (e.g., helper_exec(formatted_cmd), os.system(cmd), document.write(...), IIFE (function(){...})())
         if node_type in ("call", "call_expression"):
             self._process_call(ts_node, current_scope)
             func_node = ts_node.child_by_field_name("function")
@@ -242,13 +261,19 @@ class DFGBuilder:
                         self._link_reaching_definitions(av, scope_id)
                         arg_uses.append(av)
 
-        # 1. Inter-procedural flow: Argument -> Formal Parameter
+        # 1. Inter-procedural flow: Argument -> Call Site -> Formal Parameter
+        # Routing through call_cpg ensures verified sanitizer helpers block taint deterministically
+        # and unsanitized helper calls show the exact call site along the CPG path.
         target_params = self.function_params_map.get(short_name) or self.function_params_map.get(func_name)
         if target_params and arg_uses:
             for i, arg_u in enumerate(arg_uses):
                 if i < len(target_params):
                     param_cpg = target_params[i]
-                    self.emit_dfg_edge(arg_u.id, param_cpg.id, var_name=param_cpg.name)
+                    if call_cpg:
+                        self.emit_dfg_edge(arg_u.id, call_cpg.id, var_name=arg_u.name)
+                        self.emit_dfg_edge(call_cpg.id, param_cpg.id, var_name=param_cpg.name)
+                    else:
+                        self.emit_dfg_edge(arg_u.id, param_cpg.id, var_name=param_cpg.name)
 
         # 2. Sink flow: If call is a sensitive or secondary security sink, arguments flow into sink
         is_secondary_security_sink = (

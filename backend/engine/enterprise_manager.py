@@ -10,6 +10,8 @@ import os
 import re
 import json
 import time
+import socket
+import ipaddress
 import base64
 import hashlib
 import math
@@ -52,21 +54,31 @@ def _safe_integration_http_request(
     timeout: int = 8,
 ) -> http_requests.Response:
     """
-    Executes outbound integration REST call after strict URL scheme and SSRF host validation.
-    Blocks file://, ftp://, gopher://, and cloud metadata IPs (CWE-918).
+    Executes outbound integration REST call after strict HTTPS scheme and DNS/IP SSRF validation.
+    Blocks file://, loopback, RFC1918 private networks, link-local, and cloud metadata IPs (CWE-918).
     """
-    parsed = urlparse((url or "").strip())
-    if parsed.scheme not in ("https", "http"):
-        raise ValueError(f"Unsupported integration URL scheme: {parsed.scheme}")
+    clean_url = (url or "").strip()
+    parsed = urlparse(clean_url)
+    if parsed.scheme != "https":
+        raise ValueError(f"Unsupported integration URL scheme '{parsed.scheme}'; only https:// is allowed.")
     host = (parsed.hostname or "").lower()
-    if not host or host in {"169.254.169.254", "metadata.google.internal", "100.100.100.200"}:
-        raise ValueError("Blocked cloud metadata or empty integration hostname.")
+    if not host or host in {"localhost", "169.254.169.254", "metadata.google.internal", "100.100.100.200"}:
+        raise ValueError("Blocked loopback, cloud metadata, or empty integration hostname.")
+    try:
+        addr_infos = socket.getaddrinfo(host, parsed.port or 443, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise ValueError(f"Unable to resolve integration host '{host}': {exc}") from exc
+    for info in addr_infos:
+        ip_obj = ipaddress.ip_address(info[4][0])
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_reserved or ip_obj.is_multicast:
+            raise ValueError(f"Blocked internal/private integration IP ({ip_obj}) for host '{host}'.")
     return http_requests.request(
         method=method.upper(),
-        url=url.strip(),
+        url=clean_url,
         headers=headers,
         data=body_bytes,
         timeout=timeout,
+        allow_redirects=False,
     )
 
 
@@ -2824,9 +2836,9 @@ class EnterpriseManager:
         return new_rule
 
     def add_custom_sanitizer(self, req: AddCustomSanitizerRequest, neo4j_client: Any = None) -> CustomSanitizerRule:
-        fn_clean = req.function_name.strip()
-        if not fn_clean:
-            raise ValueError("Sanitizer function name cannot be empty")
+        fn_clean = re.sub(r"[\r\n\x00\x1b\t]+", "", (req.function_name or "").strip())
+        if not fn_clean or not re.match(r"^[A-Za-z_$][A-Za-z0-9_$.-]{0,120}$", fn_clean):
+            raise ValueError("Sanitizer function name must be a valid non-empty identifier")
 
         SANITIZER_PATTERNS.add(fn_clean)
         san_id = "san-" + hashlib.sha256(fn_clean.encode()).hexdigest()[:8]
@@ -2861,7 +2873,7 @@ class EnterpriseManager:
                         fn=fn_clean
                     )
             except Exception as e:
-                logger.warning(f"Failed to apply live sanitizer {fn_clean} in Neo4j: {e}")
+                logger.warning("Failed to apply live sanitizer %s in Neo4j: %s", fn_clean, str(e)[:160])
 
         return rule_obj
 

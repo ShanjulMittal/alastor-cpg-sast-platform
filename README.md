@@ -1,18 +1,18 @@
 <div align="center">
 
-# ALASTOR (`Ἀλάστωρ`) v2.6.0 — Enterprise Deterministic Code Property Graph (CPG), SAST, Live OSV SCA, CI/CD & IaC, STRIDE Threat Modeling & ASPM Platform
+# ALASTOR (`Ἀλάστωρ`) v2.6.1 — Enterprise Deterministic Code Property Graph (CPG), SAST, Live OSV SCA, CI/CD & IaC, STRIDE Threat Modeling & ASPM Platform
 
 <img src="./docs/screenshots/alastor_demon_logo.jpg" alt="ALASTOR Demon Crest" width="180" />
 
-**Open-Source Deterministic Code Property Graph (Tree-Sitter AST + CFG + DFG + Call Graph over Neo4j) • Inter-Procedural Multi-Framework SAST (`18` Built-In Rules, `0%` False Positives) • Live OSV.dev Transitive Lockfile CVE + CPG Import Reachability • CI/CD GitHub Actions Security • Cloud & SDK Secret Keys Vault • STRIDE Count & Observation Matrix • Multi-Tenant RBAC • EPSS v4 • CycloneDX v1.5 SBOM**
+**Open-Source Deterministic Code Property Graph (Tree-Sitter AST + CFG + DFG + Call Graph over Neo4j) • Inter-Procedural Multi-Framework SAST (`18` Built-In Rules, AST-Verified Sanitizer Summaries, `0%` False Positives) • Live OSV.dev Transitive Lockfile CVE + CPG Import Reachability • CI/CD GitHub Actions Security • Cloud & SDK Secret Keys Vault • STRIDE Count & Observation Matrix • Multi-Tenant RBAC • EPSS v4 • CycloneDX v1.5 SBOM**
 
-[![Version: 2.6.0](https://img.shields.io/badge/Version-v2.6.0%20Enterprise-violet.svg)](./CHANGELOG.md)
+[![Version: 2.6.1](https://img.shields.io/badge/Version-v2.6.1%20Enterprise-violet.svg)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-amber.svg)](./LICENSE)
 [![Self-Audit: 0 Findings](https://img.shields.io/badge/Self--Audit-0%20Findings%20(18%2F18%20Assertions%20Pass)-emerald.svg)](./verify_harness.py)
 [![SARIF: v2.1.0](https://img.shields.io/badge/OASIS-SARIF%20v2.1.0-cyan.svg)](./backend/main.py)
 [![SBOM: CycloneDX v1.5](https://img.shields.io/badge/SBOM-CycloneDX%20v1.5-indigo.svg)](./backend/engine/enterprise_manager.py)
 
-[**📖 Full Master Product Guide & Standard Operating Procedure (SOP)**](./docs/ALASTOR_Master_SOP_and_Product_Guide.md) • [**📋 Release History & Changelog (v2.6.0)**](./CHANGELOG.md) • [**🔬 Contributing Guide**](./CONTRIBUTING.md) • [**🛡️ Security Policy**](./SECURITY.md)
+[**📖 Full Master Product Guide & Standard Operating Procedure (SOP)**](./docs/ALASTOR_Master_SOP_and_Product_Guide.md) • [**📋 Release History & Changelog (v2.6.1)**](./CHANGELOG.md) • [**🔬 Contributing Guide**](./CONTRIBUTING.md) • [**🛡️ Security Policy**](./SECURITY.md)
 
 </div>
 

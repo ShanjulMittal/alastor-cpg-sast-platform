@@ -1,8 +1,8 @@
-# Security Policy & Responsible Disclosure (ALASTOR v2.6.0)
+# Security Policy & Responsible Disclosure (ALASTOR v2.6.1)
 
 ## Dogfooding & Self-Audit Guarantee (`0 Unpatched Findings`)
 
-**ALASTOR v2.6.0** continuously audits its own backend (`FastAPI` / `Python`), frontend (`Next.js` / `TypeScript`), dependency lockfiles (`package-lock.json` / `requirements.txt`), and GitHub Actions workflows (`.github/workflows/`) via **Assertion P** in [`verify_harness.py`](./verify_harness.py), enforcing **0 unpatched findings** across all **18 built-in rules**: SAST (`RULE-1` through `RULE-13`), Secret Keys & Cloud Token Hunter (`RULE-8-HARDCODED-SECRET`), Live OSV.dev Lockfile CVE & CPG Reachability (`SCA-1-MANIFEST-AUDIT`, `SCA-2-LIVE-CVE-LOCKFILE`), and IaC / CI/CD (`IAC-1-COMPOSE-SECRET`, `IAC-2-CONTAINER-ROOT`, `IAC-3-CICD-WORKFLOW-SECURITY`) on every release.
+**ALASTOR v2.6.1** continuously audits its own backend (`FastAPI` / `Python`), frontend (`Next.js` / `TypeScript`), dependency lockfiles (`package-lock.json` / `requirements.txt`), and GitHub Actions workflows (`.github/workflows/`) via **Assertion P** in [`verify_harness.py`](./verify_harness.py), enforcing **0 unpatched findings** across all **18 built-in rules**: SAST (`RULE-1` through `RULE-13` with AST-Verified Inter-Procedural Sanitizer Summaries), Secret Keys & Cloud Token Hunter (`RULE-8-HARDCODED-SECRET`), Live OSV.dev Lockfile CVE & CPG Reachability (`SCA-1-MANIFEST-AUDIT`, `SCA-2-LIVE-CVE-LOCKFILE`), and IaC / CI/CD (`IAC-1-COMPOSE-SECRET`, `IAC-2-CONTAINER-ROOT`, `IAC-3-CICD-WORKFLOW-SECURITY`) on every release.
 
 ## Supported Versions
 

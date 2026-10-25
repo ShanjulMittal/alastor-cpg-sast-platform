@@ -42,10 +42,8 @@ SINK_PATTERNS = {
 SANITIZER_PATTERNS = {
     "int", "float", "bool", "shlex.quote", "html.escape", "bleach.clean", "urllib.parse.quote",
     "DOMPurify.sanitize", "encodeURIComponent", "esc", "escapeHtml",
-    "os.path.commonpath", "os.path.realpath", "os.path.basename", "path.basename", "secure_filename",
-    "_safe_resolve_under", "_resolve_allowed_scan_file", "_validate_safe_remote_url",
-    "_validate_safe_advisory_url", "_safe_integration_http_request", "_sanitize_log",
-    "yaml.safe_load"
+    "os.path.commonpath", "os.path.basename", "path.basename", "secure_filename",
+    "yaml.safe_load", "uuid.uuid4"
 }
 
 HTTP_ROUTE_DECORATOR_TOKENS = (

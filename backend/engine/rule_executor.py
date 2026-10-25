@@ -350,7 +350,7 @@ RULES = [
         UNION
         MATCH path = (source:CPGNode {is_source: true})-[:DFG_FLOWS_TO*1..12]->(sink:Call)
         WHERE NOT source.code CONTAINS 'sys.argv'
-          AND sink.name IN ['requests.get', 'requests.post', 'requests.put', 'requests.delete', 'requests.request', 'http_requests.get', 'http_requests.post', 'httpx.get', 'httpx.post', 'axios.get', 'axios.post']
+          AND sink.name IN ['requests.get', 'requests.post', 'requests.put', 'requests.delete', 'requests.request', 'http_requests.get', 'http_requests.post', 'http_requests.request', 'httpx.get', 'httpx.post', 'axios.get', 'axios.post']
           AND NONE(n IN nodes(path) WHERE n.is_sanitizer = true)
         WITH source, sink, path
         ORDER BY length(path) ASC
