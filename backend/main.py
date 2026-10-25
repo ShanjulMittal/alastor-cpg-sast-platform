@@ -9,9 +9,9 @@ import shutil
 import logging
 import threading
 import subprocess
-import urllib.request
 from urllib.parse import urlparse
 from typing import List, Optional, Dict, Any
+import requests as http_requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
@@ -80,8 +80,8 @@ def update_progress(
 
 app = FastAPI(
     title="ALASTOR Enterprise Deterministic CPG, STRIDE Threat Modeling & SAST++++++ Engine",
-    version="2.5.0",
-    description="Compiler-grade deterministic Code Property Graph, STRIDE Threat Modeling, Secret Keys Vault, Rule Engine Profiles, Multi-Tenant RBAC, and ASPM platform."
+    version="2.6.0",
+    description="Compiler-grade deterministic Code Property Graph, STRIDE Threat Modeling, Live Lockfile CVE Reachability, Secret Keys Vault, Rule Engine Profiles, Multi-Tenant RBAC, and ASPM platform."
 )
 
 # CORS setup
@@ -104,39 +104,81 @@ current_scan_dir: str = enterprise_mgr.platform_root
 current_app_tree: Optional[AppTreeSummary] = None
 
 
+def _sanitize_log(value: Any) -> str:
+    """Neutralizes CR/LF, NUL, and terminal escape characters to prevent CWE-117 Log Injection."""
+    return re.sub(r"[\r\n\x00\x1b\t]+", " ", str(value))[:300]
+
+
+def _safe_resolve_under(base_dir: str, *parts: str) -> str:
+    """
+    Canonicalizes candidate path via os.path.realpath() and enforces strict os.path.commonpath()
+    containment within base_dir to prevent CWE-22 Path Traversal.
+    """
+    real_base = os.path.realpath(base_dir)
+    joined = os.path.join(real_base, *parts)
+    real_target = os.path.realpath(joined)
+    if os.path.commonpath([real_base, real_target]) != real_base:
+        raise ValueError(f"Path traversal blocked outside base workspace: {real_base}")
+    return real_target
+
+
+def _validate_safe_remote_url(raw_url: str, allow_git_ssh: bool = False) -> str:
+    """
+    Validates remote URL scheme and host, blocking file://, ftp://, gopher://,
+    git CLI option injection (leading '-'), and cloud metadata SSRF endpoints (CWE-918).
+    """
+    clean = (raw_url or "").strip()
+    if not clean or clean.startswith("-") or re.search(r"[\r\n\x00\s]", clean):
+        raise ValueError("Invalid or unsafe remote URL format.")
+    if allow_git_ssh and clean.startswith("git@"):
+        if not re.match(r"^git@[A-Za-z0-9._-]+:[A-Za-z0-9._/-]+$", clean):
+            raise ValueError("Invalid SSH Git repository URL.")
+        return clean
+
+    parsed = urlparse(clean)
+    if parsed.scheme not in ("https", "http"):
+        raise ValueError(f"Blocked unsupported URL scheme '{parsed.scheme}'; only https/http allowed.")
+    host = (parsed.hostname or "").lower()
+    if not host or host in {"169.254.169.254", "metadata.google.internal", "100.100.100.200"}:
+        raise ValueError("Blocked cloud metadata or empty host in remote URL.")
+    return clean
+
+
 def _resolve_remote_url_target(target_url: str, base_scan_dir: str) -> str:
     """
     Resolves a remote URL (GitHub/GitLab repo, GitHub blob file, raw source file, or web URL)
     into a local workspace directory or file so the full CPG + AppTree + SAST pipeline can scan it.
     """
-    workspace_root = os.path.join(os.path.dirname(base_scan_dir), ".remote_targets")
+    workspace_root = os.path.realpath(os.path.join(os.path.dirname(base_scan_dir), ".remote_targets"))
     os.makedirs(workspace_root, exist_ok=True)
 
-    clean_url = target_url.strip()
+    clean_url = _validate_safe_remote_url(target_url, allow_git_ssh=True)
     if clean_url.startswith("git@"):
-        slug = re.sub(r"[^a-zA-Z0-9._-]", "_", clean_url.split(":")[-1].replace(".git", ""))
-        dest_dir = os.path.join(workspace_root, slug or "git_repo")
-        if os.path.exists(dest_dir):
+        slug = re.sub(r"[^a-zA-Z0-9._-]", "_", clean_url.split(":")[-1].replace(".git", "")).strip("._") or "git_repo"
+        dest_dir = _safe_resolve_under(workspace_root, slug)
+        if os.path.exists(dest_dir) and dest_dir != workspace_root:
             shutil.rmtree(dest_dir, ignore_errors=True)
-        subprocess.run(["git", "clone", "--depth", "1", clean_url, dest_dir], check=True, timeout=60)
+        subprocess.run(["git", "clone", "--depth", "1", "--", clean_url, dest_dir], check=True, timeout=60)
         return dest_dir
 
     parsed = urlparse(clean_url)
     host = (parsed.netloc or "remote").lower()
-    path_parts = [p for p in parsed.path.split("/") if p]
+    path_parts = [p for p in parsed.path.split("/") if p and p not in (".", "..")]
 
     # Case 1: GitHub /blob/ single file URL -> convert to raw.githubusercontent.com
     if "github.com" in host and len(path_parts) >= 5 and path_parts[2] == "blob":
         owner, repo, _, branch = path_parts[:4]
         rel_file = "/".join(path_parts[4:])
-        raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{rel_file}"
-        dest_dir = os.path.join(workspace_root, f"{owner}_{repo}_{branch}")
+        raw_url = _validate_safe_remote_url(f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{rel_file}")
+        folder_slug = re.sub(r"[^a-zA-Z0-9._-]", "_", f"{owner}_{repo}_{branch}").strip("._") or "gh_blob"
+        dest_dir = _safe_resolve_under(workspace_root, folder_slug)
         os.makedirs(dest_dir, exist_ok=True)
-        local_file = os.path.join(dest_dir, os.path.basename(rel_file))
-        req = urllib.request.Request(raw_url, headers={"User-Agent": "ARGON-CPG-SAST/2.0"})
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            with open(local_file, "wb") as f:
-                f.write(resp.read())
+        safe_filename = re.sub(r"[^a-zA-Z0-9._-]", "_", os.path.basename(rel_file)).strip("._") or "source.py"
+        local_file = _safe_resolve_under(dest_dir, safe_filename)
+        resp = http_requests.get(raw_url, headers={"User-Agent": "ALASTOR-CPG-SAST/2.6"}, timeout=20)
+        resp.raise_for_status()
+        with open(local_file, "wb") as f:
+            f.write(resp.content[:2 * 1024 * 1024])
         return local_file
 
     # Case 2: GitHub / GitLab / Bitbucket repository root URL or .git URL
@@ -148,52 +190,54 @@ def _resolve_remote_url_target(target_url: str, base_scan_dir: str) -> str:
     )
     if is_git_repo:
         repo_slug = f"{path_parts[0]}_{path_parts[1].replace('.git', '')}" if len(path_parts) >= 2 else "remote_repo"
-        dest_dir = os.path.join(workspace_root, re.sub(r"[^a-zA-Z0-9._-]", "_", repo_slug))
-        if os.path.exists(dest_dir):
+        safe_repo_slug = re.sub(r"[^a-zA-Z0-9._-]", "_", repo_slug).strip("._") or "remote_repo"
+        dest_dir = _safe_resolve_under(workspace_root, safe_repo_slug)
+        if os.path.exists(dest_dir) and dest_dir != workspace_root:
             shutil.rmtree(dest_dir, ignore_errors=True)
-        clone_url = clean_url if clean_url.endswith(".git") else f"https://{host}/{path_parts[0]}/{path_parts[1]}.git"
-        res = subprocess.run(["git", "clone", "--depth", "1", clone_url, dest_dir], capture_output=True, text=True, timeout=90)
+        clone_url = _validate_safe_remote_url(
+            clean_url if clean_url.endswith(".git") else f"https://{host}/{path_parts[0]}/{path_parts[1]}.git"
+        )
+        res = subprocess.run(["git", "clone", "--depth", "1", "--", clone_url, dest_dir], capture_output=True, text=True, timeout=90)
         if res.returncode == 0 and os.path.exists(dest_dir):
             return dest_dir
 
     # Case 3: Direct raw source file URL or Live Web Application URL
-    slug = re.sub(r"[^a-zA-Z0-9._-]", "_", f"{host}_{'_'.join(path_parts[-2:])}" if path_parts else host)[:60]
-    dest_dir = os.path.join(workspace_root, slug or "web_target")
+    slug = re.sub(r"[^a-zA-Z0-9._-]", "_", f"{host}_{'_'.join(path_parts[-2:])}" if path_parts else host)[:60].strip("._") or "web_target"
+    dest_dir = _safe_resolve_under(workspace_root, slug)
     os.makedirs(dest_dir, exist_ok=True)
 
-    req = urllib.request.Request(clean_url, headers={"User-Agent": "ARGON-CPG-SAST/2.0"})
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        raw_bytes = resp.read(2 * 1024 * 1024)
-        content_type = (resp.headers.get("Content-Type") or "").lower()
+    resp = http_requests.get(clean_url, headers={"User-Agent": "ALASTOR-CPG-SAST/2.6"}, timeout=20)
+    resp.raise_for_status()
+    raw_bytes = resp.content[:2 * 1024 * 1024]
+    content_type = (resp.headers.get("Content-Type") or "").lower()
 
-    last_part = path_parts[-1] if path_parts else ""
+    last_part = re.sub(r"[^a-zA-Z0-9._-]", "_", path_parts[-1]).strip("._") if path_parts else ""
     ext = os.path.splitext(last_part)[1].lower()
-    if ext in {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".json", ".yaml", ".yml"}:
-        local_file = os.path.join(dest_dir, last_part)
+    if last_part and ext in {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".json", ".yaml", ".yml"}:
+        local_file = _safe_resolve_under(dest_dir, last_part)
         with open(local_file, "wb") as f:
             f.write(raw_bytes)
         return local_file
 
     # Webpage / HTML / API response: save HTML and extract inline <script> blocks into a .js file for CPG analysis
     text_body = raw_bytes.decode("utf-8", errors="replace")
-    html_file = os.path.join(dest_dir, "index.html")
+    html_file = _safe_resolve_under(dest_dir, "index.html")
     with open(html_file, "w", encoding="utf-8") as f:
         f.write(text_body)
 
     scripts = re.findall(r"<script[^>]*>([\s\S]*?)</script>", text_body, flags=re.IGNORECASE)
     non_empty_scripts = [s.strip() for s in scripts if s and s.strip()]
     if non_empty_scripts:
-        js_file = os.path.join(dest_dir, "extracted_page_scripts.js")
+        js_file = _safe_resolve_under(dest_dir, "extracted_page_scripts.js")
         with open(js_file, "w", encoding="utf-8") as f:
             f.write(f"// Extracted inline scripts from {clean_url}\n\n")
             f.write("\n\n// --- Script Block ---\n".join(non_empty_scripts))
     elif "json" in content_type or text_body.lstrip().startswith(("{", "[")):
-        json_file = os.path.join(dest_dir, "response_payload.json")
+        json_file = _safe_resolve_under(dest_dir, "response_payload.json")
         with open(json_file, "w", encoding="utf-8") as f:
             f.write(text_body)
     else:
-        # Also save as .js if it looks like script content
-        js_fallback = os.path.join(dest_dir, "remote_source.js")
+        js_fallback = _safe_resolve_under(dest_dir, "remote_source.js")
         with open(js_fallback, "w", encoding="utf-8") as f:
             f.write(text_body)
 
@@ -350,7 +394,9 @@ def browse_filesystem(path: Optional[str] = Query(None, description="Directory p
             except OSError:
                 continue
     except Exception as e:
-        logger.warning(f"Cannot browse directory {target_dir}: {e}")
+        safe_dir_log = _sanitize_log(target_dir)
+        safe_err_log = _sanitize_log(e)
+        logger.warning("Cannot browse directory %s: %s", safe_dir_log, safe_err_log)
 
     return FsBrowseResponse(
         current_path=target_dir,
@@ -408,21 +454,26 @@ def upload_target_files(req: UploadTargetRequest):
     and returns the workspace path so it can be scanned immediately.
     """
     base_scan_dir = os.getenv("CPG_SCAN_BASE", os.getcwd())
-    upload_root = os.path.join(os.path.dirname(base_scan_dir), ".uploaded_targets")
-    safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", req.target_name.strip() or "uploaded_workspace")
-    target_dir = os.path.join(upload_root, safe_name)
+    upload_root = os.path.realpath(os.path.join(os.path.dirname(base_scan_dir), ".uploaded_targets"))
+    os.makedirs(upload_root, exist_ok=True)
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", req.target_name.strip() or "uploaded_workspace").strip("._") or "uploaded_workspace"
+    target_dir = _safe_resolve_under(upload_root, safe_name)
 
-    if os.path.exists(target_dir):
+    if os.path.exists(target_dir) and target_dir != upload_root:
         shutil.rmtree(target_dir, ignore_errors=True)
     os.makedirs(target_dir, exist_ok=True)
 
     saved_count = 0
     last_saved_file = ""
     for item in req.files:
-        rel = item.filepath.replace("\\", "/").lstrip("/")
-        if not rel or ".." in rel.split("/"):
+        rel_parts = [
+            re.sub(r"[^a-zA-Z0-9._-]", "_", seg)
+            for seg in item.filepath.replace("\\", "/").split("/")
+            if seg and seg not in (".", "..")
+        ]
+        if not rel_parts:
             continue
-        dest_file = os.path.join(target_dir, rel)
+        dest_file = _safe_resolve_under(target_dir, *rel_parts)
         os.makedirs(os.path.dirname(dest_file), exist_ok=True)
         with open(dest_file, "w", encoding="utf-8") as f:
             f.write(item.content)
@@ -501,7 +552,8 @@ def scan_project(req: ScanRequest):
         raise HTTPException(status_code=404, detail=f"Target path does not exist: {target_path}")
 
     current_scan_dir = resolved_path
-    logger.info(f"Initiating Application Tree & CPG analysis for: {resolved_path}")
+    safe_resolved_log = _sanitize_log(resolved_path)
+    logger.info("Initiating Application Tree & CPG analysis for: %s", safe_resolved_log)
 
     try:
         # Pass A: Application Architecture Tree & Purpose Identification
@@ -566,7 +618,7 @@ def scan_project(req: ScanRequest):
 
         # If no CPG source files exist, we still succeed with complete Application Tree mapping!
         if not scanned_files:
-            logger.info(f"Scanned {current_app_tree.total_files} application files (0 AST code files).")
+            logger.info("Scanned %d application files (0 AST code files).", int(current_app_tree.total_files))
             update_progress(
                 is_scanning=False,
                 phase="COMPLETED",
@@ -630,7 +682,7 @@ def scan_project(req: ScanRequest):
                         unique_params = []
                         seen_names = set()
                         for p in params:
-                            if p.name not in seen_names and not p.name.startswith("("):
+                            if p.name not in seen_names and p.name not in ("self", "cls") and not p.name.startswith("("):
                                 seen_names.add(p.name)
                                 unique_params.append(p)
                         func_params_map[n.name] = unique_params
@@ -641,7 +693,7 @@ def scan_project(req: ScanRequest):
                                 func_returns_map[fn.name] = []
                             func_returns_map[fn.name].append(n)
             except Exception as e:
-                logger.warning(f"Skipping AST normalization for {sf.filepath}: {e}")
+                logger.warning("Skipping AST normalization for %s: %s", _sanitize_log(sf.filepath), _sanitize_log(e))
 
         # Pass 2: Control Flow Graph (CFG) State Machine
         for idx, sf in enumerate(scanned_files):
@@ -668,7 +720,7 @@ def scan_project(req: ScanRequest):
                 cfg_edges = cfg_builder.build()
                 all_edges.extend(cfg_edges)
             except Exception as e:
-                logger.warning(f"Skipping CFG generation for {sf.filepath}: {e}")
+                logger.warning("Skipping CFG generation for %s: %s", _sanitize_log(sf.filepath), _sanitize_log(e))
 
         # Pass 3: Data Flow Graph (DFG) & Symbol Table
         for idx, sf in enumerate(scanned_files):
@@ -697,7 +749,7 @@ def scan_project(req: ScanRequest):
                 dfg_edges = dfg_builder.build()
                 all_edges.extend(dfg_edges)
             except Exception as e:
-                logger.warning(f"Skipping DFG generation for {sf.filepath}: {e}")
+                logger.warning("Skipping DFG generation for %s: %s", _sanitize_log(sf.filepath), _sanitize_log(e))
 
         # Pass 4: Cross-File Call Graph Resolution
         update_progress(
@@ -1403,29 +1455,68 @@ def get_metrics():
     )
 
 
+def _resolve_allowed_scan_file(raw_path: str, allowed_roots: List[str]) -> Optional[str]:
+    """
+    Resolves a requested file strictly within authorized scan/workspace roots using
+    os.path.realpath() + os.path.commonpath() containment checks (CWE-22 protection).
+    """
+    clean_req = (raw_path or "").strip()
+    if not clean_req or "\x00" in clean_req:
+        return None
+
+    real_roots: List[str] = []
+    for r in allowed_roots:
+        if r and os.path.exists(r):
+            real_roots.append(os.path.realpath(os.path.dirname(r) if os.path.isfile(r) else r))
+
+    if os.path.isabs(clean_req):
+        real_cand = os.path.realpath(clean_req)
+        if os.path.isfile(real_cand):
+            for rr in real_roots:
+                try:
+                    if os.path.commonpath([rr, real_cand]) == rr:
+                        return real_cand
+                except ValueError:
+                    continue
+        return None
+
+    rel_norm = clean_req.replace("\\", "/").lstrip("/")
+    if ".." in rel_norm.split("/"):
+        return None
+
+    for rr in real_roots:
+        try:
+            resolved = _safe_resolve_under(rr, rel_norm)
+            if os.path.isfile(resolved):
+                return resolved
+        except ValueError:
+            continue
+    return None
+
+
 @app.get("/api/file")
 def get_file_content(path: str = Query(..., description="Relative or absolute filepath")):
-    """Returns raw source code for Monaco editor rendering."""
+    """Returns raw source code for Monaco editor rendering within authorized scan roots."""
     global current_scan_dir
     scan_parent = os.path.dirname(current_scan_dir) if current_scan_dir and os.path.isfile(current_scan_dir) else current_scan_dir
-    candidate_paths = [
-        path,
-        current_scan_dir if current_scan_dir and os.path.isfile(current_scan_dir) and os.path.basename(current_scan_dir) == os.path.basename(path) else "",
-        os.path.join(scan_parent, path) if scan_parent else "",
-        os.path.join(current_scan_dir, path) if current_scan_dir else "",
-        os.path.join(os.getcwd(), path),
-        os.path.join(os.getenv("CPG_SCAN_BASE", os.getcwd()), path),
-        os.path.join(os.path.dirname(os.getcwd()), path)
+    project_roots = [p.target_path for p in enterprise_mgr.projects if p.target_path]
+    allowed_roots = [
+        current_scan_dir,
+        scan_parent,
+        enterprise_mgr.platform_root,
+        os.path.dirname(enterprise_mgr.platform_root),
+        os.getenv("CPG_SCAN_BASE", os.getcwd()),
+        os.getcwd(),
+        *project_roots,
     ]
 
-    target_file = None
-    for p in candidate_paths:
-        if p and os.path.isfile(p):
-            target_file = p
-            break
+    if current_scan_dir and os.path.isfile(current_scan_dir) and os.path.basename(current_scan_dir) == os.path.basename(path):
+        target_file = os.path.realpath(current_scan_dir)
+    else:
+        target_file = _resolve_allowed_scan_file(path, allowed_roots)
 
     if not target_file:
-        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+        raise HTTPException(status_code=404, detail=f"File not found or outside authorized scan workspace: {_sanitize_log(path)}")
 
     try:
         with open(target_file, "r", encoding="utf-8", errors="replace") as f:

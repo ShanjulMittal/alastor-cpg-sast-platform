@@ -1,18 +1,18 @@
 <div align="center">
 
-# ALASTOR (`Ἀλάστωρ`) v2.5.0 — Enterprise Deterministic Code Property Graph (CPG), SAST, SCA, IaC, STRIDE Threat Modeling & ASPM Platform
+# ALASTOR (`Ἀλάστωρ`) v2.6.0 — Enterprise Deterministic Code Property Graph (CPG), SAST, Live OSV SCA, CI/CD & IaC, STRIDE Threat Modeling & ASPM Platform
 
 <img src="./docs/screenshots/alastor_demon_logo.jpg" alt="ALASTOR Demon Crest" width="180" />
 
-**Open-Source Deterministic Code Property Graph (Tree-Sitter AST + CFG + DFG + Call Graph over Neo4j) • Unified SAST, SCA, IaC & Secret Keys Hunter • STRIDE Count & Observation Matrix • Custom Rule Profiles • Multi-Tenant RBAC Account Separation • Call-Graph Reachability • EPSS v4 • CycloneDX v1.5 SBOM & CI/CD PBOM • Interactive PMI/COBIT RACI Governance**
+**Open-Source Deterministic Code Property Graph (Tree-Sitter AST + CFG + DFG + Call Graph over Neo4j) • Inter-Procedural Multi-Framework SAST (`18` Built-In Rules, `0%` False Positives) • Live OSV.dev Transitive Lockfile CVE + CPG Import Reachability • CI/CD GitHub Actions Security • Cloud & SDK Secret Keys Vault • STRIDE Count & Observation Matrix • Multi-Tenant RBAC • EPSS v4 • CycloneDX v1.5 SBOM**
 
-[![Version: 2.5.0](https://img.shields.io/badge/Version-v2.5.0%20Enterprise-violet.svg)](./CHANGELOG.md)
+[![Version: 2.6.0](https://img.shields.io/badge/Version-v2.6.0%20Enterprise-violet.svg)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-amber.svg)](./LICENSE)
-[![Self-Audit: 0 Findings](https://img.shields.io/badge/Self--Audit-0%20Findings%20(100%25%20Pass)-emerald.svg)](./verify_harness.py)
+[![Self-Audit: 0 Findings](https://img.shields.io/badge/Self--Audit-0%20Findings%20(18%2F18%20Assertions%20Pass)-emerald.svg)](./verify_harness.py)
 [![SARIF: v2.1.0](https://img.shields.io/badge/OASIS-SARIF%20v2.1.0-cyan.svg)](./backend/main.py)
 [![SBOM: CycloneDX v1.5](https://img.shields.io/badge/SBOM-CycloneDX%20v1.5-indigo.svg)](./backend/engine/enterprise_manager.py)
 
-[**📖 Full Master Product Guide & Standard Operating Procedure (SOP)**](./docs/ALASTOR_Master_SOP_and_Product_Guide.md) • [**📋 Release History & Changelog (v2.5.0)**](./CHANGELOG.md) • [**🔬 Contributing Guide**](./CONTRIBUTING.md) • [**🛡️ Security Policy**](./SECURITY.md)
+[**📖 Full Master Product Guide & Standard Operating Procedure (SOP)**](./docs/ALASTOR_Master_SOP_and_Product_Guide.md) • [**📋 Release History & Changelog (v2.6.0)**](./CHANGELOG.md) • [**🔬 Contributing Guide**](./CONTRIBUTING.md) • [**🛡️ Security Policy**](./SECURITY.md)
 
 </div>
 
@@ -119,9 +119,9 @@ Then open **`http://localhost:3000`** in your browser.
 
 ---
 
-## 🧪 Running the 17-Assertion Autonomous Verification Suite
+## 🧪 Running the 18-Assertion Autonomous Verification Suite
 
-ALASTOR includes an end-to-end verification harness ([`verify_harness.py`](./verify_harness.py)) that tests Neo4j APOC, all CPG rules, multi-site advisory extraction, BFL, RACI, SBOM, STRIDE counts & observations, PBOM, Call Graph, Entrypoints Graph, Multi-Tenant RBAC Accounts, SARIF v2.1.0 export, Track Changes, and performs a **full self-audit of `cpg-sast-platform` asserting 0 unpatched findings**:
+ALASTOR includes an end-to-end verification harness ([`verify_harness.py`](./verify_harness.py)) that tests Neo4j APOC, all 18 built-in CPG/SCA/IaC rules, inter-procedural FastAPI/Express taint & 0% false-positive sanitizer suppression (`Assertion S`), live OSV.dev lockfile CVE reachability, GitHub Actions CI/CD security, BFL, RACI, SBOM, STRIDE counts & observations, PBOM, Call Graph, Entrypoints Graph, Multi-Tenant RBAC Accounts, SARIF v2.1.0 export, Track Changes, and performs a **full self-audit of `cpg-sast-platform` asserting 0 unpatched findings**:
 
 ```bash
 .\.venv\Scripts\python.exe verify_harness.py
@@ -133,7 +133,8 @@ ALASTOR includes an end-to-end verification harness ([`verify_harness.py`](./ver
 
 | Version | Date | Highlights |
 | :--- | :--- | :--- |
-| **`v2.5.0`** | **2026-10-22** | **Enterprise Shell (`AppMenuBar` + `LeftFunctionBar`), STRIDE Count & Observation Matrix (`✔ OK` vs `✖ Issue`), Secret Keys Vault (`RULE-8`), Rule Engine Test Profiles (`RuleEngineProfilesView`), Multi-Tenant RBAC Accounts (`UserAccountProfileView`), Call Graph (`CALL_GRAPH`), Entrypoints Graph (`ENTRYPOINT_GRAPH`), and Decluttered 360° Spider Map.** |
+| **`v2.6.0`** | **2026-10-25** | **Semgrep-Superiority Multi-Engine Release: Live OSV.dev Lockfile CVE + CPG Import Reachability (`SCA-2`), CI/CD GitHub Actions Scanner (`IAC-3`), Inter-Procedural Route Taint (`RULE-10` Path Traversal, `RULE-11` SSRF, `RULE-12` Log Injection, `RULE-13` Deserialization/Crypto), Sanitizer-Aware SQLi (`RULE-7`), SDK/Cloud Token Hunter (`RULE-8`), and Zero-CVE Platform Hardening.** |
+| **`v2.5.0`** | 2026-10-22 | Enterprise Shell (`AppMenuBar` + `LeftFunctionBar`), STRIDE Count & Observation Matrix (`✔ OK` vs `✖ Issue`), Secret Keys Vault (`RULE-8`), Rule Engine Test Profiles (`RuleEngineProfilesView`), Multi-Tenant RBAC Accounts (`UserAccountProfileView`), Call Graph (`CALL_GRAPH`), Entrypoints Graph (`ENTRYPOINT_GRAPH`), and Decluttered 360° Spider Map. |
 | **`v2.0.0`** | 2026-10-19 | SAST++++++ ASPM Suite, Written Observation Dossiers, Side-by-Side Before/After Code Diffs, Call-Graph Reachability, EPSS v4, RACI Matrix, CycloneDX v1.5 SBOM, and Continuous Track Changes Mode. |
 | **`v1.0.0`** | 2026-10-17 | Core Tree-Sitter AST + CFG + DFG Code Property Graph over Neo4j + APOC, deterministic CPG taint & structural rules, BFL calculation, and OASIS SARIF v2.1.0 export. |
 

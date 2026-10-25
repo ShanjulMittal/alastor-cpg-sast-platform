@@ -250,8 +250,24 @@ class DFGBuilder:
                     param_cpg = target_params[i]
                     self.emit_dfg_edge(arg_u.id, param_cpg.id, var_name=param_cpg.name)
 
-        # 2. Sink flow: If call is a sensitive sink (e.g. os.system, cursor.execute, document.write), arguments flow into sink
-        if call_cpg and (call_cpg.is_sink or func_name.endswith(".setAttribute")):
+        # 2. Sink flow: If call is a sensitive or secondary security sink, arguments flow into sink
+        is_secondary_security_sink = (
+            short_name in {
+                "open", "rmtree", "remove", "unlink", "send_file", "FileResponse",
+                "readFile", "readFileSync", "writeFile", "writeFileSync", "rmSync",
+                "urlopen", "urlretrieve",
+                "loads", "load", "md5", "sha1", "decode", "encode", "driver", "connect",
+            }
+            or func_name in {
+                "requests.get", "requests.post", "requests.put", "requests.delete", "requests.request",
+                "http_requests.get", "http_requests.post", "http_requests.request",
+                "httpx.get", "httpx.post", "axios.get", "axios.post",
+                "logger.info", "logger.warning", "logger.error", "logger.critical",
+                "logging.info", "logging.warning", "logging.error",
+                "GraphDatabase.driver", "psycopg2.connect", "mysql.connector.connect",
+            }
+        )
+        if call_cpg and (call_cpg.is_sink or is_secondary_security_sink or func_name.endswith(".setAttribute")):
             for arg_u in arg_uses:
                 self.emit_dfg_edge(arg_u.id, call_cpg.id, var_name=arg_u.name)
 

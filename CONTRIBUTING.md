@@ -1,20 +1,20 @@
-# Contributing to ALASTOR (`Ἀλάστωρ`) v2.5.0 — Guide for Security Researchers
+# Contributing to ALASTOR (`Ἀλάστωρ`) v2.6.0 — Guide for Security Researchers
 
-Thank you for contributing to **ALASTOR v2.5.0**, the open-source Deterministic Code Property Graph (CPG), SAST, SCA, IaC, STRIDE Threat Modeling & ASPM Security Platform! We welcome contributions from security researchers, compiler engineers, vulnerability hunters, and AppSec practitioners.
+Thank you for contributing to **ALASTOR v2.6.0**, the open-source Deterministic Code Property Graph (CPG), SAST, Live OSV SCA, CI/CD & IaC, STRIDE Threat Modeling & ASPM Security Platform! We welcome contributions from security researchers, compiler engineers, vulnerability hunters, and AppSec practitioners.
 
 ---
 
 ## 🔬 How Security Researchers Can Contribute
 
 1. **New CPG Cypher & AST Security Rules (`SAST` & `Secret Keys Hunter`)**
-   - Add new inter-procedural taint sources, sanitizers, or sinks in [`backend/engine/rules.py`](./backend/engine/rules.py), [`backend/engine/rule_executor.py`](./backend/engine/rule_executor.py), and [`backend/compiler/dfg_builder.py`](./backend/compiler/dfg_builder.py).
-   - Add new graph-structural queries beyond the built-in `RULE-1-TAINT` through `RULE-9-DOM-XSS` (e.g., SSRF, insecure deserialization, prototype pollution, IDOR/broken access control, cryptographic misuse).
+   - Add new inter-procedural taint sources, sanitizers, or sinks in [`backend/compiler/ast_parser.py`](./backend/compiler/ast_parser.py), [`backend/engine/rule_executor.py`](./backend/engine/rule_executor.py), and [`backend/compiler/dfg_builder.py`](./backend/compiler/dfg_builder.py).
+   - Add new graph-structural queries beyond the built-in `RULE-1-TAINT` through `RULE-13-UNSAFE-DESERIALIZATION-CRYPTO` (e.g., prototype pollution, IDOR/broken access control, GraphQL batch abuse).
 2. **Inter-Procedural Call Graph & Reachability Analysis**
-   - Enhance `:CALLS` resolution in [`backend/compiler/call_graph_builder.py`](./backend/compiler/call_graph_builder.py) and transitive dependency reachability proofs in [`backend/engine/enterprise_manager.py`](./backend/engine/enterprise_manager.py).
+   - Enhance `:CALLS` resolution in [`backend/compiler/call_graph_builder.py`](./backend/compiler/call_graph_builder.py) and live OSV transitive dependency reachability proofs in [`backend/engine/osv_lockfile_scanner.py`](./backend/engine/osv_lockfile_scanner.py).
 3. **STRIDE Threat Modeling & File-Anchored Observation Signatures**
    - Extend the 6-category Microsoft STRIDE engine and `StrideObservationItem` generators in [`backend/engine/enterprise_manager.py`](./backend/engine/enterprise_manager.py) (`get_sast_plus_suite`).
 4. **SCA Supply-Chain & IaC Hardening Rules**
-   - Expand manifest/lockfile parsers (`Cargo.lock`, `go.mod`, `pom.xml`, `Gemfile.lock`, `composer.lock`) and Kubernetes/Terraform/Dockerfile/Next.js header rules.
+   - Expand manifest/lockfile parsers (`Cargo.lock`, `go.mod`, `pom.xml`, `Gemfile.lock`, `composer.lock`) and Kubernetes/Terraform/Dockerfile/GitHub Actions/Next.js header rules.
 5. **Automated Remediation Code Diffs (`Before` vs. `After`)**
    - Contribute deterministic AST/line-level autofix templates in `compute_best_fix_location()` so every new rule includes a ready-to-copy secure code patch.
 
@@ -22,13 +22,13 @@ Thank you for contributing to **ALASTOR v2.5.0**, the open-source Deterministic 
 
 ## 🧪 Mandatory Verification Gate (`verify_harness.py`)
 
-Every Pull Request **must** pass all 17 deterministic assertions (`Assertion A` through `Assertion R`) in [`verify_harness.py`](./verify_harness.py), including **Assertion P** (full self-audit of `cpg-sast-platform` with **0 findings**):
+Every Pull Request **must** pass all 18 deterministic assertions (`Assertion A` through `Assertion S`) in [`verify_harness.py`](./verify_harness.py), including **Assertion S** (100% True Positive detection + 0% False Positives across sanitized negative tests) and **Assertion P** (full self-audit of `cpg-sast-platform` with **0 findings**):
 
 ```bash
 # 1. Start Neo4j + APOC container
 docker compose up -d neo4j
 
-# 2. Run the autonomous 17-assertion verification suite
+# 2. Run the autonomous 18-assertion verification suite
 .venv/Scripts/python.exe verify_harness.py
 ```
 

@@ -1,14 +1,14 @@
-# ALASTOR (`Ἀλάστωρ`) v2.5.0 — Enterprise Product Guide, Feature Catalog & Master Standard Operating Procedure (SOP)
+# ALASTOR (`Ἀλάστωρ`) v2.6.0 — Enterprise Product Guide, Feature Catalog & Master Standard Operating Procedure (SOP)
 
-**Deterministic Code Property Graph (AST + CFG + DFG + Call Graph) • Unified SAST, SCA, IaC & Secret Keys Hunter • STRIDE Threat & Observation Matrix • Custom Rule Profiles • Multi-Tenant RBAC Account Separation • Call-Graph Reachability • EPSS v4 • CI/CD PBOM • PMI/COBIT RACI Governance**
+**Deterministic Code Property Graph (AST + CFG + DFG + Call Graph) • Unified Inter-Procedural SAST (`18` Built-In Rules, `0%` FP), Live OSV.dev Lockfile CVE + CPG Import Reachability, CI/CD Workflow Security & Secret Keys Vault • STRIDE Threat & Observation Matrix • Custom Rule Profiles • Multi-Tenant RBAC Account Separation • EPSS v4 • CycloneDX v1.5 SBOM • PMI/COBIT RACI Governance**
 
 ![ALASTOR Mythological Demon Crest](./screenshots/alastor_demon_logo.jpg)
 
 > [!IMPORTANT]
-> **Dual-Purpose Executive & Operator Document (Updated for Release v2.5.0)**:
-> 1. **Part I & II (Executive Pitch & Competitive Differentiation)**: Designed for CISOs, VPs of Engineering, Enterprise Architects, and Procurement Leaders evaluating why ALASTOR outperforms legacy static analyzers and fragmented cloud scanners.
+> **Dual-Purpose Executive & Operator Document (Updated for Release v2.6.0)**:
+> 1. **Part I & II (Executive Pitch & Competitive Differentiation)**: Designed for CISOs, VPs of Engineering, Enterprise Architects, and Procurement Leaders evaluating why ALASTOR outperforms Semgrep, legacy static analyzers, and fragmented cloud scanners.
 > 2. **Part III, IV & V (Complete 8-Module Feature Reference & 10-Step Master SOP)**: A step-by-step Standard Operating Procedure enabling Security Engineers, Red Teamers, Developers, and Non-Coder Managers/Students to master every workspace, workflow, and API.
-> 3. **Part VI (Version History & Release Changelog)**: Detailed breakdown of `v2.5.0`, `v2.0.0`, and `v1.0.0` releases.
+> 3. **Part VI (Version History & Release Changelog)**: Detailed breakdown of `v2.6.0`, `v2.5.0`, `v2.0.0`, and `v1.0.0` releases.
 
 ---
 
@@ -247,6 +247,13 @@ flowchart LR
 
 ## Part VI: Release History & Version Changelog
 
+### Version `2.6.0` (2026-10-25) — Semgrep-Superiority Multi-Engine Release: Live OSV Lockfile CVE + CPG Reachability, Inter-Procedural Route Taint, CI/CD Workflow Security & Zero-FP Hardening
+- **Added**: Live OSV.dev Lockfile CVE & CPG Import Reachability Engine (`SCA-2-LIVE-CVE-LOCKFILE`) auditing all direct & transitive locked npm/PyPI packages and mapping AST `import`/`require` reachability (`REACHABLE`, `CONDITIONALLY_REACHABLE`, `UNREACHABLE_DORMANT`).
+- **Added**: CI/CD GitHub Actions Workflow Security Scanner (`IAC-3-CICD-WORKFLOW-SECURITY`) detecting mutable action tags (`@vX` instead of 40-char SHA), untrusted `${{ github.event.* }}` shell injection, and `pull_request_target` checkouts.
+- **Added**: Automatic FastAPI/Flask HTTP route parameter taint source recognition, Python `self`/`cls` method DFG parameter alignment fix, and 4 new zero-false-positive Cypher CPG rules: `RULE-10-PATH-TRAVERSAL` (`CWE-22`), `RULE-11-SSRF-URLOPEN` (`CWE-918`), `RULE-12-LOG-INJECTION` (`CWE-117`), and `RULE-13-UNSAFE-DESERIALIZATION-CRYPTO` (`CWE-502` / `CWE-327`).
+- **Added**: Sanitizer-aware `RULE-7-SQLI-FORMAT` (suppressing `int()`-coerced SQL IDs that trip Semgrep), SDK/DB driver credential checks (`GraphDatabase.driver`, `psycopg2.connect`, `jwt.encode`), Tier-1 Cloud/API Token regex hunter (`AKIA...`, `ghp_...`, `sk-live-...`, `AIza...`, PEM keys), and `Assertion S` in `verify_harness.py`.
+- **Remediated**: Upgraded `next` (`15.5.28`), `postcss` (`8.5.31`), `postcss-selector-parser` (`7.1.7`), `requests` (`2.34.2`), hardened all backend filesystem/URL/logging/Neo4j paths, pinned `.github/workflows/semgrep.yml` to a 40-char commit SHA, and achieved `0` findings across all `18` rules on self-audit.
+
 ### Version `2.5.0` (2026-10-22) — Enterprise Shell, STRIDE Count & Observation Matrix, Secret Keys Vault, Rule Engine Profiles, Multi-Tenant RBAC & Call/Entrypoint Graphs
 - **Added**: Top Application Menu Bar (`AppMenuBar.tsx`) and Left Side Function Bar (`LeftFunctionBar.tsx`) across all 8 enterprise modules.
 - **Added**: Executive STRIDE Count & Verdict Matrix Table (`Total Checks`, `✔ OK Count`, `✖ Issue Count`, `Observations Count`) and itemized `StrideObservationItem` cards (`✔ What is OK` vs `✖ What is the Issue`) across both `ThreatModelingView.tsx` and `SastPlusSuiteView.tsx`.
@@ -270,7 +277,7 @@ flowchart LR
 | :--- | :--- |
 | **Start FastAPI Backend (Port 8000)** | `.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000` (in `backend/`) |
 | **Build & Start Next.js Frontend (Port 3000)** | `npm run build && npm run start` (in `frontend/`) |
-| **Run Full 17-Assertion E2E Verification Suite** | `.venv\Scripts\python.exe verify_harness.py` |
+| **Run Full 18-Assertion E2E Verification Suite** | `.venv\Scripts\python.exe verify_harness.py` |
 | **Trigger Scan via REST API** | `POST http://127.0.0.1:8000/api/scan` with `{"target_path": "C:\\Projects\\NewsLetter"}` |
 | **Query STRIDE & ASPM Suite via API** | `GET http://127.0.0.1:8000/api/aspm/suite` |
 | **Query Multi-Tenant Accounts & RBAC via API** | `GET http://127.0.0.1:8000/api/accounts` |

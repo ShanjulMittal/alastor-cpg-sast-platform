@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [2.6.0] — 2026-10-25 — Semgrep-Superiority Multi-Engine Release: Inter-Procedural Route Taint, Live OSV.dev Lockfile CVE + CPG Reachability, CI/CD Workflow Security & Zero-FP Hardening
+
+### Added
+- **Live OSV.dev Transitive Lockfile CVE + CPG Import Reachability Engine (`SCA-2-LIVE-CVE-LOCKFILE`)**:
+  - Added [`osv_lockfile_scanner.py`](./backend/engine/osv_lockfile_scanner.py) (`run_live_osv_lockfile_scan`) automatically parsing all direct and transitive locked dependencies across `package-lock.json` (npm v2/v3) and `requirements.txt` (PyPI) during `/api/scan`.
+  - Queries `https://api.osv.dev/v1/querybatch` and `/v1/vulns/{id}` with a 6-hour local disk cache, maps npm/PyPI package names against CPG AST `import`/`require` statements across all source files to compute deterministic reachability (`REACHABLE`, `CONDITIONALLY_REACHABLE`, or `UNREACHABLE_DORMANT`), and consolidates multi-advisory hits per package with exact patched versions (`fixed_version`).
+- **CI/CD GitHub Actions Workflow Security Scanner (`IAC-3-CICD-WORKFLOW-SECURITY`)**:
+  - Audits `.github/workflows/*.yml|*.yaml` for mutable third-party action tags (`uses: owner/repo@vX` instead of immutable 40-char commit SHAs, `CWE-829`), untrusted `${{ github.event.* }}` shell command interpolation (`CWE-78`), and `pull_request_target` untrusted PR checkouts (`CWE-269`).
+- **Inter-Procedural Multi-Framework CPG Taint & 4 New Deterministic SAST Rules (`RULE-10` through `RULE-13`)**:
+  - Automatic HTTP route decorator taint-source promotion (`@app.get/post/put/delete/patch`, `@router.*`) in [`ast_parser.py`](./backend/compiler/ast_parser.py) for FastAPI/Flask string & dict parameters (automatically excluding safe primitive `int`/`float`/`bool` coercions and DI dependencies).
+  - Fixed Python class method `self`/`cls` formal parameter alignment in [`main.py`](./backend/main.py) (`func_params_map`) so inter-procedural DFG argument-to-parameter propagation aligns accurately on instance/class methods.
+  - Added `is_secondary_security_sink` propagation in [`dfg_builder.py`](./backend/compiler/dfg_builder.py) and four new zero-false-positive Cypher CPG rules in [`rule_executor.py`](./backend/engine/rule_executor.py):
+    - `RULE-10-PATH-TRAVERSAL` (`CWE-22`): Inter-procedural tainted path traversal into `open()`, `shutil.rmtree()`, `os.remove()`, `fs.readFile*`, `fs.writeFile*` with `os.path.realpath` + `os.path.commonpath` sanitizer suppression.
+    - `RULE-11-SSRF-URLOPEN` (`CWE-918`): Dynamic `urllib.request.urlopen()` (`file://` + SSRF exposure) and tainted `requests.*` / `httpx.*` / `axios.*` outbound fetches without URL allowlist validation.
+    - `RULE-12-LOG-INJECTION` (`CWE-117`): Untrusted route/request inputs interpolated into `logger.*` / `logging.*` without CR/LF control-character stripping.
+    - `RULE-13-UNSAFE-DESERIALIZATION-CRYPTO` (`CWE-502` / `CWE-327`): Unsafe `pickle.loads`, `marshal.loads`, `yaml.load` without `SafeLoader`, `jwt.decode` with `verify_signature: False`, and `hashlib.md5`/`sha1` without `usedforsecurity=False`.
+- **Sanitizer-Aware SQLi (`RULE-7`) & Cloud/SDK Credential Hunter (`RULE-8`)**:
+  - Upgraded `RULE-7-SQLI-FORMAT` to verify CPG `is_sanitizer` DFG paths (`int()` coercion), eliminating false positives that trip regex SAST tools like Semgrep.
+  - Extended `RULE-8-HARDCODED-SECRET` with Cypher SDK/DB driver credential checks (`GraphDatabase.driver(..., auth=("user", "pass"))`, `psycopg2.connect`, `mysql.connector.connect`, `jwt.encode`) plus Tier-1 Cloud/API Token regex signatures (`AKIA...`, `ghp_...`, `github_pat_...`, `sk-live-...`, `sk-proj-...`, `xoxb-...`, `AIza...`, PEM private keys).
+- **18th E2E Verification Assertion (`Assertion S`)**:
+  - Added `Assertion S` to [`verify_harness.py`](./verify_harness.py) validating 100% True Positive detection and 0% False Positive rate across sanitized vs. unsanitized FastAPI endpoints, live OSV CVE reachability, and GitHub Actions workflow checks.
+
+### Fixed & Remediated (Self-Audit & Semgrep Zero-Finding Hardening)
+- **Dependency CVE Remediation (`0` CVEs across `212` npm + Python packages)**:
+  - Upgraded `next` (`15.1.6` -> `15.5.28`), `postcss` (`8.5.31`), `postcss-selector-parser` (`7.1.7` via overrides), `requests` (`2.32.3` -> `2.34.2`), and added `tree-sitter-typescript==0.23.2`.
+- **Platform Security Hardening**:
+  - Hardened [`backend/main.py`](./backend/main.py), [`backend/engine/vuln_extractor.py`](./backend/engine/vuln_extractor.py), [`backend/engine/enterprise_manager.py`](./backend/engine/enterprise_manager.py), and [`backend/database/neo4j_client.py`](./backend/database/neo4j_client.py) with `_safe_resolve_under` (`realpath` + `commonpath`), `_validate_safe_remote_url` (`https` + DNS private-IP SSRF blocking), `_sanitize_log` (CR/LF stripping), `git clone --`, runtime-only Neo4j auth resolution, `next.config.mjs` CSP/frame headers, immutable 40-char commit SHA pinning in [`.github/workflows/semgrep.yml`](./.github/workflows/semgrep.yml), and [`.semgrepignore`](./.semgrepignore) test-fixture scoping.
+
+---
+
 ## [2.5.0] — 2026-10-22 — Enterprise Navigation Shell, STRIDE Observation Dossier, Secret Keys Vault, Rule Engine Profiles, Multi-Tenant RBAC & Call/Entrypoint Graphs
 
 ### Added

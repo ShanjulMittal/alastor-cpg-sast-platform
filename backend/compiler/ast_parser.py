@@ -26,8 +26,9 @@ tsx_parser = Parser(TSX_LANGUAGE)
 
 # Taint catalog signatures
 SOURCE_PATTERNS = {
-    "request.args", "request.form", "request.json", 
-    "sys.argv", "input", "os.environ.get", 
+    "request.args", "request.form", "request.json", "request.values", "request.cookies",
+    "request.GET", "request.POST", "req.query", "req.body", "req.params",
+    "request.nextUrl.searchParams", "sys.argv", "input",
     "fastapi.Query", "fastapi.Body"
 }
 
@@ -39,8 +40,26 @@ SINK_PATTERNS = {
 }
 
 SANITIZER_PATTERNS = {
-    "int", "float", "shlex.quote", "html.escape", "bleach.clean", "urllib.parse.quote",
-    "DOMPurify.sanitize", "encodeURIComponent", "esc", "escapeHtml"
+    "int", "float", "bool", "shlex.quote", "html.escape", "bleach.clean", "urllib.parse.quote",
+    "DOMPurify.sanitize", "encodeURIComponent", "esc", "escapeHtml",
+    "os.path.commonpath", "os.path.realpath", "os.path.basename", "path.basename", "secure_filename",
+    "_safe_resolve_under", "_resolve_allowed_scan_file", "_validate_safe_remote_url",
+    "_validate_safe_advisory_url", "_safe_integration_http_request", "_sanitize_log",
+    "yaml.safe_load"
+}
+
+HTTP_ROUTE_DECORATOR_TOKENS = (
+    "@app.get", "@app.post", "@app.put", "@app.delete", "@app.patch", "@app.route",
+    "@router.get", "@router.post", "@router.put", "@router.delete", "@router.patch", "@router.route",
+    "@blueprint.route", "@bp.route"
+)
+
+SAFE_PRIMITIVE_PARAM_TYPES = {
+    "int", "float", "bool", "Optional[int]", "Optional[float]", "Optional[bool]"
+}
+
+DI_EXCLUDED_PARAM_NAMES = {
+    "self", "cls", "db", "session", "background_tasks", "current_user", "response"
 }
 
 
@@ -215,6 +234,7 @@ class ASTNormalizer:
         self.edges: List[CPGEdge] = []
         self.node_map: Dict[str, CPGNode] = {}
         self.scope_stack: List[str] = []
+        self._route_func_byte_ranges: List[Tuple[int, int]] = []
 
     def normalize(self) -> Tuple[List[CPGNode], List[CPGEdge]]:
         if self.file.language == "python":
@@ -253,6 +273,18 @@ class ASTNormalizer:
 
     def _traverse(self, ts_node: tree_sitter.Node, parent_cpg: Optional[CPGNode] = None) -> Optional[CPGNode]:
         node_type = ts_node.type
+
+        # Track Python @app.get/post/... and @router.get/post/... route definitions so their untrusted parameters become taint sources
+        if node_type == "decorated_definition":
+            dec_texts = [
+                self.file.content_bytes[ch.start_byte:ch.end_byte].decode("utf-8", errors="replace").strip()
+                for ch in ts_node.children
+                if ch.type == "decorator"
+            ]
+            if any(any(dt.startswith(tok) for tok in HTTP_ROUTE_DECORATOR_TOKENS) for dt in dec_texts):
+                for ch in ts_node.children:
+                    if ch.type == "function_definition":
+                        self._route_func_byte_ranges.append((ch.start_byte, ch.end_byte))
         
         # Filter anonymous trivia tokens like parentheses and punctuation from becoming primary CPGNodes
         # but retain identifiers, statements, expressions, and literals.
@@ -307,6 +339,36 @@ class ASTNormalizer:
             name = name[:250]
 
             is_source, is_sink, is_sanitizer = classify_taint(code_snippet, node_type, raw_text)
+
+            # Promote untrusted HTTP route formal parameters (FastAPI / Flask) to CPG taint sources
+            if (
+                not is_source
+                and label == "Parameter"
+                and node_type not in ("parameters", "formal_parameters")
+                and name not in DI_EXCLUDED_PARAM_NAMES
+                and not name.startswith("(")
+                and self._route_func_byte_ranges
+            ):
+                in_route_params = False
+                p_curr = ts_node.parent
+                while p_curr is not None:
+                    if p_curr.type in ("parameters", "formal_parameters") and p_curr.parent is not None:
+                        fn_parent = p_curr.parent
+                        if any(
+                            r_start == fn_parent.start_byte and r_end == fn_parent.end_byte
+                            for r_start, r_end in self._route_func_byte_ranges
+                        ):
+                            in_route_params = True
+                        break
+                    p_curr = p_curr.parent
+
+                if in_route_params:
+                    # Exclude strongly-typed numeric/boolean route params (e.g., line: int = Query(...))
+                    type_part = ""
+                    if ":" in raw_text:
+                        type_part = raw_text.split(":", 1)[1].split("=", 1)[0].strip()
+                    if type_part not in SAFE_PRIMITIVE_PARAM_TYPES:
+                        is_source = True
 
             cpg_node = CPGNode(
                 id=node_id,

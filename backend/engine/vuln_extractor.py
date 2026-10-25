@@ -107,6 +107,20 @@ CWE_SIGNATURE_CATALOG: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _validate_safe_advisory_url(raw_url: str) -> str:
+    """Validates external advisory URL scheme and blocks file:// and cloud metadata SSRF."""
+    clean = (raw_url or "").strip()
+    if not clean.startswith(("http://", "https://")):
+        clean = "https://" + clean
+    parsed = urlparse(clean)
+    if parsed.scheme not in ("https", "http"):
+        raise ValueError("Unsupported advisory URL scheme")
+    host = (parsed.hostname or "").lower()
+    if not host or host in {"169.254.169.254", "metadata.google.internal", "127.0.0.1", "localhost"}:
+        raise ValueError("Blocked local or metadata host in advisory URL")
+    return clean
+
+
 class VulnExtractorEngine:
     """
     Extracts vulnerability intelligence from external sites/feeds and correlates
@@ -182,10 +196,13 @@ class VulnExtractorEngine:
         Fetches any external security webpage, CVE page, blog post, or advisory URL,
         extracts CVEs, CWEs, and dangerous code patterns, and builds testable advisories.
         """
-        if not url.startswith(("http://", "https://")):
-            url = "https://" + url
+        try:
+            safe_url = _validate_safe_advisory_url(url)
+        except ValueError as ve:
+            logger.warning("Blocked unsafe custom advisory URL: %s", str(ve))
+            return []
 
-        parsed = urlparse(url)
+        parsed = urlparse(safe_url)
         domain = parsed.netloc or "custom-security-site"
         results: List[ExtractedAdvisory] = []
 
@@ -194,11 +211,11 @@ class VulnExtractorEngine:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Argon-CPG-SAST-Scanner/2.0",
                 "Accept": "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8"
             }
-            resp = requests.get(url, headers=headers, timeout=10)
+            resp = requests.get(safe_url, headers=headers, timeout=10)
             raw_text = resp.text[:250_000]  # Cap at 250KB for fast extraction
         except Exception as e:
-            logger.warning(f"Failed to fetch custom URL {url}: {e}")
-            raw_text = f"URL fetch fallback for {url}: {str(e)}"
+            logger.warning("Failed to fetch custom URL %s: %s", domain, str(e)[:120])
+            raw_text = f"URL fetch fallback for {safe_url}: {str(e)}"
 
         # Extract title if HTML
         title_match = re.search(r"<title[^>]*>(.*?)</title>", raw_text, re.IGNORECASE | re.DOTALL)

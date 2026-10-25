@@ -1,0 +1,7 @@
+# Exclude intentional vulnerable benchmark target used by verify_harness.py
+synthetic_test_target/
+.venv/
+venv/
+frontend/.next/
+frontend/node_modules/
+backend/data/

@@ -1,14 +1,15 @@
-# Security Policy & Responsible Disclosure (ALASTOR v2.5.0)
+# Security Policy & Responsible Disclosure (ALASTOR v2.6.0)
 
 ## Dogfooding & Self-Audit Guarantee (`0 Unpatched Findings`)
 
-**ALASTOR v2.5.0** continuously audits its own backend (`FastAPI` / `Python`) and frontend (`Next.js` / `TypeScript`) via **Assertion P** in [`verify_harness.py`](./verify_harness.py), enforcing **0 unpatched findings** across SAST (`RULE-1` through `RULE-9`), Secret Keys Hunter (`RULE-8-HARDCODED-SECRET`), SCA (`SCA-1-MANIFEST-AUDIT`), and IaC (`IAC-1-COMPOSE-SECRET`, `IAC-2-CONTAINER-ROOT`) on every release.
+**ALASTOR v2.6.0** continuously audits its own backend (`FastAPI` / `Python`), frontend (`Next.js` / `TypeScript`), dependency lockfiles (`package-lock.json` / `requirements.txt`), and GitHub Actions workflows (`.github/workflows/`) via **Assertion P** in [`verify_harness.py`](./verify_harness.py), enforcing **0 unpatched findings** across all **18 built-in rules**: SAST (`RULE-1` through `RULE-13`), Secret Keys & Cloud Token Hunter (`RULE-8-HARDCODED-SECRET`), Live OSV.dev Lockfile CVE & CPG Reachability (`SCA-1-MANIFEST-AUDIT`, `SCA-2-LIVE-CVE-LOCKFILE`), and IaC / CI/CD (`IAC-1-COMPOSE-SECRET`, `IAC-2-CONTAINER-ROOT`, `IAC-3-CICD-WORKFLOW-SECURITY`) on every release.
 
 ## Supported Versions
 
 | Version | Supported | Status |
 | :--- | :--- | :--- |
-| **`2.5.x`** | ✅ Yes | Current Enterprise Release (STRIDE Observation Matrix, Secret Vault, Rule Profiles, Multi-Tenant RBAC, Call/Entrypoint Graphs) |
+| **`2.6.x`** | ✅ Yes | Current Enterprise Release (Semgrep-Superiority Multi-Engine, Live OSV CVE Reachability, Inter-Procedural Route Taint, CI/CD Security, Zero-CVE Stack) |
+| **`2.5.x`** | ✅ Yes | Enterprise Shell, STRIDE Observation Matrix, Secret Vault, Rule Profiles, Multi-Tenant RBAC, Call/Entrypoint Graphs |
 | **`2.0.x`** | ✅ Yes | SAST++++++ ASPM Release |
 | **`1.0.x`** | ⚠️ Security Fixes Only | Initial Core CPG Release |
 

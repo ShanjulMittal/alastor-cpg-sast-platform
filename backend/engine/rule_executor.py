@@ -195,11 +195,14 @@ RULES = [
         "owasp_category": "A03:2021 - Injection",
         "cvss_score": 8.1,
         "remediation": "Replace f-string SQL query construction with parameterized placeholders (e.g., cursor.execute('SELECT * FROM users WHERE id = ?', (safe_id,))).",
-        "description": "Database execute() call constructs SQL query dynamically using string interpolation instead of bound parameters.",
+        "description": "Database execute() call constructs SQL query dynamically using string interpolation without numeric/type sanitization.",
         "cypher": """
         MATCH (c:Call)
         WHERE (c.name ENDS WITH '.execute' OR c.code CONTAINS 'cursor.execute')
-          AND (c.code CONTAINS 'f\"SELECT' OR c.code CONTAINS \"f'SELECT\" OR c.code CONTAINS 'SELECT * FROM')
+          AND (c.code CONTAINS 'f"SELECT' OR c.code CONTAINS "f'SELECT" OR c.code CONTAINS 'f"INSERT' OR c.code CONTAINS 'f"UPDATE' OR c.code CONTAINS 'f"DELETE' OR c.code CONTAINS 'SELECT * FROM')
+          AND NOT EXISTS {
+            MATCH (san:CPGNode {is_sanitizer: true})-[:DFG_FLOWS_TO*1..5]->(c)
+          }
         RETURN
           'HIGH' AS severity,
           'Unparameterized SQL String Interpolation in ' + c.name AS title,
@@ -209,25 +212,40 @@ RULES = [
     },
     {
         "id": "RULE-8-HARDCODED-SECRET",
-        "name": "Hardcoded Credential or Secret Assignment",
+        "name": "Hardcoded Credential, Token or SDK Driver Secret",
         "cwe_id": "CWE-798",
         "owasp_category": "A07:2021 - Identification and Authentication Failures",
         "cvss_score": 7.5,
-        "remediation": "Load secrets and database credentials exclusively from a secret manager or required environment variables without hardcoded fallback passwords.",
-        "description": "Source code contains hardcoded password, secret, or API token strings.",
+        "remediation": "Load secrets and database driver credentials exclusively from a secret manager or required environment variables without hardcoded fallback strings.",
+        "description": "Source code contains hardcoded password, secret, API token, or SDK/database driver authentication credentials.",
         "cypher": """
         MATCH (a:Assignment)
         WHERE (toLower(a.name) CONTAINS 'password' OR toLower(a.name) CONTAINS 'secret' OR toLower(a.name) CONTAINS 'api_key')
-          AND (a.code CONTAINS '\"' OR a.code CONTAINS \"'\")
+          AND (a.code CONTAINS '"' OR a.code CONTAINS "'")
           AND NOT a.code CONTAINS '==='
           AND NOT a.code CONTAINS '!=='
           AND NOT a.code CONTAINS '=='
-          AND NOT a.code ENDS WITH '\"\"'
-          AND NOT a.code ENDS WITH \"''\"
+          AND NOT a.code CONTAINS 'os.getenv('
+          AND NOT a.code CONTAINS 'os.environ.get('
+          AND NOT a.code CONTAINS 'process.env.'
+          AND NOT a.code ENDS WITH '""'
+          AND NOT a.code ENDS WITH "''"
         RETURN
           'HIGH' AS severity,
           'Hardcoded Secret / Fallback Credential in ' + a.name AS title,
           [properties(a)] AS path_nodes,
+          [] AS path_edges
+        UNION
+        MATCH (c:Call)
+        WHERE (
+            (c.name ENDS WITH 'GraphDatabase.driver' AND c.code CONTAINS 'auth=(' AND (c.code CONTAINS '"' OR c.code CONTAINS "'"))
+            OR (c.name IN ['psycopg2.connect', 'mysql.connector.connect'] AND (c.code CONTAINS 'password="' OR c.code CONTAINS "password='"))
+            OR (c.name IN ['jwt.encode', 'jose.jwt.encode'] AND (c.code CONTAINS ', "' OR c.code CONTAINS ", '"))
+          )
+        RETURN
+          'MEDIUM' AS severity,
+          'Hardcoded SDK / Database Driver Credential in ' + c.name AS title,
+          [properties(c)] AS path_nodes,
           [] AS path_edges
         """
     },
@@ -277,6 +295,127 @@ RULES = [
             ]
             ELSE []
           END AS path_edges
+        """
+    },
+    {
+        "id": "RULE-10-PATH-TRAVERSAL",
+        "name": "Inter-Procedural Tainted Path Traversal",
+        "cwe_id": "CWE-22",
+        "owasp_category": "A01:2021 - Broken Access Control",
+        "cvss_score": 8.2,
+        "remediation": "Canonicalize user-controlled file paths via os.path.realpath() and enforce base-directory containment with os.path.commonpath([base_dir, real_target]) == base_dir before opening, writing, or deleting files.",
+        "description": "Untrusted HTTP route or CLI input flows into a filesystem read/write/delete sink without path canonicalization and directory containment verification.",
+        "cypher": """
+        MATCH path = (source:CPGNode {is_source: true})-[:DFG_FLOWS_TO*1..12]->(sink:Call)
+        WHERE (
+            sink.name IN ['open', 'shutil.rmtree', 'shutil.copy', 'shutil.move', 'os.remove', 'os.unlink', 'send_file', 'FileResponse', 'fs.readFile', 'fs.readFileSync', 'fs.writeFile', 'fs.writeFileSync', 'fs.unlink', 'fs.rmSync']
+            OR sink.name ENDS WITH '.readFile'
+            OR sink.name ENDS WITH '.readFileSync'
+            OR sink.name ENDS WITH '.writeFile'
+            OR sink.name ENDS WITH '.writeFileSync'
+          )
+          AND NONE(n IN nodes(path) WHERE n.is_sanitizer = true)
+        WITH source, sink, path
+        ORDER BY length(path) ASC
+        WITH source, sink, head(collect(path)) AS shortest_p
+        RETURN
+          'HIGH' AS severity,
+          'Path Traversal: Untrusted Input Flows to Filesystem Sink ' + sink.name + '()' AS title,
+          [n IN nodes(shortest_p) | properties(n)] AS path_nodes,
+          [r IN relationships(shortest_p) | {id: r.id, source: startNode(r).id, target: endNode(r).id, type: type(r)}] AS path_edges
+        LIMIT 100
+        """
+    },
+    {
+        "id": "RULE-11-SSRF-URLOPEN",
+        "name": "Server-Side Request Forgery (SSRF) & Dynamic urllib Scheme Abuse",
+        "cwe_id": "CWE-918",
+        "owasp_category": "A10:2021 - Server-Side Request Forgery (SSRF)",
+        "cvss_score": 7.5,
+        "remediation": "Avoid urllib.request.urlopen() on dynamic URLs (which permits file:// local file reads). Validate parsed URL scheme strictly against ('https', 'http'), block cloud metadata IPs (169.254.169.254), and use requests with timeouts.",
+        "description": "Dynamic or untrusted URL is passed to urllib.request.urlopen() (exposing file:// scheme reads) or outbound HTTP client without URL scheme and host allowlist validation.",
+        "cypher": """
+        MATCH (u:Call)
+        WHERE (u.name = 'urlopen' OR u.name ENDS WITH '.urlopen' OR u.name = 'urlretrieve' OR u.name ENDS WITH '.urlretrieve')
+          AND NOT u.code CONTAINS '("https://'
+          AND NOT u.code CONTAINS "('https://"
+          AND NOT EXISTS {
+            MATCH (san:CPGNode {is_sanitizer: true})-[:DFG_FLOWS_TO*1..6]->(u)
+          }
+        RETURN
+          'MEDIUM' AS severity,
+          'Dynamic urllib Request (SSRF / file:// Local File Read Risk): ' + u.name + '()' AS title,
+          [properties(u)] AS path_nodes,
+          [] AS path_edges
+        UNION
+        MATCH path = (source:CPGNode {is_source: true})-[:DFG_FLOWS_TO*1..12]->(sink:Call)
+        WHERE NOT source.code CONTAINS 'sys.argv'
+          AND sink.name IN ['requests.get', 'requests.post', 'requests.put', 'requests.delete', 'requests.request', 'http_requests.get', 'http_requests.post', 'httpx.get', 'httpx.post', 'axios.get', 'axios.post']
+          AND NONE(n IN nodes(path) WHERE n.is_sanitizer = true)
+        WITH source, sink, path
+        ORDER BY length(path) ASC
+        WITH source, sink, head(collect(path)) AS shortest_p
+        RETURN
+          'HIGH' AS severity,
+          'Server-Side Request Forgery (SSRF): Untrusted URL Flows to ' + sink.name + '()' AS title,
+          [n IN nodes(shortest_p) | properties(n)] AS path_nodes,
+          [r IN relationships(shortest_p) | {id: r.id, source: startNode(r).id, target: endNode(r).id, type: type(r)}] AS path_edges
+        """
+    },
+    {
+        "id": "RULE-12-LOG-INJECTION",
+        "name": "Tainted Log Injection (CR/LF Log Forging)",
+        "cwe_id": "CWE-117",
+        "owasp_category": "A09:2021 - Security Logging and Monitoring Failures",
+        "cvss_score": 4.3,
+        "remediation": "Strip CR/LF (\\r, \\n) and terminal escape sequences via a log sanitizer before formatting request inputs into logger calls.",
+        "description": "Untrusted HTTP request input is interpolated directly into application logs without neutralizing CR/LF characters, allowing attackers to forge log entries.",
+        "cypher": """
+        MATCH path = (source:CPGNode {is_source: true})-[:DFG_FLOWS_TO*1..10]->(sink:Call)
+        WHERE NOT source.code CONTAINS 'sys.argv'
+          AND sink.name IN ['logger.info', 'logger.warning', 'logger.error', 'logger.critical', 'logging.info', 'logging.warning', 'logging.error']
+          AND (sink.code CONTAINS 'f"' OR sink.code CONTAINS "f'" OR sink.code CONTAINS ' + ')
+          AND NONE(n IN nodes(path) WHERE n.is_sanitizer = true)
+        WITH source, sink, path
+        ORDER BY length(path) ASC
+        WITH source, sink, head(collect(path)) AS shortest_p
+        RETURN
+          'LOW' AS severity,
+          'Tainted Log Injection (Unsanitized CR/LF Input): ' + sink.name + '()' AS title,
+          [n IN nodes(shortest_p) | properties(n)] AS path_nodes,
+          [r IN relationships(shortest_p) | {id: r.id, source: startNode(r).id, target: endNode(r).id, type: type(r)}] AS path_edges
+        LIMIT 100
+        """
+    },
+    {
+        "id": "RULE-13-UNSAFE-DESERIALIZATION-CRYPTO",
+        "name": "Unsafe Deserialization, Unverified JWT & Broken Cryptographic Digest",
+        "cwe_id": "CWE-502",
+        "owasp_category": "A08:2021 - Software and Data Integrity Failures",
+        "cvss_score": 8.6,
+        "remediation": "Use JSON or yaml.safe_load() instead of pickle/yaml.load(), enforce JWT signature verification, and replace MD5/SHA1 with SHA-256/Argon2id (or pass usedforsecurity=False for non-security checksums).",
+        "description": "Application invokes unsafe object deserialization (pickle/marshal/yaml.load without SafeLoader), disables JWT signature verification, or uses broken MD5/SHA1 digests without usedforsecurity=False.",
+        "cypher": """
+        MATCH (c:Call)
+        WHERE (
+            c.name IN ['pickle.loads', 'pickle.load', 'marshal.loads', 'marshal.load', 'jsonpickle.decode']
+            OR (c.name = 'yaml.load' AND NOT c.code CONTAINS 'SafeLoader' AND NOT c.code CONTAINS 'CSafeLoader')
+            OR (c.name IN ['hashlib.md5', 'hashlib.sha1'] AND NOT c.code CONTAINS 'usedforsecurity=False')
+            OR (c.name IN ['jwt.decode', 'jose.jwt.decode'] AND c.code CONTAINS 'verify_signature' AND c.code CONTAINS 'False')
+          )
+        RETURN
+          CASE
+            WHEN c.name IN ['hashlib.md5', 'hashlib.sha1'] THEN 'MEDIUM'
+            ELSE 'HIGH'
+          END AS severity,
+          CASE
+            WHEN c.name IN ['hashlib.md5', 'hashlib.sha1'] THEN 'Weak Cryptographic Digest Without Security Exemption: ' + c.name + '()'
+            WHEN c.name IN ['jwt.decode', 'jose.jwt.decode'] THEN 'Unverified JWT Signature Verification Bypass: ' + c.name + '()'
+            ELSE 'Insecure Deserialization of Untrusted Object Stream: ' + c.name + '()'
+          END AS title,
+          [properties(c)] AS path_nodes,
+          [] AS path_edges
+        LIMIT 100
         """
     }
 ]

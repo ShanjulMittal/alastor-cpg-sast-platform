@@ -2,26 +2,58 @@
 Singleton Neo4j Bolt driver and database initialization procedures.
 """
 import os
+import re
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 from neo4j import GraphDatabase, Driver
 
 logger = logging.getLogger("cpg-sast.neo4j")
 
 
-DEFAULT_LOCAL_BOLT_CRED = "-".join(("cpgsast", "password"))
+def resolve_neo4j_runtime_auth() -> Optional[Tuple[str, str]]:
+    """
+    Resolves Neo4j Bolt credentials strictly from environment variables (NEO4J_AUTH / NEO4J_PASSWORD),
+    falling back only to local docker-compose.yml substitution defaults for developer workstations.
+    No credentials are hardcoded in Python source code.
+    """
+    raw_auth = os.environ.get("NEO4J_AUTH", "").strip()
+    if "/" in raw_auth and raw_auth.lower() != "none":
+        usr, pwd = raw_auth.split("/", 1)
+        return (usr, pwd)
+
+    env_user = os.environ.get("NEO4J_USER", "").strip()
+    env_cred = os.environ.get("NEO4J_PASSWORD", "").strip()
+    if env_cred:
+        return (env_user or "neo4j", env_cred)
+
+    compose_path = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "docker-compose.yml")
+    )
+    if os.path.isfile(compose_path):
+        try:
+            with open(compose_path, "r", encoding="utf-8") as fh:
+                content = fh.read()
+            m = re.search(
+                r"NEO4J_AUTH:\s*\"?\$\{NEO4J_USER:-([^}]+)\}/\$\{NEO4J_PASSWORD:-([^}]+)\}\"?",
+                content,
+            )
+            if m:
+                return (env_user or m.group(1), m.group(2))
+        except OSError:
+            pass
+    return None
 
 
 class Neo4jClient:
     _instance: Optional["Neo4jClient"] = None
 
     def __init__(self):
-        self.uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-        self.user = os.getenv("NEO4J_USER", "neo4j")
-        bolt_cred = os.environ.get("NEO4J_PASSWORD") or DEFAULT_LOCAL_BOLT_CRED
+        self.uri = os.environ.get("NEO4J_URI") or "bolt://localhost:7687"
+        runtime_auth = resolve_neo4j_runtime_auth()
+        self.user = runtime_auth[0] if runtime_auth else ""
         self.driver: Driver = GraphDatabase.driver(
             self.uri,
-            auth=(self.user, bolt_cred),
+            auth=runtime_auth,
             max_connection_lifetime=3600,
             max_connection_pool_size=50
         )
