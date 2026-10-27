@@ -223,6 +223,40 @@ export interface ScanResponse {
   categories?: Record<string, number>;
   tech_stack?: string[];
   total_app_files?: number;
+  scm_provider?: string | null;
+  repo_url?: string | null;
+  branch?: string | null;
+  is_private_repo?: boolean | null;
+  display_name?: string | null;
+}
+
+export interface GitHubRepoVerifyResponse {
+  valid_url: boolean;
+  provider: "GITHUB" | "GITLAB" | "BITBUCKET" | "RAW_FILE" | "OTHER";
+  owner: string;
+  repo: string;
+  full_name: string;
+  normalized_url: string;
+  accessible: boolean;
+  is_private?: boolean | null;
+  requires_auth: boolean;
+  authenticated: boolean;
+  has_saved_token: boolean;
+  default_branch: string;
+  selected_branch: string;
+  primary_language?: string | null;
+  stars: number;
+  size_kb: number;
+  description: string;
+  message: string;
+}
+
+export interface GitRepoScanOptions {
+  branch?: string;
+  repo_visibility?: "AUTO" | "PUBLIC" | "PRIVATE";
+  auth_token?: string;
+  auth_username?: string;
+  save_token?: boolean;
 }
 
 export interface MetricsResponse {
@@ -320,6 +354,8 @@ export interface ProjectConfig {
   cpg_nodes_count?: number;
   cpg_edges_count?: number;
   is_active: boolean;
+  is_private_repo?: boolean;
+  has_saved_auth?: boolean;
   account_id?: string;
   account_name?: string;
 }

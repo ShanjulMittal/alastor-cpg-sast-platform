@@ -65,6 +65,7 @@ export function AppMenuBar() {
     filterSecretsOnly,
     setFilterSecretsOnly,
     setQuickCommandOpen,
+    openTargetPicker,
   } = useAuditStore();
 
   const [openMenu, setOpenMenu] = useState<
@@ -217,6 +218,17 @@ export function AppMenuBar() {
               >
                 <Play className="w-3.5 h-3.5 text-amber-400 fill-current" />
                 <span>Run Full CPG + Secret Scan Now</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOpenMenu(null);
+                  openTargetPicker("URL");
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-900 flex items-center gap-2 text-cyan-300 font-semibold text-left"
+              >
+                <FolderGit2 className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Scan GitHub Repo (Public URL / Private Token)</span>
               </button>
               <button
                 type="button"

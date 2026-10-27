@@ -645,7 +645,66 @@ def run_assertions():
         f"PASS: Assertion S (v2.6.0 Semgrep-Superiority Benchmark: 100% TP across RULE-8/10/11/12/13, Live OSV CVE Reachability & CI/CD Security with 0% False Positives across all sanitized negative tests)."
     )
 
-    # 16. Assertion P: Self-Audit Verification of cpg-sast-platform (0 Findings Remaining)
+    # 16. Assertion T: GitHub Repository Scanning (Open/Public Paste-URL-Only + Private Repo Auth Enforcement)
+    log("Verifying Assertion T: GitHub Repository Scanner (/api/github/verify-repo & /api/scan Public vs Private Auth)...")
+    pub_repo_url = "https://github.com/ShanjulMittal/alastor-cpg-sast-platform"
+
+    # T1: Pre-flight verify on Open/Public GitHub repo without any token
+    verify_pub = requests.post(
+        f"{BACKEND_URL}/api/github/verify-repo",
+        json={"repo_url": pub_repo_url},
+        timeout=30,
+    )
+    assert verify_pub.status_code == 200, f"Assertion T1 FAILED: /api/github/verify-repo returned {verify_pub.status_code}: {verify_pub.text}"
+    v_pub_data = verify_pub.json()
+    assert v_pub_data.get("accessible") is True, f"Assertion T1 FAILED: Expected accessible=True for public repo, got {v_pub_data}"
+    assert v_pub_data.get("is_private") is False, f"Assertion T1 FAILED: Expected is_private=False for public repo, got {v_pub_data}"
+
+    # T2: Explicit Private mode without token MUST enforce 401 [GITHUB_AUTH_REQUIRED]
+    priv_missing_tok = requests.post(
+        f"{BACKEND_URL}/api/scan",
+        json={"target_path": pub_repo_url, "repo_visibility": "PRIVATE"},
+        timeout=20,
+    )
+    assert priv_missing_tok.status_code == 401 and "GITHUB_AUTH_REQUIRED" in priv_missing_tok.text, (
+        f"Assertion T2 FAILED: Expected 401 [GITHUB_AUTH_REQUIRED] when repo_visibility='PRIVATE' has no token, got {priv_missing_tok.status_code}: {priv_missing_tok.text}"
+    )
+
+    # T3: Unauthenticated scan of a private / unaccessible GitHub repo URL MUST return fast 401 without hanging on GCM
+    priv_probe_url = "https://github.com/ShanjulMittal/alastor-private-vault-probe-nonexistent"
+    priv_probe_resp = requests.post(
+        f"{BACKEND_URL}/api/scan",
+        json={"target_path": priv_probe_url, "repo_visibility": "AUTO"},
+        timeout=25,
+    )
+    assert priv_probe_resp.status_code == 401 and "GITHUB_AUTH_REQUIRED" in priv_probe_resp.text, (
+        f"Assertion T3 FAILED: Expected 401 [GITHUB_AUTH_REQUIRED] for unaccessible/private repo without token, got {priv_probe_resp.status_code}: {priv_probe_resp.text}"
+    )
+
+    # T4: Open/Public GitHub repo scan by pasting URL ONLY (zero token)
+    pub_scan_resp = requests.post(
+        f"{BACKEND_URL}/api/scan",
+        json={"target_path": pub_repo_url},
+        timeout=180,
+    )
+    assert pub_scan_resp.status_code == 200, f"Assertion T4 FAILED: Public GitHub URL scan returned {pub_scan_resp.status_code}: {pub_scan_resp.text}"
+    pub_scan_data = pub_scan_resp.json()
+    assert pub_scan_data.get("scm_provider") == "GITHUB", f"Assertion T4 FAILED: Expected scm_provider='GITHUB', got {pub_scan_data}"
+    assert pub_scan_data.get("is_private_repo") is False, f"Assertion T4 FAILED: Expected is_private_repo=False, got {pub_scan_data}"
+    assert pub_scan_data.get("nodes_created", 0) > 100, f"Assertion T4 FAILED: Expected >100 CPG nodes from cloned GitHub repo, got {pub_scan_data}"
+
+    # Clean up temporary cloned GitHub project entry from Projects Hub after assertion
+    after_git_projs = requests.get(f"{BACKEND_URL}/api/projects", timeout=15).json()
+    for gp in after_git_projs:
+        if gp.get("scm_provider") == "GITHUB" and "alastor-cpg-sast-platform" in (gp.get("repo_url") or ""):
+            if not any(op.get("id") == gp.get("id") for op in orig_projects):
+                requests.delete(f"{BACKEND_URL}/api/projects/{gp['id']}", timeout=15)
+
+    log(
+        f"PASS: Assertion T (GitHub Repo Scanner verified: Public URL-only clone scanned {pub_scan_data.get('files_scanned')} files / {pub_scan_data.get('nodes_created')} CPG nodes; Private repo auth 401 enforcement verified)."
+    )
+
+    # 17. Assertion P: Self-Audit Verification of cpg-sast-platform (0 Findings Remaining)
     log(f"Verifying Assertion P: Full Self-Audit of {ROOT_DIR} (verifying 0 unpatched findings)...")
     self_scan_resp = requests.post(
         f"{BACKEND_URL}/api/scan",
@@ -745,9 +804,9 @@ def main():
         assert fe_resp.status_code == 200, f"Frontend check failed with status: {fe_resp.status_code}"
         log("PASS: Frontend HTTP 200 confirmed.")
 
-        print("\n" + "=" * 78)
-        print("ALL 18 DETERMINISTIC CPG, SEMGREP-SUPERIORITY & SELF-AUDIT ASSERTIONS PASSED (100%)")
-        print("=" * 78 + "\n")
+        print("\n" + "=" * 86)
+        print("ALL 19 DETERMINISTIC CPG, GITHUB REPO SCANNER & SELF-AUDIT ASSERTIONS PASSED (100%)")
+        print("=" * 86 + "\n")
         sys.exit(0)
 
     except Exception as e:

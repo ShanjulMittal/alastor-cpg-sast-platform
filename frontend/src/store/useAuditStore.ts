@@ -27,6 +27,9 @@ import {
   SastPlusSuiteResponse,
   TrackChangesSummary,
   UserAccountsStateResponse,
+  GitHubRepoVerifyResponse,
+  GitRepoScanOptions,
+  ScanResponse,
 } from "@/types/cpg";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
@@ -98,6 +101,26 @@ interface AuditState {
   isQuickCommandOpen: boolean;
   isMenuBarExpanded: boolean;
 
+  // Target Picker & GitHub Repository Scanner Modal State
+  isTargetPickerOpen: boolean;
+  targetPickerTab: "FOLDER" | "FILE" | "URL" | "UPLOAD";
+  gitScanPrefillUrl: string;
+  gitScanForcePrivateAuth: boolean;
+  gitScanErrorBanner: string | null;
+  openTargetPicker: (
+    tab?: "FOLDER" | "FILE" | "URL" | "UPLOAD",
+    prefillUrl?: string,
+    forcePrivate?: boolean,
+    errorBanner?: string | null
+  ) => void;
+  closeTargetPicker: () => void;
+  verifyGitHubRepo: (payload: {
+    repo_url: string;
+    branch?: string;
+    auth_token?: string;
+    auth_username?: string;
+  }) => Promise<GitHubRepoVerifyResponse | null>;
+
   setAppTheme: (theme: AppThemeId) => void;
   setBackdropIntensity: (intensity: BackdropIntensity) => void;
   setAudienceMode: (mode: AudiencePersonaMode) => void;
@@ -144,7 +167,12 @@ interface AuditState {
     preset_id: string;
     auto_scan_on_push: boolean;
     auto_scan_on_pr: boolean;
-  }) => Promise<ProjectConfig | null>;
+    is_private_repo?: boolean;
+    auth_token?: string;
+    auth_username?: string;
+    save_token?: boolean;
+    run_scan_immediately?: boolean;
+  }) => Promise<{ ok: boolean; project: ProjectConfig | null; error?: string; authRequired?: boolean }>;
   updateProjectAutomation: (projectId: string, payload: Record<string, any>) => Promise<void>;
   activateProject: (projectId: string, runScan?: boolean) => Promise<void>;
   triggerProjectWebhook: (projectId: string, eventType: "push" | "pull_request", branch?: string) => Promise<void>;
@@ -257,7 +285,10 @@ interface AuditState {
     searchQuery?: string;
   }) => Promise<SiteExtractResponse | null>;
   exportAuditReport: (format: "markdown" | "json" | "sarif") => Promise<void>;
-  triggerScan: (targetPath?: string) => Promise<void>;
+  triggerScan: (
+    targetPath?: string,
+    options?: GitRepoScanOptions
+  ) => Promise<{ ok: boolean; authRequired?: boolean; error?: string; response?: ScanResponse }>;
 }
 
 export const useAuditStore = create<AuditState>((set, get) => ({
@@ -321,6 +352,50 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   isSidebarCollapsed: false,
   isQuickCommandOpen: false,
   isMenuBarExpanded: true,
+
+  isTargetPickerOpen: false,
+  targetPickerTab: "FOLDER",
+  gitScanPrefillUrl: "",
+  gitScanForcePrivateAuth: false,
+  gitScanErrorBanner: null,
+
+  openTargetPicker: (
+    tab = "FOLDER",
+    prefillUrl = "",
+    forcePrivate = false,
+    errorBanner = null
+  ) => {
+    set({
+      isTargetPickerOpen: true,
+      targetPickerTab: tab,
+      ...(prefillUrl ? { gitScanPrefillUrl: prefillUrl } : {}),
+      gitScanForcePrivateAuth: forcePrivate,
+      gitScanErrorBanner: errorBanner,
+    });
+  },
+
+  closeTargetPicker: () => {
+    set({
+      isTargetPickerOpen: false,
+      gitScanErrorBanner: null,
+    });
+  },
+
+  verifyGitHubRepo: async (payload) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/github/verify-repo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        return (await res.json()) as GitHubRepoVerifyResponse;
+      }
+    } catch (err) {
+      console.error("Failed to verify GitHub repo:", err);
+    }
+    return null;
+  },
 
   setAppTheme: (theme: AppThemeId) => {
     set({ appTheme: theme });
@@ -715,13 +790,34 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       });
       if (res.ok) {
         const proj: ProjectConfig = await res.json();
-        await get().fetchProjects();
-        return proj;
+        await Promise.all([
+          get().fetchProjects(),
+          ...(payload.run_scan_immediately
+            ? [
+                get().fetchFindings(),
+                get().fetchMetrics(),
+                get().fetchAppTree(),
+                get().fetchDeepDiveAnalytics(),
+                get().fetchRaciGovernance(),
+                get().fetchSastPlusSuite(),
+                get().fetchTrackChanges(),
+              ]
+            : []),
+        ]);
+        return { ok: true, project: proj };
+      } else {
+        const errBody = await res.json().catch(() => ({}));
+        const detail = String(errBody.detail || `HTTP ${res.status}`);
+        const authRequired =
+          res.status === 401 ||
+          detail.includes("GITHUB_AUTH_REQUIRED") ||
+          detail.includes("GITHUB_AUTH_FAILED");
+        return { ok: false, project: null, error: detail, authRequired };
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to create project:", err);
+      return { ok: false, project: null, error: err?.message || "Network error" };
     }
-    return null;
   },
 
   updateProjectAutomation: async (projectId, payload) => {
@@ -759,7 +855,23 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           activeEndLine: null,
         });
         if (runScan) {
-          await get().triggerScan(proj.target_path);
+          if (proj.scm_provider !== "LOCAL" && proj.repo_url) {
+            if (proj.is_private_repo && !proj.has_saved_auth) {
+              get().openTargetPicker(
+                "URL",
+                proj.repo_url,
+                true,
+                `Private repository '${proj.name}' requires your Personal Access Token to fetch & re-scan the latest commit.`
+              );
+              return;
+            }
+            await get().triggerScan(proj.repo_url, {
+              branch: proj.branch || "main",
+              repo_visibility: proj.is_private_repo ? "PRIVATE" : "AUTO",
+            });
+          } else {
+            await get().triggerScan(proj.target_path);
+          }
         }
         await Promise.all([
           get().fetchProjects(),
@@ -1373,10 +1485,14 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     }
   },
 
-  triggerScan: async (targetPath?: string) => {
-    const path = targetPath || get().projectPath;
+  triggerScan: async (targetPath?: string, options?: GitRepoScanOptions) => {
+    const path = (targetPath || get().projectPath || "").trim();
+    if (!path) {
+      return { ok: false, error: "Please select or paste a target path or GitHub repository URL." };
+    }
     set({
       isScanning: true,
+      gitScanErrorBanner: null,
       scanStatusMessage: `Initiating analysis for: ${path}...`,
       scanProgress: {
         is_scanning: true,
@@ -1408,14 +1524,25 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     }, 250);
 
     try {
+      const reqPayload: Record<string, any> = { target_path: path };
+      if (options?.branch) reqPayload.branch = options.branch;
+      if (options?.repo_visibility) reqPayload.repo_visibility = options.repo_visibility;
+      if (options?.auth_token) reqPayload.auth_token = options.auth_token;
+      if (options?.auth_username) reqPayload.auth_username = options.auth_username;
+      if (typeof options?.save_token === "boolean") reqPayload.save_token = options.save_token;
+
       const res = await fetch(`${BACKEND_URL}/api/scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target_path: path }),
+        body: JSON.stringify(reqPayload),
       });
 
       if (res.ok) {
+        const scanData: ScanResponse = await res.json();
         set({
+          projectPath: scanData.project_path || path,
+          isTargetPickerOpen: false,
+          gitScanErrorBanner: null,
           scanStatusMessage: "Mapping complete. Updating application tree and rule hunters...",
           scanProgress: {
             is_scanning: false,
@@ -1441,28 +1568,50 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         setTimeout(() => {
           set({ isScanning: false, scanStatusMessage: null });
         }, 1500);
+        return { ok: true, response: scanData };
       } else {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+        const rawDetail = String(err.detail || "Unknown error");
+        const isAuthRequired =
+          res.status === 401 ||
+          rawDetail.includes("[GITHUB_AUTH_REQUIRED]") ||
+          rawDetail.includes("[GITHUB_AUTH_FAILED]");
+        const cleanDetail = rawDetail
+          .replace("[GITHUB_AUTH_REQUIRED]", "")
+          .replace("[GITHUB_AUTH_FAILED]", "")
+          .trim();
+
         set({
           isScanning: false,
-          scanStatusMessage: `Scan Failed: ${err.detail || "Unknown error"}`,
+          scanStatusMessage: `Scan Failed: ${cleanDetail}`,
+          gitScanErrorBanner: cleanDetail,
+          ...(isAuthRequired
+            ? {
+                isTargetPickerOpen: true,
+                targetPickerTab: "URL",
+                gitScanPrefillUrl: path,
+                gitScanForcePrivateAuth: true,
+              }
+            : {}),
           scanProgress: {
             is_scanning: false,
             phase: "ERROR",
-            current_pass: "Error",
+            current_pass: isAuthRequired ? "Auth Required" : "Error",
             current_file: "",
             files_done: 0,
             total_files: 0,
             percent: 0,
-            message: `Scan Failed: ${err.detail || "Unknown error"}`,
-            error: err.detail,
+            message: `Scan Failed: ${cleanDetail}`,
+            error: cleanDetail,
           },
         });
+        return { ok: false, authRequired: isAuthRequired, error: cleanDetail };
       }
     } catch (err: any) {
+      const msg = err?.message || "Network connection failed";
       set({
         isScanning: false,
-        scanStatusMessage: `Network Error: ${err.message}`,
+        scanStatusMessage: `Network Error: ${msg}`,
         scanProgress: {
           is_scanning: false,
           phase: "ERROR",
@@ -1471,10 +1620,11 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           files_done: 0,
           total_files: 0,
           percent: 0,
-          message: `Network Error: ${err.message}`,
-          error: err.message,
+          message: `Network Error: ${msg}`,
+          error: msg,
         },
       });
+      return { ok: false, error: msg };
     } finally {
       if (pollInterval) {
         clearInterval(pollInterval);

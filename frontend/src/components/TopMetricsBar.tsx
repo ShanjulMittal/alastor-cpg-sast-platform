@@ -38,7 +38,14 @@ import {
   Search,
   Menu,
   SlidersHorizontal,
+  Lock,
+  Unlock,
+  KeyRound,
+  Eye,
+  EyeOff,
+  GitBranch,
 } from "lucide-react";
+import { GitHubRepoVerifyResponse } from "@/types/cpg";
 import {
   AlastorBrandHeader,
   AlastorThemeSwitcher,
@@ -95,10 +102,28 @@ export function TopMetricsBar() {
   const isMenuBarExpanded = useAuditStore((s) => s.isMenuBarExpanded);
   const setMenuBarExpanded = useAuditStore((s) => s.setMenuBarExpanded);
   const setQuickCommandOpen = useAuditStore((s) => s.setQuickCommandOpen);
+  const isTargetPickerOpen = useAuditStore((s) => s.isTargetPickerOpen);
+  const targetPickerTab = useAuditStore((s) => s.targetPickerTab);
+  const gitScanPrefillUrl = useAuditStore((s) => s.gitScanPrefillUrl);
+  const gitScanForcePrivateAuth = useAuditStore((s) => s.gitScanForcePrivateAuth);
+  const gitScanErrorBanner = useAuditStore((s) => s.gitScanErrorBanner);
+  const openTargetPicker = useAuditStore((s) => s.openTargetPicker);
+  const closeTargetPicker = useAuditStore((s) => s.closeTargetPicker);
+  const verifyGitHubRepo = useAuditStore((s) => s.verifyGitHubRepo);
 
   const [inputPath, setInputPath] = useState(projectPath);
-  const [isPickerOpen, setIsPickerOpen] = useState(false);
-  const [pickerTab, setPickerTab] = useState<"FOLDER" | "FILE" | "URL" | "UPLOAD">("FOLDER");
+  const isPickerOpen = isTargetPickerOpen;
+  const pickerTab = targetPickerTab;
+  const setIsPickerOpen = (open: boolean) => {
+    if (open) {
+      openTargetPicker(pickerTab);
+    } else {
+      closeTargetPicker();
+    }
+  };
+  const setPickerTab = (tab: "FOLDER" | "FILE" | "URL" | "UPLOAD") => {
+    openTargetPicker(tab);
+  };
 
   // Visual Filesystem Browser State
   const [browseData, setBrowseData] = useState<FsBrowseData | null>(null);
@@ -106,9 +131,19 @@ export function TopMetricsBar() {
   const [fsFilter, setFsFilter] = useState("");
   const [isNativeDialogOpen, setIsNativeDialogOpen] = useState(false);
 
-  // URL Target State
+  // GitHub Repository & Remote URL Scanner State
   const [urlInput, setUrlInput] = useState("");
-  const [autoExtractUrlVulns, setAutoExtractUrlVulns] = useState(true);
+  const [repoVisibilityMode, setRepoVisibilityMode] = useState<"PUBLIC" | "PRIVATE">("PUBLIC");
+  const [repoBranch, setRepoBranch] = useState("");
+  const [repoAuthToken, setRepoAuthToken] = useState("");
+  const [repoAuthUsername, setRepoAuthUsername] = useState("");
+  const [saveRepoToken, setSaveRepoToken] = useState(false);
+  const [showRepoToken, setShowRepoToken] = useState(false);
+  const [isVerifyingRepo, setIsVerifyingRepo] = useState(false);
+  const [verifyResult, setVerifyResult] = useState<GitHubRepoVerifyResponse | null>(null);
+  const [localGitError, setLocalGitError] = useState<string | null>(null);
+  const [autoExtractUrlVulns, setAutoExtractUrlVulns] = useState(false);
+  const tokenInputRef = useRef<HTMLInputElement | null>(null);
 
   // Upload / Snippet State
   const [snippetFilename, setSnippetFilename] = useState("snippet.py");
@@ -127,6 +162,18 @@ export function TopMetricsBar() {
   useEffect(() => {
     setInputPath(projectPath);
   }, [projectPath]);
+
+  useEffect(() => {
+    if (gitScanPrefillUrl) {
+      setUrlInput(gitScanPrefillUrl);
+    }
+    if (gitScanForcePrivateAuth) {
+      setRepoVisibilityMode("PRIVATE");
+      setTimeout(() => {
+        tokenInputRef.current?.focus();
+      }, 120);
+    }
+  }, [gitScanPrefillUrl, gitScanForcePrivateAuth]);
 
   const addRecentTarget = (target: string) => {
     if (!target.trim()) return;
@@ -150,10 +197,84 @@ export function TopMetricsBar() {
   };
 
   const openPickerModal = (tab: "FOLDER" | "FILE" | "URL" | "UPLOAD") => {
-    setPickerTab(tab);
-    setIsPickerOpen(true);
+    openTargetPicker(tab);
     if (tab === "FOLDER" || tab === "FILE") {
       fetchFsDirectory(browseData?.current_path);
+    }
+  };
+
+  const handleVerifyGitHubRepo = async () => {
+    const clean = urlInput.trim();
+    if (!clean) {
+      setLocalGitError("Paste a GitHub repository URL first (e.g. https://github.com/owner/repo).");
+      return;
+    }
+    setLocalGitError(null);
+    setIsVerifyingRepo(true);
+    try {
+      const vRes = await verifyGitHubRepo({
+        repo_url: clean,
+        branch: repoBranch.trim() || undefined,
+        auth_token: repoAuthToken.trim() || undefined,
+        auth_username: repoAuthUsername.trim() || undefined,
+      });
+      setVerifyResult(vRes);
+      if (vRes) {
+        if (vRes.requires_auth && !vRes.accessible) {
+          setRepoVisibilityMode("PRIVATE");
+          setTimeout(() => tokenInputRef.current?.focus(), 100);
+        } else if (vRes.is_private === false && repoVisibilityMode !== "PRIVATE") {
+          setRepoVisibilityMode("PUBLIC");
+        }
+        if (vRes.default_branch && !repoBranch.trim()) {
+          setRepoBranch(vRes.default_branch);
+        }
+      }
+    } finally {
+      setIsVerifyingRepo(false);
+    }
+  };
+
+  const handleScanGitHubRepo = async (overrideUrl?: string, forcePublicSample = false) => {
+    const rawTarget = (overrideUrl ?? urlInput).trim();
+    if (!rawTarget) {
+      setLocalGitError("Please paste a GitHub repository URL to scan.");
+      return;
+    }
+    setLocalGitError(null);
+
+    const effectiveMode = forcePublicSample ? "AUTO" : repoVisibilityMode === "PRIVATE" ? "PRIVATE" : "AUTO";
+    const trimmedTok = forcePublicSample ? "" : repoAuthToken.trim();
+    const hasSavedForThisRepo = Boolean(verifyResult?.has_saved_token && verifyResult?.normalized_url);
+
+    if (effectiveMode === "PRIVATE" && !trimmedTok && !hasSavedForThisRepo) {
+      setLocalGitError(
+        "Private repository selected: please enter your GitHub Personal Access Token (ghp_... or github_pat_... with Contents: Read-only)."
+      );
+      tokenInputRef.current?.focus();
+      return;
+    }
+
+    setInputPath(rawTarget);
+    addRecentTarget(rawTarget);
+    closeTargetPicker();
+
+    const scanOutcome = await triggerScan(rawTarget, {
+      branch: forcePublicSample ? undefined : repoBranch.trim() || undefined,
+      repo_visibility: effectiveMode,
+      auth_token: trimmedTok || undefined,
+      auth_username: forcePublicSample ? undefined : repoAuthUsername.trim() || undefined,
+      save_token: forcePublicSample ? false : saveRepoToken,
+    });
+
+    if (scanOutcome.ok && autoExtractUrlVulns && rawTarget.startsWith("http")) {
+      await extractAndScanFromSites({
+        sources: ["osv", "nvd", "cisa_owasp"],
+        customUrls: [rawTarget],
+      });
+    } else if (!scanOutcome.ok && scanOutcome.authRequired) {
+      setRepoVisibilityMode("PRIVATE");
+      setLocalGitError(scanOutcome.error || "Authentication required for this private repository.");
     }
   };
 
@@ -163,9 +284,9 @@ export function TopMetricsBar() {
     setInputPath(clean);
     setProjectPath(clean);
     addRecentTarget(clean);
-    setIsPickerOpen(false);
-    await triggerScan(clean);
-    if (alsoExtractSiteUrl && alsoExtractSiteUrl.startsWith("http")) {
+    closeTargetPicker();
+    const outcome = await triggerScan(clean);
+    if (outcome.ok && alsoExtractSiteUrl && alsoExtractSiteUrl.startsWith("http")) {
       await extractAndScanFromSites({
         sources: ["osv", "nvd", "cisa_owasp"],
         customUrls: [alsoExtractSiteUrl],
@@ -354,13 +475,13 @@ export function TopMetricsBar() {
           </div>
         </div>
 
-        {/* Center: Streamlined Target Selector + Scan + Quick Command */}
+        {/* Center: Streamlined Target Selector + GitHub Quick Scan + Scan + Quick Command */}
         <div className="flex items-center gap-2 flex-1 max-w-2xl justify-center">
           <button
             type="button"
             onClick={() => openPickerModal("FOLDER")}
             title="Select Folder, Single File, URL/Git Repo, or Upload Code"
-            className="px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-medium text-zinc-200 flex items-center gap-2 transition-colors shrink-0 max-w-[260px]"
+            className="px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-medium text-zinc-200 flex items-center gap-2 transition-colors shrink-0 max-w-[220px]"
           >
             <FolderOpen className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
             <span className="font-mono text-[11px] truncate">
@@ -370,6 +491,16 @@ export function TopMetricsBar() {
                 .pop() || "Select Target..."}
             </span>
             <ChevronDown className="w-3 h-3 text-zinc-500 shrink-0" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => openPickerModal("URL")}
+            title="Scan any Open/Public GitHub Repo (paste URL) or Private Repo (with Token/Auth)"
+            className="px-2.5 py-1.5 rounded-xl bg-indigo-950/80 hover:bg-indigo-900/80 border border-indigo-600/60 text-indigo-200 hover:text-white text-xs font-semibold flex items-center gap-1.5 transition-colors shrink-0"
+          >
+            <FolderGit2 className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+            <span>GitHub Scan</span>
           </button>
 
           <button
@@ -498,16 +629,16 @@ export function TopMetricsBar() {
         </div>
       )}
 
-      {/* Interactive Target Selector Modal (Folder / Single File / URL / Upload) */}
+      {/* Interactive Target Selector Modal (Folder / Single File / GitHub Repo & URL / Upload) */}
       {isPickerOpen && (
         <div className="fixed inset-0 z-[200] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6 overflow-y-auto">
-          <div className="bg-zinc-950 border border-zinc-700 rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col h-[540px] max-h-[86vh] my-auto">
+          <div className="bg-zinc-950 border border-zinc-700 rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col h-[620px] max-h-[88vh] my-auto">
             {/* Modal Header & Mode Tabs */}
             <div className="px-4 py-3 bg-zinc-900/90 border-b border-zinc-800 flex items-center justify-between flex-wrap gap-2 shrink-0">
               <div className="flex items-center gap-2">
                 <span className="text-xs font-bold uppercase tracking-wider text-zinc-200 flex items-center gap-1.5">
                   <Sparkles className="w-4 h-4 text-cyan-400" />
-                  Select Scan Target (No Copy-Paste Needed)
+                  Select Scan Target (Folder, File, GitHub Public/Private Repo, or Snippet)
                 </span>
               </div>
 
@@ -551,8 +682,8 @@ export function TopMetricsBar() {
                       : "text-zinc-400 hover:text-zinc-200"
                   }`}
                 >
-                  <Link2 className="w-3.5 h-3.5" />
-                  <span>3. URL / Git Repo</span>
+                  <FolderGit2 className="w-3.5 h-3.5" />
+                  <span>3. GitHub Repo / URL</span>
                 </button>
                 <button
                   type="button"
@@ -814,85 +945,342 @@ export function TopMetricsBar() {
               </div>
             )}
 
-            {/* TAB 3: REMOTE URL / GITHUB REPO / LIVE WEBPAGE SCANNER */}
+            {/* TAB 3: GITHUB REPOSITORY (OPEN/PUBLIC OR PRIVATE AUTH) & REMOTE URL SCANNER */}
             {pickerTab === "URL" && (
-              <div className="p-6 space-y-5 bg-zinc-950">
-                <div>
-                  <h3 className="text-sm font-bold text-zinc-100 flex items-center gap-2">
-                    <Globe className="w-4 h-4 text-indigo-400" />
-                    Scan Remote URL, GitHub Repository, or Live Webpage
-                  </h3>
-                  <p className="text-xs text-zinc-400 mt-1">
-                    Enter any GitHub/GitLab repository URL, a direct GitHub file URL, a raw source code link, or a live webpage URL. ARGON will fetch the target, build its Code Property Graph &amp; Spider App Tree, and scan for vulnerabilities.
-                  </p>
+              <div className="p-5 space-y-4 bg-zinc-950 flex-1 overflow-y-auto">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div>
+                    <h3 className="text-sm font-bold text-zinc-100 flex items-center gap-2">
+                      <FolderGit2 className="w-4 h-4 text-indigo-400" />
+                      GitHub Repository &amp; Remote Source Scanner
+                    </h3>
+                    <p className="text-xs text-zinc-400 mt-0.5">
+                      For <b className="text-emerald-300">Open / Public</b> repositories, simply paste the GitHub URL and click <b>Clone &amp; Scan</b>. For <b className="text-amber-300">Private</b> repositories, provide a GitHub Personal Access Token (<code>Contents: Read-only</code>).
+                    </p>
+                  </div>
                 </div>
 
-                <div className="space-y-3">
-                  <label className="block text-xs font-mono text-zinc-300">
-                    Target URL (Git Repo, File URL, or Webpage)
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={urlInput}
-                      onChange={(e) => setUrlInput(e.target.value)}
-                      placeholder="https://github.com/owner/repo or https://example.com/app.py"
-                      className="flex-1 bg-zinc-900 border border-zinc-700 rounded-lg px-3.5 py-2 text-xs font-mono text-zinc-100 focus:outline-none focus:border-indigo-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleSelectAndScan(
-                          urlInput,
-                          autoExtractUrlVulns ? urlInput : undefined
-                        )
-                      }
-                      className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-md"
+                {/* Visibility Mode Selector: Open/Public (URL only) vs Private (Auth Required) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRepoVisibilityMode("PUBLIC");
+                      setLocalGitError(null);
+                    }}
+                    className={`p-3 rounded-xl border text-left transition-all flex items-start gap-2.5 ${
+                      repoVisibilityMode === "PUBLIC"
+                        ? "bg-emerald-950/35 border-emerald-500/80 shadow-sm shadow-emerald-950/50"
+                        : "bg-zinc-900/50 border-zinc-800 hover:border-zinc-700"
+                    }`}
+                  >
+                    <div
+                      className={`p-1.5 rounded-lg border shrink-0 ${
+                        repoVisibilityMode === "PUBLIC"
+                          ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-300"
+                          : "bg-zinc-800 border-zinc-700 text-zinc-400"
+                      }`}
                     >
-                      <Play className="w-3.5 h-3.5 fill-current" />
-                      <span>Fetch &amp; Scan URL</span>
-                    </button>
+                      <Unlock className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-zinc-100 flex items-center gap-1.5">
+                        <span>Open / Public Repository</span>
+                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700/60">
+                          NO TOKEN
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-zinc-400 mt-0.5">
+                        Just paste any public GitHub / GitLab repo, branch tree, or raw file URL and scan immediately.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRepoVisibilityMode("PRIVATE");
+                      setLocalGitError(null);
+                      setTimeout(() => tokenInputRef.current?.focus(), 80);
+                    }}
+                    className={`p-3 rounded-xl border text-left transition-all flex items-start gap-2.5 ${
+                      repoVisibilityMode === "PRIVATE"
+                        ? "bg-amber-950/35 border-amber-500/80 shadow-sm shadow-amber-950/50"
+                        : "bg-zinc-900/50 border-zinc-800 hover:border-zinc-700"
+                    }`}
+                  >
+                    <div
+                      className={`p-1.5 rounded-lg border shrink-0 ${
+                        repoVisibilityMode === "PRIVATE"
+                          ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
+                          : "bg-zinc-800 border-zinc-700 text-zinc-400"
+                      }`}
+                    >
+                      <Lock className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-zinc-100 flex items-center gap-1.5">
+                        <span>Private Repository</span>
+                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-700/60">
+                          AUTH REQUIRED
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-zinc-400 mt-0.5">
+                        Authenticate securely with a GitHub Fine-Grained or Classic Personal Access Token.
+                      </p>
+                    </div>
+                  </button>
+                </div>
+
+                {/* Error / Auth-Required Banner */}
+                {(localGitError || gitScanErrorBanner) && (
+                  <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-700/80 flex items-start gap-2.5 text-xs text-rose-200">
+                    <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                    <div className="flex-1 leading-relaxed">
+                      <div className="font-bold text-rose-300">Repository Access / Authentication Required</div>
+                      <div className="text-[11px] text-rose-200/90 mt-0.5">
+                        {localGitError || gitScanErrorBanner}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Repo URL + Branch + Verify + Scan Controls */}
+                <div className="space-y-2.5 bg-zinc-900/40 border border-zinc-800 rounded-xl p-3.5">
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-2">
+                    <div className="md:col-span-8">
+                      <label className="block text-[11px] font-mono text-zinc-300 mb-1">
+                        GitHub Repository or Source URL *
+                      </label>
+                      <input
+                        type="text"
+                        value={urlInput}
+                        onChange={(e) => {
+                          setUrlInput(e.target.value);
+                          setVerifyResult(null);
+                          setLocalGitError(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleScanGitHubRepo();
+                          }
+                        }}
+                        placeholder="https://github.com/owner/repository (or /tree/branch)"
+                        className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-xs font-mono text-zinc-100 focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                    <div className="md:col-span-4">
+                      <label className="block text-[11px] font-mono text-zinc-300 mb-1 flex items-center gap-1">
+                        <GitBranch className="w-3 h-3 text-indigo-400" />
+                        <span>Branch / Tag (Optional)</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={repoBranch}
+                        onChange={(e) => setRepoBranch(e.target.value)}
+                        placeholder="default (e.g. main)"
+                        className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-xs font-mono text-zinc-100 focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
                   </div>
 
-                  <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer pt-1">
-                    <input
-                      type="checkbox"
-                      checked={autoExtractUrlVulns}
-                      onChange={(e) => setAutoExtractUrlVulns(e.target.checked)}
-                      className="rounded border-zinc-700 bg-zinc-900 text-indigo-500"
-                    />
-                    <span>
-                      Also extract CVE/CWE security advisories from this URL and correlate against code
-                    </span>
-                  </label>
+                  {/* Private Repository Auth Panel (shown when Private mode is active) */}
+                  {repoVisibilityMode === "PRIVATE" && (
+                    <div className="pt-2 mt-2 border-t border-amber-900/40 space-y-2.5">
+                      <div className="grid grid-cols-1 md:grid-cols-12 gap-2">
+                        <div className="md:col-span-8">
+                          <label className="block text-[11px] font-mono text-amber-300 mb-1 flex items-center justify-between">
+                            <span className="flex items-center gap-1.5">
+                              <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+                              <span>Personal Access Token (PAT) *</span>
+                            </span>
+                            <span className="text-[10px] text-zinc-400">
+                              Scope: Contents (Read-only) or repo
+                            </span>
+                          </label>
+                          <div className="relative flex items-center">
+                            <input
+                              ref={tokenInputRef}
+                              type={showRepoToken ? "text" : "password"}
+                              value={repoAuthToken}
+                              onChange={(e) => {
+                                setRepoAuthToken(e.target.value);
+                                setLocalGitError(null);
+                              }}
+                              placeholder={
+                                verifyResult?.has_saved_token
+                                  ? "Saved token detected in local vault (leave blank to reuse)"
+                                  : "ghp_... or github_pat_... (Required for private repos)"
+                              }
+                              autoComplete="off"
+                              className="w-full bg-zinc-950 border border-amber-600/60 rounded-lg pl-3 pr-9 py-2 text-xs font-mono text-zinc-100 focus:outline-none focus:border-amber-400"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowRepoToken((v) => !v)}
+                              title={showRepoToken ? "Hide token" : "Show token"}
+                              className="absolute right-2.5 text-zinc-400 hover:text-zinc-200"
+                            >
+                              {showRepoToken ? (
+                                <EyeOff className="w-3.5 h-3.5" />
+                              ) : (
+                                <Eye className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="md:col-span-4">
+                          <label className="block text-[11px] font-mono text-zinc-300 mb-1">
+                            Auth Username (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            value={repoAuthUsername}
+                            onChange={(e) => setRepoAuthUsername(e.target.value)}
+                            placeholder="x-access-token (auto)"
+                            autoComplete="off"
+                            className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-xs font-mono text-zinc-100 focus:outline-none focus:border-amber-400"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={saveRepoToken}
+                            onChange={(e) => setSaveRepoToken(e.target.checked)}
+                            className="rounded border-zinc-700 bg-zinc-950 text-amber-500"
+                          />
+                          <span>
+                            Save token in local git-ignored vault (<code>.alastor_vault</code>) for 1-click <b>Re-Scan &amp; Track Changes</b>
+                          </span>
+                        </label>
+                        <span className="text-[10px] font-mono text-emerald-400">
+                          Passed via ephemeral Git HTTP header — never stored in clone URL
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Action Buttons Row */}
+                  <div className="flex items-center justify-between flex-wrap gap-2 pt-1">
+                    <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={autoExtractUrlVulns}
+                        onChange={(e) => setAutoExtractUrlVulns(e.target.checked)}
+                        className="rounded border-zinc-700 bg-zinc-900 text-indigo-500"
+                      />
+                      <span>Also correlate live OSV/NVD advisories after scan</span>
+                    </label>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={isVerifyingRepo || !urlInput.trim()}
+                        onClick={handleVerifyGitHubRepo}
+                        className="px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 border border-zinc-700 text-zinc-200 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                      >
+                        {isVerifyingRepo ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                            <span>Verifying...</span>
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle2 className="w-3.5 h-3.5 text-cyan-400" />
+                            <span>Verify Repo Access</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={isScanning || !urlInput.trim()}
+                        onClick={() => handleScanGitHubRepo()}
+                        className={`px-4 py-2 rounded-lg text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-colors disabled:opacity-50 ${
+                          repoVisibilityMode === "PRIVATE"
+                            ? "bg-amber-600 hover:bg-amber-500"
+                            : "bg-indigo-600 hover:bg-indigo-500"
+                        }`}
+                      >
+                        {repoVisibilityMode === "PRIVATE" ? (
+                          <Lock className="w-3.5 h-3.5" />
+                        ) : (
+                          <Play className="w-3.5 h-3.5 fill-current" />
+                        )}
+                        <span>
+                          {repoVisibilityMode === "PRIVATE"
+                            ? "Authenticate, Clone & Scan"
+                            : "Clone & Scan Repo"}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
-                {/* 1-Click Preset URL Targets */}
+                {/* Live Pre-Flight Verification Result Card */}
+                {verifyResult && (
+                  <div
+                    className={`p-3 rounded-xl border text-xs flex items-start justify-between gap-3 flex-wrap ${
+                      verifyResult.accessible
+                        ? "bg-emerald-950/30 border-emerald-700/70 text-emerald-200"
+                        : "bg-amber-950/40 border-amber-700/80 text-amber-200"
+                    }`}
+                  >
+                    <div className="space-y-1 min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold font-mono text-zinc-100">
+                          {verifyResult.full_name || verifyResult.normalized_url}
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
+                            verifyResult.is_private
+                              ? "bg-amber-950 text-amber-300 border-amber-600/70"
+                              : "bg-emerald-950 text-emerald-300 border-emerald-600/70"
+                          }`}
+                        >
+                          {verifyResult.is_private === true
+                            ? "PRIVATE REPO 🔒"
+                            : verifyResult.is_private === false
+                            ? "OPEN / PUBLIC 🌐"
+                            : "REMOTE TARGET"}
+                        </span>
+                        {verifyResult.default_branch && (
+                          <span className="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-700 text-zinc-300 text-[10px] font-mono">
+                            branch: {verifyResult.default_branch}
+                          </span>
+                        )}
+                        {verifyResult.primary_language && (
+                          <span className="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-700 text-cyan-300 text-[10px] font-mono">
+                            {verifyResult.primary_language}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] opacity-90">{verifyResult.message}</div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 1-Click Open / Public GitHub Repository & Source Samples */}
                 <div className="space-y-2 pt-2 border-t border-zinc-800">
                   <div className="text-[11px] font-mono uppercase text-zinc-400">
-                    1-Click Sample URLs &amp; Advisories
+                    1-Click Open / Public GitHub Targets (No Token Required)
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                     {[
                       {
-                        title: "GitHub Python Source File (Flask App Routing)",
+                        title: "ALASTOR Public GitHub Repo (Full CPG Clone)",
+                        url: "https://github.com/ShanjulMittal/alastor-cpg-sast-platform",
+                        desc: "Clones public GitHub repository with zero auth & runs full SAST + SBOM",
+                      },
+                      {
+                        title: "Flask Core App Module (Direct GitHub Raw File)",
                         url: "https://raw.githubusercontent.com/pallets/flask/main/src/flask/app.py",
                         desc: "Fetches single remote Python file & builds CPG + Spider App Tree",
-                      },
-                      {
-                        title: "MITRE CWE-89 SQL Injection Specification",
-                        url: "https://cwe.mitre.org/data/definitions/89.html",
-                        desc: "Extracts webpage scripts & CWE-89 vulnerability rules",
-                      },
-                      {
-                        title: "MITRE CWE-78 OS Command Injection",
-                        url: "https://cwe.mitre.org/data/definitions/78.html",
-                        desc: "Extracts CWE-78 advisories & scans workspace",
-                      },
-                      {
-                        title: "OWASP Top 10 Injection Advisory Page",
-                        url: "https://owasp.org/Top10/A03_2021-Injection/",
-                        desc: "Scrapes OWASP injection patterns & maps target",
                       },
                     ].map((preset) => (
                       <div
@@ -911,15 +1299,13 @@ export function TopMetricsBar() {
                         <button
                           type="button"
                           onClick={() => {
+                            setRepoVisibilityMode("PUBLIC");
                             setUrlInput(preset.url);
-                            handleSelectAndScan(
-                              preset.url,
-                              autoExtractUrlVulns ? preset.url : undefined
-                            );
+                            handleScanGitHubRepo(preset.url, true);
                           }}
                           className="px-2.5 py-1 rounded bg-indigo-950 hover:bg-indigo-900 border border-indigo-700 text-indigo-200 text-[11px] font-medium shrink-0"
                         >
-                          Use &amp; Scan
+                          Paste &amp; Scan
                         </button>
                       </div>
                     ))}

@@ -21,6 +21,8 @@ yarn-error.log*
 
 # Local Runtime State & Uploaded Scan Targets
 .uploaded_targets/
+.remote_targets/
+.alastor_vault/
 backend/data/*.json
 .alastor_*.json
 

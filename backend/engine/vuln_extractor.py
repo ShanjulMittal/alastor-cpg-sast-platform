@@ -326,8 +326,14 @@ class VulnExtractorEngine:
         if os.path.isfile(self.scan_dir):
             return deps
 
+        is_synth_root = os.path.basename(os.path.abspath(self.scan_dir)).lower() == "synthetic_test_target"
         for root, dirs, files in os.walk(self.scan_dir):
-            dirs[:] = [d for d in dirs if d not in {".git", "node_modules", ".next", "__pycache__", ".venv", "venv", "scratch"}]
+            dirs[:] = [
+                d for d in dirs
+                if d not in {".git", "node_modules", ".next", "__pycache__", ".venv", "venv", "scratch", "uploaded_scans"}
+                and not d.startswith(".")
+                and (is_synth_root or d != "synthetic_test_target")
+            ]
             # Pre-load lockfile versions if package-lock.json exists in this directory
             lock_versions: Dict[str, str] = {}
             if "package-lock.json" in files:
@@ -714,8 +720,14 @@ class VulnExtractorEngine:
             except Exception:
                 pass
         else:
+            is_synth_root = os.path.basename(os.path.abspath(self.scan_dir)).lower() == "synthetic_test_target"
             for root, dirs, files in os.walk(self.scan_dir):
-                dirs[:] = [d for d in dirs if d not in {".git", "node_modules", ".next", "__pycache__", ".venv", "venv", "scratch"}]
+                dirs[:] = [
+                    d for d in dirs
+                    if d not in {".git", "node_modules", ".next", "__pycache__", ".venv", "venv", "scratch", "uploaded_scans"}
+                    and not d.startswith(".")
+                    and (is_synth_root or d != "synthetic_test_target")
+                ]
                 for fname in files:
                     if fname == "package-lock.json":
                         continue

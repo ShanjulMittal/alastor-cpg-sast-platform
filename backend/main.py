@@ -6,6 +6,7 @@ import os
 import re
 import uuid
 import time
+import base64
 import socket
 import ipaddress
 import logging
@@ -13,7 +14,7 @@ import threading
 import subprocess
 from pathlib import Path
 from urllib.parse import urlparse, quote as url_quote
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 import requests as http_requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +23,7 @@ import html as html_lib
 
 from models import (
     CPGNode, CPGEdge, Finding, ScanRequest, ScanResponse, MetricsResponse,
+    GitHubRepoVerifyRequest, GitHubRepoVerifyResponse,
     AppTreeSummary, FilePurposeInfo, ScanProgress,
     ExtractedAdvisory, SiteExtractRequest, SiteExtractResponse,
     FsEntry, FsBrowseResponse, NativeDialogRequest, NativeDialogResponse,
@@ -164,6 +166,8 @@ def _build_trusted_https_fetch_url(host: str, path_parts: List[str]) -> str:
     and URL-encoded path segments so user input can never control the request base origin.
     """
     encoded_rel = "/".join(url_quote(seg, safe="._-") for seg in path_parts if seg and seg not in (".", ".."))
+    if host == "api.github.com":
+        return f"https://api.github.com/{encoded_rel}"
     if host == "raw.githubusercontent.com":
         return f"https://raw.githubusercontent.com/{encoded_rel}"
     if host == "gist.githubusercontent.com":
@@ -175,60 +179,623 @@ def _build_trusted_https_fetch_url(host: str, path_parts: List[str]) -> str:
     if host == "bitbucket.org":
         return f"https://bitbucket.org/{encoded_rel}"
     raise ValueError(
-        f"Direct remote file scan restricted to trusted code hosts (github.com, raw.githubusercontent.com, gitlab.com, bitbucket.org); got '{host}'."
+        f"Direct remote scan restricted to trusted code hosts (github.com, gitlab.com, bitbucket.org, raw.githubusercontent.com); got '{host}'."
     )
 
 
-def _resolve_remote_url_target(target_url: str, base_scan_dir: str) -> str:
+def _normalize_user_git_input(raw_target: str) -> str:
     """
-    Resolves a remote URL (GitHub/GitLab repo, GitHub blob file, or raw source file)
-    into a fresh UUID-isolated workspace directory or file so the full CPG + SAST pipeline can scan it.
+    Normalizes pasted repository URLs so users can paste 'github.com/owner/repo',
+    'https://www.github.com/owner/repo', or 'https://github.com/owner/repo.git' seamlessly.
+    """
+    trimmed = (raw_target or "").strip()
+    if not trimmed:
+        return ""
+    if re.match(r"^(?:www\.)?(?:github\.com|gitlab\.com|bitbucket\.org|raw\.githubusercontent\.com|gist\.githubusercontent\.com)/[A-Za-z0-9._/-]+$", trimmed, flags=re.IGNORECASE):
+        no_www = re.sub(r"^www\.", "", trimmed, flags=re.IGNORECASE)
+        return f"https://{no_www}"
+    if re.match(r"^https://www\.(github\.com|gitlab\.com|bitbucket\.org)/", trimmed, flags=re.IGNORECASE):
+        return re.sub(r"^https://www\.", "https://", trimmed, flags=re.IGNORECASE)
+    return trimmed
+
+
+def _sanitize_git_branch(raw_branch: Optional[str]) -> Optional[str]:
+    """Validates optional Git branch/tag ref against CLI option injection, CRLF, and ref traversal."""
+    if not raw_branch:
+        return None
+    clean_b = raw_branch.replace("\r", "").replace("\n", "").strip()
+    if not clean_b:
+        return None
+    if (
+        clean_b.startswith("-")
+        or ".." in clean_b
+        or "@{" in clean_b
+        or "//" in clean_b
+        or clean_b.endswith(".lock")
+        or not re.match(r"^[A-Za-z0-9._/-]{1,120}$", clean_b)
+    ):
+        raise ValueError(f"Invalid Git branch or tag format: '{_sanitize_log(clean_b)}'")
+    return clean_b
+
+
+def _parse_git_repo_spec(raw_url: str, explicit_branch: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Parses a GitHub, GitLab, or Bitbucket repository URL (HTTPS or SSH, including /tree/<branch>[/<subpath>])
+    into validated owner, repo, SCM provider, optional branch, and optional subdirectory components.
+    Returns None if raw_url points to a single file (/blob/ or raw.githubusercontent.com) or non-repo URL.
+    """
+    norm_in = _normalize_user_git_input(raw_url)
+    validated_b = _sanitize_git_branch(explicit_branch)
+    scm_map = {"github.com": "GITHUB", "gitlab.com": "GITLAB", "bitbucket.org": "BITBUCKET"}
+
+    if norm_in.startswith("git@"):
+        m_ssh = re.match(r"^git@(github\.com|gitlab\.com|bitbucket\.org):([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,100})$", norm_in)
+        if not m_ssh:
+            return None
+        host = m_ssh.group(1).lower()
+        owner = m_ssh.group(2)
+        repo_clean = re.sub(r"\.git$", "", m_ssh.group(3), flags=re.IGNORECASE)
+        if not repo_clean:
+            return None
+        return {
+            "host": host,
+            "scm_provider": scm_map[host],
+            "owner": owner,
+            "repo": repo_clean,
+            "full_name": f"{owner}/{repo_clean}",
+            "normalized_url": f"https://{host}/{owner}/{repo_clean}",
+            "clone_parts": [owner, f"{repo_clean}.git"],
+            "branch": validated_b,
+            "subpath_parts": [],
+            "is_ssh": True,
+        }
+
+    if not norm_in.startswith("https://"):
+        return None
+    parsed = urlparse(norm_in)
+    host = (parsed.hostname or "").lower()
+    if host not in scm_map:
+        return None
+
+    parts = [p for p in parsed.path.split("/") if p and p not in (".", "..")]
+    if len(parts) < 2:
+        return None
+
+    # Exclude single-file views (/blob/, /raw/, /-/blob/, /-/raw/) so single-file handler processes them
+    if len(parts) >= 3 and parts[2] in ("blob", "raw", "releases", "archive", "issues", "pull"):
+        return None
+    if len(parts) >= 4 and parts[2] == "-" and parts[3] in ("blob", "raw"):
+        return None
+
+    owner = parts[0]
+    repo_clean = re.sub(r"\.git$", "", parts[1], flags=re.IGNORECASE)
+    if not re.match(r"^[A-Za-z0-9_.-]{1,100}$", owner) or not re.match(r"^[A-Za-z0-9_.-]{1,100}$", repo_clean):
+        return None
+
+    url_branch: Optional[str] = None
+    subpath_parts: List[str] = []
+    if len(parts) >= 4 and parts[2] in ("tree", "src"):
+        url_branch = _sanitize_git_branch(parts[3])
+        subpath_parts = [sp for sp in parts[4:] if re.match(r"^[A-Za-z0-9_.-]{1,120}$", sp)]
+    elif len(parts) >= 5 and parts[2] == "-" and parts[3] == "tree":
+        url_branch = _sanitize_git_branch(parts[4])
+        subpath_parts = [sp for sp in parts[5:] if re.match(r"^[A-Za-z0-9_.-]{1,120}$", sp)]
+    elif len(parts) > 2:
+        return None
+
+    return {
+        "host": host,
+        "scm_provider": scm_map[host],
+        "owner": owner,
+        "repo": repo_clean,
+        "full_name": f"{owner}/{repo_clean}",
+        "normalized_url": f"https://{host}/{owner}/{repo_clean}",
+        "clone_parts": [owner, f"{repo_clean}.git"],
+        "branch": validated_b or url_branch,
+        "subpath_parts": subpath_parts,
+        "is_ssh": False,
+    }
+
+
+def _build_git_subprocess_env(host: str, auth_val: str = "", auth_user: str = "") -> Dict[str, str]:
+    """
+    Constructs a non-interactive Git subprocess environment that:
+    1. Disables OS credential helper popups (GIT_TERMINAL_PROMPT=0, GCM_INTERACTIVE=never, credential.helper='')
+       so headless servers never hang on private repositories.
+    2. Injects private repository credentials strictly via ephemeral GIT_CONFIG_* HTTP extraheader
+       scoped to https://<host>/ so tokens never appear in process argv or .git/config on disk.
+    """
+    git_env = dict(os.environ)
+    git_env["GIT_TERMINAL_PROMPT"] = "0"
+    git_env["GCM_INTERACTIVE"] = "never"
+    git_env["GIT_ASKPASS"] = ""
+    clean_tok = (auth_val or "").replace("\r", "").replace("\n", "").strip()
+    if clean_tok:
+        default_usr = "oauth2" if host == "gitlab.com" else ("x-token-auth" if host == "bitbucket.org" else "x-access-token")
+        eff_usr = (auth_user or "").replace("\r", "").replace("\n", "").strip() or default_usr
+        b64_pair = base64.b64encode(f"{eff_usr}:{clean_tok}".encode("utf-8")).decode("ascii")
+        git_env["GIT_CONFIG_COUNT"] = "2"
+        git_env["GIT_CONFIG_KEY_0"] = "credential.helper"
+        git_env["GIT_CONFIG_VALUE_0"] = ""
+        git_env["GIT_CONFIG_KEY_1"] = f"http.https://{host}/.extraheader"
+        git_env["GIT_CONFIG_VALUE_1"] = f"AUTHORIZATION: basic {b64_pair}"
+    else:
+        git_env["GIT_CONFIG_COUNT"] = "1"
+        git_env["GIT_CONFIG_KEY_0"] = "credential.helper"
+        git_env["GIT_CONFIG_VALUE_0"] = ""
+    return git_env
+
+
+def _resolve_effective_repo_auth(
+    normalized_repo_url: str,
+    req_token: Optional[str],
+    req_username: Optional[str],
+    repo_visibility: str = "AUTO",
+) -> Tuple[str, str, bool]:
+    """
+    Resolves repository credentials in priority order:
+    1. Explicit token supplied in the scan/verify request
+    2. Locally saved per-repository credential in .alastor_vault (unless repo_visibility == 'PUBLIC')
+    3. Configured GitHub PAT in Integration Hub when scanning private/matching GitHub repos
+    """
+    explicit_tok = (req_token or "").replace("\r", "").replace("\n", "").strip()
+    explicit_usr = (req_username or "").replace("\r", "").replace("\n", "").strip()
+    if explicit_tok and "..." not in explicit_tok:
+        return explicit_tok, explicit_usr, False
+
+    if repo_visibility != "PUBLIC":
+        vault_cred = enterprise_mgr.get_repo_credentials(normalized_repo_url)
+        if vault_cred and vault_cred.get("auth_val"):
+            return vault_cred["auth_val"], explicit_usr or vault_cred.get("username", ""), True
+
+        gh_hub_tok = (enterprise_mgr.integration_config.github_token or "").strip()
+        if gh_hub_tok and "..." not in gh_hub_tok and "github.com/" in normalized_repo_url.lower():
+            hub_repo = (enterprise_mgr.integration_config.github_repo or "").strip().lower()
+            if repo_visibility == "PRIVATE" or (hub_repo and normalized_repo_url.lower().endswith(f"/{hub_repo}")):
+                return gh_hub_tok, explicit_usr, True
+
+    return "", explicit_usr, False
+
+
+def _scrub_git_error(raw_err: str) -> str:
+    """Redacts any Authorization header or token prefix from git stderr before logging or returning."""
+    cleaned = re.sub(r"(?i)(authorization:\s*basic\s+|bearer\s+)[A-Za-z0-9+/=._-]+", r"\1[REDACTED]", raw_err or "")
+    cleaned = re.sub(r"\b(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b", "[REDACTED_TOKEN]", cleaned)
+    return cleaned.strip()
+
+
+def _probe_git_remote_heads(host: str, clone_parts: List[str], auth_val: str = "", auth_user: str = "") -> bool:
+    """Runs non-interactive git ls-remote over a validated trusted code-host URL."""
+    safe_clone_url = _validate_safe_remote_url(
+        _build_trusted_https_fetch_url(host, clone_parts)
+    )
+    safe_git_env = _build_git_subprocess_env(host, auth_val, auth_user)
+    ls_res = subprocess.run(
+        ["git", "ls-remote", "--heads", "--", safe_clone_url],
+        env=safe_git_env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    return ls_res.returncode == 0
+
+
+@app.post("/api/github/verify-repo", response_model=GitHubRepoVerifyResponse)
+def verify_github_repository(req: GitHubRepoVerifyRequest):
+    """
+    Pre-flight check for Public vs. Private GitHub/GitLab/Bitbucket repositories.
+    - Open/Public repos: verifies instant anonymous access, default branch, language, and size with zero token.
+    - Private repos: verifies Personal Access Token (PAT) access and reports if authentication is required.
+    """
+    norm_input = _normalize_user_git_input(req.repo_url)
+    if not norm_input:
+        return GitHubRepoVerifyResponse(
+            valid_url=False,
+            message="Paste a GitHub repository URL (e.g., https://github.com/owner/repo).",
+        )
+
+    try:
+        clean_url = _validate_safe_remote_url(norm_input, allow_git_ssh=True)
+    except ValueError as exc:
+        return GitHubRepoVerifyResponse(valid_url=False, message=str(exc))
+
+    try:
+        spec = _parse_git_repo_spec(clean_url, explicit_branch=req.branch)
+    except ValueError as exc:
+        return GitHubRepoVerifyResponse(valid_url=False, message=str(exc))
+
+    if not spec:
+        parsed_single = urlparse(clean_url)
+        s_host = (parsed_single.hostname or "").lower()
+        if s_host in ("raw.githubusercontent.com", "gist.githubusercontent.com") or "/blob/" in parsed_single.path:
+            return GitHubRepoVerifyResponse(
+                valid_url=True,
+                provider="RAW_FILE",
+                normalized_url=clean_url,
+                accessible=True,
+                is_private=False,
+                requires_auth=False,
+                message="Direct remote source file URL verified — ready to fetch and build CPG.",
+            )
+        return GitHubRepoVerifyResponse(
+            valid_url=False,
+            provider="OTHER",
+            normalized_url=clean_url,
+            message="Provide a valid repository URL such as https://github.com/owner/repo.",
+        )
+
+    eff_tok, eff_usr, has_saved = _resolve_effective_repo_auth(
+        spec["normalized_url"], req.auth_token, req.auth_username, "AUTO"
+    )
+    saved_flag = has_saved or enterprise_mgr.has_repo_credentials(spec["normalized_url"])
+
+    if spec["scm_provider"] == "GITHUB":
+        api_url = _validate_safe_remote_url(
+            _build_trusted_https_fetch_url("api.github.com", ["repos", spec["owner"], spec["repo"]])
+        )
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "ALASTOR-CPG-SAST/2.6",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if eff_tok:
+            headers["Authorization"] = f"Bearer {eff_tok}"
+        try:
+            resp = http_requests.get(api_url, headers=headers, timeout=10, allow_redirects=False)
+            if resp.status_code == 200:
+                meta = resp.json()
+                is_priv = bool(meta.get("private", False))
+                def_branch = str(meta.get("default_branch") or "main")
+                sel_branch = spec["branch"] or def_branch
+                lang = meta.get("language")
+                stars = int(meta.get("stargazers_count") or 0)
+                size_kb = int(meta.get("size") or 0)
+                desc = str(meta.get("description") or "")
+                vis_label = "Private 🔒" if is_priv else "Public / Open 🌐"
+                auth_note = "authenticated via token" if eff_tok else "no token needed"
+                return GitHubRepoVerifyResponse(
+                    valid_url=True,
+                    provider="GITHUB",
+                    owner=spec["owner"],
+                    repo=spec["repo"],
+                    full_name=str(meta.get("full_name") or spec["full_name"]),
+                    normalized_url=spec["normalized_url"],
+                    accessible=True,
+                    is_private=is_priv,
+                    requires_auth=is_priv,
+                    authenticated=bool(eff_tok),
+                    has_saved_token=saved_flag,
+                    default_branch=def_branch,
+                    selected_branch=sel_branch,
+                    primary_language=str(lang) if lang else None,
+                    stars=stars,
+                    size_kb=size_kb,
+                    description=desc,
+                    message=f"Verified {vis_label} repository '{spec['full_name']}' (branch: {sel_branch}, {auth_note}). Ready to scan!",
+                )
+
+            # Fallback to git ls-remote if anonymous GitHub REST API rate-limit (HTTP 403) is hit
+            if resp.status_code == 403 and not eff_tok and resp.headers.get("X-RateLimit-Remaining") == "0":
+                if _probe_git_remote_heads("github.com", spec["clone_parts"]):
+                    return GitHubRepoVerifyResponse(
+                        valid_url=True,
+                        provider="GITHUB",
+                        owner=spec["owner"],
+                        repo=spec["repo"],
+                        full_name=spec["full_name"],
+                        normalized_url=spec["normalized_url"],
+                        accessible=True,
+                        is_private=False,
+                        requires_auth=False,
+                        authenticated=False,
+                        has_saved_token=saved_flag,
+                        default_branch=spec["branch"] or "main",
+                        selected_branch=spec["branch"] or "main",
+                        message=f"Verified Public / Open repository '{spec['full_name']}' via Git protocol (no token needed).",
+                    )
+
+            if not eff_tok and resp.status_code in (401, 403, 404):
+                return GitHubRepoVerifyResponse(
+                    valid_url=True,
+                    provider="GITHUB",
+                    owner=spec["owner"],
+                    repo=spec["repo"],
+                    full_name=spec["full_name"],
+                    normalized_url=spec["normalized_url"],
+                    accessible=False,
+                    is_private=None,
+                    requires_auth=True,
+                    authenticated=False,
+                    has_saved_token=saved_flag,
+                    default_branch="main",
+                    selected_branch=spec["branch"] or "main",
+                    message=(
+                        f"'{spec['full_name']}' is not publicly accessible (Private Repo or non-existent). "
+                        f"If this is a private repository, provide a GitHub Personal Access Token (Contents: Read-only)."
+                    ),
+                )
+
+            return GitHubRepoVerifyResponse(
+                valid_url=True,
+                provider="GITHUB",
+                owner=spec["owner"],
+                repo=spec["repo"],
+                full_name=spec["full_name"],
+                normalized_url=spec["normalized_url"],
+                accessible=False,
+                is_private=True if resp.status_code in (401, 403) else None,
+                requires_auth=True,
+                authenticated=False,
+                has_saved_token=saved_flag,
+                default_branch="main",
+                selected_branch=spec["branch"] or "main",
+                message=(
+                    f"GitHub rejected token with HTTP {resp.status_code} for '{spec['full_name']}'. "
+                    f"Ensure your Personal Access Token is valid and has 'repo' or 'Contents: Read-only' permission."
+                ),
+            )
+        except Exception as exc:
+            return GitHubRepoVerifyResponse(
+                valid_url=True,
+                provider="GITHUB",
+                owner=spec["owner"],
+                repo=spec["repo"],
+                full_name=spec["full_name"],
+                normalized_url=spec["normalized_url"],
+                accessible=False,
+                message=f"Unable to reach GitHub API: {_sanitize_log(exc)}",
+            )
+
+    # GitLab / Bitbucket verification via non-interactive git ls-remote
+    if _probe_git_remote_heads(spec["host"], spec["clone_parts"], eff_tok, eff_usr):
+        return GitHubRepoVerifyResponse(
+            valid_url=True,
+            provider=spec["scm_provider"],
+            owner=spec["owner"],
+            repo=spec["repo"],
+            full_name=spec["full_name"],
+            normalized_url=spec["normalized_url"],
+            accessible=True,
+            is_private=bool(eff_tok),
+            requires_auth=bool(eff_tok),
+            authenticated=bool(eff_tok),
+            has_saved_token=saved_flag,
+            default_branch=spec["branch"] or "main",
+            selected_branch=spec["branch"] or "main",
+            message=f"Verified {spec['scm_provider']} repository '{spec['full_name']}' — ready to clone & scan.",
+        )
+    return GitHubRepoVerifyResponse(
+        valid_url=True,
+        provider=spec["scm_provider"],
+        owner=spec["owner"],
+        repo=spec["repo"],
+        full_name=spec["full_name"],
+        normalized_url=spec["normalized_url"],
+        accessible=False,
+        requires_auth=True,
+        authenticated=False,
+        has_saved_token=saved_flag,
+        message=(
+            f"Authentication required or repository not found for '{spec['full_name']}'. "
+            f"Provide a read-only access token for private {spec['scm_provider']} repositories."
+        ),
+    )
+
+
+def _resolve_remote_url_target(
+    target_url: str,
+    base_scan_dir: str,
+    branch: Optional[str] = None,
+    repo_visibility: str = "AUTO",
+    auth_token: Optional[str] = None,
+    auth_username: Optional[str] = None,
+    save_token: bool = False,
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """
+    Resolves a remote URL (Public or Private GitHub/GitLab/Bitbucket repo, GitHub blob file, or raw source file)
+    into a fresh UUID-isolated workspace directory or file so the full CPG + SAST + SCA + IaC pipeline can scan it.
+    - Open/Public repositories: cloned directly via HTTPS with zero token required.
+    - Private repositories: authenticated securely via ephemeral GIT_CONFIG_* HTTP extraheader (never on CLI argv).
     """
     workspace_root = os.path.realpath(os.path.join(os.path.dirname(base_scan_dir), ".remote_targets"))
     os.makedirs(workspace_root, exist_ok=True)
     isolated_id = f"remote_{uuid.uuid4().hex[:12]}"
     dest_dir = _safe_resolve_under(workspace_root, isolated_id)
 
-    clean_url = _validate_safe_remote_url(target_url, allow_git_ssh=True)
-    if clean_url.startswith("git@"):
-        subprocess.run(["git", "clone", "--depth", "1", "--", clean_url, dest_dir], check=True, timeout=60)
-        return dest_dir
+    norm_target_url = _normalize_user_git_input(target_url)
+    clean_url = _validate_safe_remote_url(norm_target_url, allow_git_ssh=True)
+    vis_mode = (repo_visibility or "AUTO").strip().upper()
+
+    # Check if this is a GitHub / GitLab / Bitbucket repository (HTTPS or SSH)
+    repo_spec = _parse_git_repo_spec(clean_url, explicit_branch=branch)
+    if repo_spec is not None:
+        eff_tok, eff_usr, _ = _resolve_effective_repo_auth(
+            repo_spec["normalized_url"], auth_token, auth_username, vis_mode
+        )
+        if vis_mode == "PRIVATE" and not eff_tok and not repo_spec["is_ssh"]:
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    f"[GITHUB_AUTH_REQUIRED] Private repository scanning requires authentication. "
+                    f"Provide a GitHub Personal Access Token (ghp_... or github_pat_... with Contents: Read-only) for '{repo_spec['full_name']}'."
+                ),
+            )
+
+        owner_safe = os.path.basename(re.sub(r"[^A-Za-z0-9._-]", "_", repo_spec["owner"]).strip("._")) or "org"
+        repo_safe = os.path.basename(re.sub(r"[^A-Za-z0-9._-]", "_", repo_spec["repo"]).strip("._")) or "repo"
+        repo_dest_dir = _safe_resolve_under(dest_dir, owner_safe, repo_safe)
+        os.makedirs(os.path.dirname(repo_dest_dir), exist_ok=True)
+
+        if repo_spec["is_ssh"] and not eff_tok:
+            clone_target = clean_url
+            git_env = _build_git_subprocess_env(repo_spec["host"])
+        else:
+            clone_target = _validate_safe_remote_url(
+                _build_trusted_https_fetch_url(repo_spec["host"], repo_spec["clone_parts"])
+            )
+            git_env = _build_git_subprocess_env(repo_spec["host"], eff_tok, eff_usr)
+
+        clone_cmd: List[str] = ["git", "clone", "--depth", "1"]
+        if repo_spec["branch"]:
+            clone_cmd.extend(["--branch", repo_spec["branch"], "--single-branch"])
+        clone_cmd.extend(["--", clone_target, repo_dest_dir])
+
+        update_progress(
+            is_scanning=True,
+            phase="REMOTE_FETCH",
+            current_pass=f"Pass 0/7: Cloning {repo_spec['scm_provider']} Repo ({repo_spec['full_name']})",
+            current_file=repo_spec["normalized_url"],
+            files_done=0,
+            total_files=1,
+            percent=4,
+            message=(
+                f"Cloning {'authenticated' if eff_tok else 'public'} repository "
+                f"{repo_spec['full_name']}{(' @ ' + repo_spec['branch']) if repo_spec['branch'] else ''}..."
+            ),
+        )
+
+        res = subprocess.run(clone_cmd, env=git_env, capture_output=True, text=True, timeout=120)
+        if res.returncode != 0 or not os.path.exists(repo_dest_dir):
+            err_msg = _scrub_git_error(res.stderr or res.stdout or "Git clone exited with non-zero status")
+            err_low = err_msg.lower()
+            if repo_spec["branch"] and ("remote branch" in err_low and "not found" in err_low):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Branch '{repo_spec['branch']}' was not found in '{repo_spec['full_name']}'. "
+                        f"Check the branch name or leave it empty to scan the default branch."
+                    ),
+                )
+            is_auth_err = any(
+                frag in err_low
+                for frag in (
+                    "authentication failed",
+                    "could not read username",
+                    "terminal prompts disabled",
+                    "repository not found",
+                    "access denied",
+                    "401",
+                    "403",
+                )
+            )
+            if is_auth_err and not eff_tok:
+                raise HTTPException(
+                    status_code=401,
+                    detail=(
+                        f"[GITHUB_AUTH_REQUIRED] Repository '{repo_spec['full_name']}' is Private or requires authentication "
+                        f"(or verify the owner/repo spelling). Enter a Personal Access Token (Contents: Read-only) to scan private repos."
+                    ),
+                )
+            if is_auth_err and eff_tok:
+                raise HTTPException(
+                    status_code=401,
+                    detail=(
+                        f"[GITHUB_AUTH_FAILED] Authentication failed for '{repo_spec['full_name']}'. "
+                        f"Verify your Personal Access Token is active and grants 'repo' or 'Contents: Read-only' access."
+                    ),
+                )
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to clone '{repo_spec['full_name']}': {err_msg[:220]}",
+            )
+
+        # Detect resolved branch from cloned HEAD
+        actual_branch = repo_spec["branch"] or "main"
+        if not repo_spec["branch"]:
+            br_res = subprocess.run(
+                ["git", "-C", repo_dest_dir, "rev-parse", "--abbrev-ref", "HEAD"],
+                env=git_env,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if br_res.returncode == 0 and br_res.stdout.strip() and br_res.stdout.strip() != "HEAD":
+                actual_branch = br_res.stdout.strip()
+
+        # Detect private flag cleanly via GitHub API metadata when applicable
+        is_private_detected = bool(vis_mode == "PRIVATE")
+        if repo_spec["scm_provider"] == "GITHUB" and eff_tok:
+            try:
+                meta_url = _validate_safe_remote_url(
+                    _build_trusted_https_fetch_url("api.github.com", ["repos", repo_spec["owner"], repo_spec["repo"]])
+                )
+                meta_resp = http_requests.get(
+                    meta_url,
+                    headers={
+                        "Accept": "application/vnd.github+json",
+                        "User-Agent": "ALASTOR-CPG-SAST/2.6",
+                        "Authorization": f"Bearer {eff_tok}",
+                    },
+                    timeout=5,
+                    allow_redirects=False,
+                )
+                if meta_resp.status_code == 200:
+                    is_private_detected = bool(meta_resp.json().get("private", is_private_detected))
+            except Exception:
+                pass
+
+        if save_token and auth_token and auth_token.strip() and "..." not in auth_token:
+            enterprise_mgr.save_repo_credentials(
+                repo_spec["normalized_url"], auth_token.strip(), (auth_username or "").strip()
+            )
+
+        final_scan_path = repo_dest_dir
+        if repo_spec["subpath_parts"]:
+            cand_sub = _safe_resolve_under(repo_dest_dir, *repo_spec["subpath_parts"])
+            if os.path.exists(cand_sub):
+                final_scan_path = cand_sub
+
+        repo_meta = {
+            "scm_provider": repo_spec["scm_provider"],
+            "repo_url": repo_spec["normalized_url"],
+            "display_name": repo_spec["full_name"],
+            "branch": actual_branch,
+            "is_private": is_private_detected,
+            "has_saved_auth": enterprise_mgr.has_repo_credentials(repo_spec["normalized_url"]),
+        }
+        return final_scan_path, repo_meta
 
     parsed = urlparse(clean_url)
     host = (parsed.hostname or "").lower()
     path_parts = [p for p in parsed.path.split("/") if p and p not in (".", "..")]
 
-    # Case 1: GitHub /blob/ single file URL -> convert to raw.githubusercontent.com
+    # Case 1: GitHub /blob/ single file URL -> convert to raw.githubusercontent.com (supports private token header!)
     if host == "github.com" and len(path_parts) >= 5 and path_parts[2] == "blob":
-        owner, repo, _, branch = path_parts[:4]
-        raw_parts = [owner, repo, branch, *path_parts[4:]]
+        owner, repo, _, blob_branch = path_parts[:4]
+        repo_norm_url = f"https://github.com/{owner}/{repo}"
+        eff_tok, _, _ = _resolve_effective_repo_auth(repo_norm_url, auth_token, auth_username, vis_mode)
+        if vis_mode == "PRIVATE" and not eff_tok:
+            raise HTTPException(
+                status_code=401,
+                detail="[GITHUB_AUTH_REQUIRED] Private GitHub file URL requires a Personal Access Token.",
+            )
+        raw_parts = [owner, repo, blob_branch, *path_parts[4:]]
         raw_url = _validate_safe_remote_url(_build_trusted_https_fetch_url("raw.githubusercontent.com", raw_parts))
         os.makedirs(dest_dir, exist_ok=True)
         raw_leaf = os.path.basename(path_parts[-1])
         safe_filename = os.path.basename(re.sub(r"[^a-zA-Z0-9._-]", "_", raw_leaf).strip("._")) or "source.py"
         local_file = _safe_resolve_under(dest_dir, safe_filename)
-        resp = http_requests.get(raw_url, headers={"User-Agent": "ALASTOR-CPG-SAST/2.6"}, timeout=20, allow_redirects=False)
+        req_headers = {"User-Agent": "ALASTOR-CPG-SAST/2.6"}
+        if eff_tok:
+            req_headers["Authorization"] = f"Bearer {eff_tok}"
+        resp = http_requests.get(raw_url, headers=req_headers, timeout=20, allow_redirects=False)
+        if resp.status_code in (401, 403, 404) and not eff_tok:
+            raise HTTPException(
+                status_code=401,
+                detail="[GITHUB_AUTH_REQUIRED] File could not be fetched anonymously (Private repository or missing file). Provide a GitHub Personal Access Token.",
+            )
         resp.raise_for_status()
         with open(local_file, "wb") as f:
             f.write(resp.content[:2 * 1024 * 1024])
-        return local_file
+        return local_file, None
 
-    # Case 2: GitHub / GitLab / Bitbucket repository root URL or .git URL
-    is_git_repo = (
-        clean_url.endswith(".git")
-        or (host in {"github.com", "gitlab.com", "bitbucket.org"} and len(path_parts) == 2)
-    )
-    if is_git_repo and len(path_parts) >= 2:
-        repo_leaf = path_parts[1] if path_parts[1].endswith(".git") else f"{path_parts[1]}.git"
-        clone_url = _validate_safe_remote_url(_build_trusted_https_fetch_url(host, [path_parts[0], repo_leaf]))
-        res = subprocess.run(["git", "clone", "--depth", "1", "--", clone_url, dest_dir], capture_output=True, text=True, timeout=90)
-        if res.returncode == 0 and os.path.exists(dest_dir):
-            return dest_dir
-
-    # Case 3: Direct raw source file URL on allowlisted code host
+    # Case 2: Direct raw source file URL on allowlisted code host
     os.makedirs(dest_dir, exist_ok=True)
     fetch_url = _validate_safe_remote_url(_build_trusted_https_fetch_url(host, path_parts))
-    resp = http_requests.get(fetch_url, headers={"User-Agent": "ALASTOR-CPG-SAST/2.6"}, timeout=20, allow_redirects=False)
+    req_headers = {"User-Agent": "ALASTOR-CPG-SAST/2.6"}
+    if auth_token and auth_token.strip() and "..." not in auth_token:
+        req_headers["Authorization"] = f"Bearer {auth_token.strip()}"
+    resp = http_requests.get(fetch_url, headers=req_headers, timeout=20, allow_redirects=False)
     resp.raise_for_status()
     raw_bytes = resp.content[:2 * 1024 * 1024]
     content_type = (resp.headers.get("Content-Type") or "").lower()
@@ -240,7 +807,7 @@ def _resolve_remote_url_target(target_url: str, base_scan_dir: str) -> str:
         local_file = _safe_resolve_under(dest_dir, last_part)
         with open(local_file, "wb") as f:
             f.write(raw_bytes)
-        return local_file
+        return local_file, None
 
     # Webpage / HTML / API response: save HTML and extract inline <script> blocks into a .js file for CPG analysis
     text_body = raw_bytes.decode("utf-8", errors="replace")
@@ -264,7 +831,7 @@ def _resolve_remote_url_target(target_url: str, base_scan_dir: str) -> str:
         with open(js_fallback, "w", encoding="utf-8") as f:
             f.write(text_body)
 
-    return dest_dir
+    return dest_dir, None
 
 
 @app.on_event("startup")
@@ -547,36 +1114,59 @@ def get_scan_progress():
 def scan_project(req: ScanRequest):
     """
     Executes full CPG compiler pipeline and Application Architecture Tree analysis over target path.
-    Supports local folders, single files, and remote URLs (Git repos, raw files, or web pages).
+    Supports local folders, single files, Open/Public GitHub/GitLab/Bitbucket URLs (zero token),
+    and Private Git repositories (Personal Access Token / credentials required).
     """
     global current_scan_dir, current_app_tree
     target_path = req.target_path.strip()
+    norm_remote_cand = _normalize_user_git_input(target_path)
     base_scan_dir = os.getenv("CPG_SCAN_BASE", os.getcwd())
+    remote_repo_meta: Optional[Dict[str, Any]] = None
 
-    # Check if the target is a Remote URL or Git Repository
-    if target_path.startswith(("http://", "https://", "git@")):
+    # Check if the target is a Remote URL or Git Repository (including pasted github.com/owner/repo)
+    if norm_remote_cand.startswith(("http://", "https://", "git@")):
         try:
             update_progress(
                 is_scanning=True,
                 phase="REMOTE_FETCH",
-                current_pass="Pass 0/7: Fetching Remote URL / Git Target",
-                current_file=target_path,
+                current_pass="Pass 0/7: Fetching Remote URL / Git Repository",
+                current_file=norm_remote_cand,
                 files_done=0,
                 total_files=1,
                 percent=3,
-                message=f"Fetching remote target from {target_path}..."
+                message=f"Fetching remote target from {norm_remote_cand}..."
             )
-            resolved_path = _resolve_remote_url_target(target_path, base_scan_dir)
+            resolved_path, remote_repo_meta = _resolve_remote_url_target(
+                target_url=norm_remote_cand,
+                base_scan_dir=base_scan_dir,
+                branch=req.branch,
+                repo_visibility=req.repo_visibility,
+                auth_token=req.auth_token,
+                auth_username=req.auth_username,
+                save_token=req.save_token,
+            )
+        except HTTPException as http_exc:
+            clean_detail = _scrub_git_error(str(http_exc.detail))
+            update_progress(
+                is_scanning=False,
+                phase="ERROR",
+                current_pass="Auth Required" if http_exc.status_code == 401 else "Failed",
+                percent=0,
+                message=clean_detail,
+                error=clean_detail,
+            )
+            raise HTTPException(status_code=http_exc.status_code, detail=clean_detail) from http_exc
         except Exception as e:
+            clean_err = _scrub_git_error(str(e))
             update_progress(
                 is_scanning=False,
                 phase="ERROR",
                 current_pass="Failed",
                 percent=0,
-                message=f"Failed to fetch remote URL target: {e}",
-                error=str(e)
+                message=f"Failed to fetch remote URL target: {clean_err}",
+                error=clean_err
             )
-            raise HTTPException(status_code=400, detail=f"Failed to fetch remote URL target '{target_path}': {e}")
+            raise HTTPException(status_code=400, detail=f"Failed to fetch remote URL target '{norm_remote_cand}': {clean_err}") from e
     else:
         # Robust path resolution checking current dir, parent dir, and base_scan_dir
         candidates = [
@@ -668,9 +1258,26 @@ def scan_project(req: ScanRequest):
             tree_edges_created,
         )
 
-        # If no CPG source files exist, we still succeed with complete Application Tree mapping!
+        # If no CPG source files exist, we still succeed with complete Application Tree + SCA/IaC/Secret mapping!
         if not scanned_files:
             logger.info("Scanned %d application files (0 AST code files).", int(current_app_tree.total_files))
+            _last_neo4j_ingested_dir = os.path.normcase(os.path.abspath(resolved_path))
+            _cached_external_findings = []
+            _cached_advisories = []
+            enterprise_mgr.set_active_scan_target(
+                resolved_path, current_app_tree.detected_tech_stack, repo_meta=remote_repo_meta
+            )
+            scanned_findings = get_or_compute_findings(force_refresh=True)
+            enterprise_mgr.record_scan_snapshot(
+                resolved_path=resolved_path,
+                findings=scanned_findings,
+                app_tree=current_app_tree,
+                files_scanned=current_app_tree.total_files,
+                nodes_created=tree_nodes_created,
+                edges_created=tree_edges_created,
+                tech_stack=current_app_tree.detected_tech_stack,
+            )
+            get_or_compute_findings(force_refresh=False)
             update_progress(
                 is_scanning=False,
                 phase="COMPLETED",
@@ -689,7 +1296,12 @@ def scan_project(req: ScanRequest):
                 status="SUCCESS",
                 categories=current_app_tree.category_counts,
                 tech_stack=current_app_tree.detected_tech_stack,
-                total_app_files=current_app_tree.total_files
+                total_app_files=current_app_tree.total_files,
+                scm_provider=(remote_repo_meta or {}).get("scm_provider"),
+                repo_url=(remote_repo_meta or {}).get("repo_url"),
+                branch=(remote_repo_meta or {}).get("branch"),
+                is_private_repo=(remote_repo_meta or {}).get("is_private"),
+                display_name=(remote_repo_meta or {}).get("display_name"),
             )
 
         num_code_files = len(scanned_files)
@@ -890,9 +1502,13 @@ def scan_project(req: ScanRequest):
             all_nodes, all_edges, progress_callback=cpg_callback
         )
         _last_neo4j_ingested_dir = os.path.normcase(os.path.abspath(resolved_path))
+        _cached_external_findings = []
+        _cached_advisories = []
 
         # Synchronize the active application in enterprise_mgr.projects and refresh findings/metrics
-        enterprise_mgr.set_active_scan_target(resolved_path, current_app_tree.detected_tech_stack)
+        enterprise_mgr.set_active_scan_target(
+            resolved_path, current_app_tree.detected_tech_stack, repo_meta=remote_repo_meta
+        )
         scanned_findings = get_or_compute_findings(force_refresh=True)
         enterprise_mgr.record_scan_snapshot(
             resolved_path=resolved_path,
@@ -925,7 +1541,12 @@ def scan_project(req: ScanRequest):
             status="SUCCESS",
             categories=current_app_tree.category_counts,
             tech_stack=current_app_tree.detected_tech_stack,
-            total_app_files=current_app_tree.total_files
+            total_app_files=current_app_tree.total_files,
+            scm_provider=(remote_repo_meta or {}).get("scm_provider"),
+            repo_url=(remote_repo_meta or {}).get("repo_url"),
+            branch=(remote_repo_meta or {}).get("branch"),
+            is_private_repo=(remote_repo_meta or {}).get("is_private"),
+            display_name=(remote_repo_meta or {}).get("display_name"),
         )
     except Exception as exc:
         update_progress(
@@ -1335,14 +1956,17 @@ def extract_and_identify_vulnerabilities(req: SiteExtractRequest):
     engine = VulnExtractorEngine(neo4j_client, target_dir)
     result = engine.run_extraction_and_scan(req)
 
-    # Persist extracted advisories and matched code findings in memory
-    _cached_advisories = result.advisories
-    if req.auto_scan_code:
-        existing_ids = {f.id for f in _cached_external_findings}
-        for nf in result.code_findings:
-            if nf.id not in existing_ids:
-                existing_ids.add(nf.id)
-                _cached_external_findings.append(nf)
+    # Persist extracted advisories and matched code findings in memory only when not mid-CPG-rebuild
+    if not current_progress.is_scanning and os.path.normcase(
+        os.path.abspath(current_scan_dir or enterprise_mgr.platform_root)
+    ) == os.path.normcase(os.path.abspath(target_dir)):
+        _cached_advisories = result.advisories
+        if req.auto_scan_code:
+            existing_ids = {f.id for f in _cached_external_findings}
+            for nf in result.code_findings:
+                if nf.id not in existing_ids:
+                    existing_ids.add(nf.id)
+                    _cached_external_findings.append(nf)
 
     return result
 
@@ -1628,14 +2252,19 @@ def _read_authorized_workspace_file(raw_path: str, allowed_roots: List[str]) -> 
 def get_file_content(path: str = Query(..., description="Relative or absolute filepath")):
     """Returns raw source code for Monaco editor rendering within authorized scan roots."""
     global current_scan_dir
+    base_scan_dir = os.getenv("CPG_SCAN_BASE", os.getcwd())
+    remote_workspace_root = os.path.realpath(os.path.join(os.path.dirname(base_scan_dir), ".remote_targets"))
+    uploaded_workspace_root = os.path.realpath(os.path.join(os.path.dirname(base_scan_dir), ".uploaded_targets"))
     scan_parent = os.path.dirname(current_scan_dir) if current_scan_dir and os.path.isfile(current_scan_dir) else current_scan_dir
     project_roots = [p.target_path for p in enterprise_mgr.projects if p.target_path]
     allowed_roots = [
         current_scan_dir,
         scan_parent,
+        remote_workspace_root,
+        uploaded_workspace_root,
         enterprise_mgr.platform_root,
         os.path.dirname(enterprise_mgr.platform_root),
-        os.getenv("CPG_SCAN_BASE", os.getcwd()),
+        base_scan_dir,
         os.getcwd(),
         *project_roots,
     ]
@@ -1999,18 +2628,66 @@ def list_projects():
 
 @app.post("/api/projects", response_model=ProjectConfig)
 def create_or_import_project(req: CreateProjectRequest):
-    """Registers a local workspace or SCM repository project with 0 initial findings until scanned."""
-    slug = re.sub(r"[^a-z0-9]+", "-", req.name.lower()).strip("-") or "project"
+    """
+    Registers a local workspace or Public/Private GitHub/GitLab/Bitbucket repository project.
+    Supports immediate clone & CPG scan when run_scan_immediately=True.
+    """
+    norm_repo = _normalize_user_git_input(req.repo_url) if req.scm_provider != "LOCAL" else ""
+    parsed_spec = _parse_git_repo_spec(norm_repo, req.branch) if norm_repo else None
+    canonical_repo_url = parsed_spec["normalized_url"] if parsed_spec else norm_repo
+    resolved_branch = (parsed_spec["branch"] if parsed_spec and parsed_spec.get("branch") else req.branch.strip()) or "main"
+
+    if req.scm_provider != "LOCAL":
+        if not canonical_repo_url:
+            raise HTTPException(status_code=400, detail="Repository URL is required for GitHub/GitLab/Bitbucket imports.")
+        if req.is_private_repo and not (req.auth_token or "").strip() and not enterprise_mgr.has_repo_credentials(canonical_repo_url):
+            raise HTTPException(
+                status_code=401,
+                detail="[GITHUB_AUTH_REQUIRED] Private repository import requires a Personal Access Token (Contents: Read-only).",
+            )
+        if req.save_token and req.auth_token and req.auth_token.strip() and "..." not in req.auth_token:
+            enterprise_mgr.save_repo_credentials(
+                canonical_repo_url, req.auth_token.strip(), (req.auth_username or "").strip()
+            )
+
+    derived_name = req.name.strip() or (parsed_spec["full_name"] if parsed_spec else "imported-project")
+
+    if req.scm_provider != "LOCAL" and req.run_scan_immediately:
+        scan_project(
+            ScanRequest(
+                target_path=canonical_repo_url,
+                branch=resolved_branch,
+                repo_visibility="PRIVATE" if req.is_private_repo else "AUTO",
+                auth_token=req.auth_token,
+                auth_username=req.auth_username,
+                save_token=req.save_token,
+            )
+        )
+        active_proj = next((p for p in enterprise_mgr.projects if p.is_active), None)
+        if active_proj:
+            if req.name.strip():
+                active_proj.name = req.name.strip()
+            if req.description.strip():
+                active_proj.description = req.description.strip()
+            active_proj.preset_id = req.preset_id
+            enterprise_mgr._save_persisted_state()
+            return active_proj
+
+    slug = re.sub(r"[^a-z0-9]+", "-", derived_name.lower()).strip("-") or "project"
     pid = f"proj-{slug}-{len(enterprise_mgr.projects) + 1}"
-    target = req.target_path.strip() or req.repo_url.strip()
+    target = req.target_path.strip() or canonical_repo_url
 
     new_proj = ProjectConfig(
         id=pid,
-        name=req.name.strip(),
-        description=req.description.strip() or f"Project registered ({req.scm_provider} / {req.branch}) — Not scanned yet.",
+        name=derived_name,
+        description=req.description.strip() or (
+            f"{'Private' if req.is_private_repo else 'Public'} {req.scm_provider} repository ({canonical_repo_url} @ {resolved_branch})"
+            if canonical_repo_url
+            else f"Project registered ({req.scm_provider} / {resolved_branch}) — Not scanned yet."
+        ),
         scm_provider=req.scm_provider,
-        repo_url=req.repo_url.strip(),
-        branch=req.branch.strip() or "main",
+        repo_url=canonical_repo_url,
+        branch=resolved_branch,
         target_path=target,
         preset_id=req.preset_id,
         override_global_settings=False,
@@ -2019,7 +2696,7 @@ def create_or_import_project(req: CreateProjectRequest):
             auto_scan_on_push=req.auto_scan_on_push,
             auto_scan_on_pr=req.auto_scan_on_pr,
             auto_scan_on_schedule=False,
-            target_branches=[req.branch.strip() or "main"],
+            target_branches=[resolved_branch],
             webhook_url="",
             last_triggered_at=None,
             last_trigger_event=None
@@ -2036,9 +2713,12 @@ def create_or_import_project(req: CreateProjectRequest):
         iac_count=0,
         languages=[],
         last_scan_at=None,
-        is_active=False
+        is_active=False,
+        is_private_repo=req.is_private_repo,
+        has_saved_auth=enterprise_mgr.has_repo_credentials(canonical_repo_url) if canonical_repo_url else False,
     )
     enterprise_mgr.projects.insert(0, new_proj)
+    enterprise_mgr._save_persisted_state()
     return new_proj
 
 
@@ -2049,6 +2729,7 @@ def delete_project(project_id: str):
     enterprise_mgr.projects = [p for p in enterprise_mgr.projects if p.id != project_id]
     if len(enterprise_mgr.projects) == before:
         raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+    enterprise_mgr._save_persisted_state()
     return {"deleted": True, "id": project_id}
 
 
@@ -2163,11 +2844,19 @@ def trigger_project_scm_webhook(project_id: str, req: WebhookTriggerRequest):
     proj.automation.last_triggered_at = now_str
     proj.automation.last_trigger_event = f"{req.event_type} on {req.branch} ({req.commit_sha}) by {req.actor}"
 
-    scan_target = proj.target_path
-    if not os.path.exists(scan_target) and not scan_target.startswith(("http://", "https://", "git@")):
-        scan_target = enterprise_mgr.platform_root
-
-    scan_res = scan_project(ScanRequest(target_path=scan_target))
+    if proj.scm_provider != "LOCAL" and proj.repo_url:
+        scan_res = scan_project(
+            ScanRequest(
+                target_path=proj.repo_url,
+                branch=req.branch or proj.branch,
+                repo_visibility="PRIVATE" if proj.is_private_repo else "AUTO",
+            )
+        )
+    else:
+        scan_target = proj.target_path
+        if not os.path.exists(scan_target) and not scan_target.startswith(("http://", "https://", "git@")):
+            scan_target = enterprise_mgr.platform_root
+        scan_res = scan_project(ScanRequest(target_path=scan_target))
     findings = get_or_compute_findings(force_refresh=True)
     return {
         "status": "TRIGGERED",

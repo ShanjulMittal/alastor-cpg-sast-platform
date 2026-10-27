@@ -1167,9 +1167,85 @@ class EnterpriseManager:
         self.data_dir = os.path.join(self.base_dir, "data")
         self.state_file = os.path.join(self.data_dir, "integration_hub_state.json")
         self.scan_cache_file = os.path.join(self.data_dir, "scan_history_cache.json")
+        self.vault_dir = os.path.join(self.platform_root, ".alastor_vault")
+        self.repo_creds_file = os.path.join(self.vault_dir, "repo_credentials.json")
+        self.saved_repo_tokens: Dict[str, Dict[str, str]] = {}
         self.project_scan_cache: Dict[str, Dict[str, Any]] = {}
+        self._load_repo_credentials()
         self._load_persisted_state()
         self._load_scan_cache()
+
+    def _norm_repo_key(self, repo_url: str) -> str:
+        raw = (repo_url or "").strip().lower()
+        if not raw:
+            return ""
+        raw = re.sub(r"^https?://(?:www\.)?", "", raw)
+        raw = re.sub(r"^git@([^:]+):", r"\1/", raw)
+        raw = re.sub(r"\.git$", "", raw).strip("/")
+        parts = [p for p in raw.split("/") if p]
+        if len(parts) >= 3 and parts[0] in ("github.com", "gitlab.com", "bitbucket.org"):
+            return f"{parts[0]}/{parts[1]}/{parts[2]}"
+        return raw
+
+    def _load_repo_credentials(self):
+        try:
+            if os.path.isfile(self.repo_creds_file):
+                with open(self.repo_creds_file, "r", encoding="utf-8") as fh:
+                    blob = json.load(fh)
+                if isinstance(blob, dict) and isinstance(blob.get("entries"), dict):
+                    for rk, enc_obj in blob["entries"].items():
+                        if isinstance(enc_obj, dict) and isinstance(enc_obj.get("b64"), str):
+                            decoded = base64.b64decode(enc_obj["b64"].encode("ascii")).decode("utf-8")
+                            parsed = json.loads(decoded)
+                            if isinstance(parsed, dict) and parsed.get("auth_val"):
+                                self.saved_repo_tokens[rk] = {
+                                    "auth_val": str(parsed["auth_val"]),
+                                    "username": str(parsed.get("username") or ""),
+                                    "saved_at": str(parsed.get("saved_at") or ""),
+                                }
+        except Exception as exc:
+            logger.warning("Failed to load local repo credential vault: %s", str(exc)[:120])
+
+    def _save_repo_credentials(self):
+        try:
+            os.makedirs(self.vault_dir, exist_ok=True)
+            entries: Dict[str, Dict[str, str]] = {}
+            for rk, meta in self.saved_repo_tokens.items():
+                raw_json = json.dumps(meta).encode("utf-8")
+                entries[rk] = {
+                    "b64": base64.b64encode(raw_json).decode("ascii"),
+                    "updated_at": meta.get("saved_at", ""),
+                }
+            with open(self.repo_creds_file, "w", encoding="utf-8") as fh:
+                json.dump({"version": 1, "entries": entries}, fh, indent=2)
+        except Exception as exc:
+            logger.warning("Failed to persist local repo credential vault: %s", str(exc)[:120])
+
+    def save_repo_credentials(self, repo_url: str, auth_val: str, username: str = "") -> None:
+        rk = self._norm_repo_key(repo_url)
+        clean_val = (auth_val or "").strip()
+        if not rk or not clean_val:
+            return
+        self.saved_repo_tokens[rk] = {
+            "auth_val": clean_val,
+            "username": (username or "").strip(),
+            "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        self._save_repo_credentials()
+        for p in self.projects:
+            if p.repo_url and self._norm_repo_key(p.repo_url) == rk:
+                p.has_saved_auth = True
+        self._save_persisted_state()
+
+    def get_repo_credentials(self, repo_url: str) -> Optional[Dict[str, str]]:
+        rk = self._norm_repo_key(repo_url)
+        if not rk:
+            return None
+        return self.saved_repo_tokens.get(rk)
+
+    def has_repo_credentials(self, repo_url: str) -> bool:
+        rk = self._norm_repo_key(repo_url)
+        return bool(rk and rk in self.saved_repo_tokens)
 
     def _init_default_queries(self):
         lang_map = {
@@ -1393,11 +1469,16 @@ class EnterpriseManager:
             except Exception:
                 pass
 
-    def set_active_scan_target(self, resolved_path: str, tech_stack: Optional[List[str]] = None) -> ProjectConfig:
+    def set_active_scan_target(
+        self,
+        resolved_path: str,
+        tech_stack: Optional[List[str]] = None,
+        repo_meta: Optional[Dict[str, Any]] = None,
+    ) -> ProjectConfig:
         """
         Synchronizes the active project in `self.projects` whenever a scan runs on `resolved_path`,
         so every review page (Projects Hub, Deep Dive, Remediation IDE, RACI, ASPM) displays the
-        exact application currently under review.
+        exact application currently under review. Supports both local paths and cloned GitHub/GitLab/Bitbucket repos.
         """
         norm_target = os.path.abspath(resolved_path)
         base_name = os.path.basename(norm_target) or norm_target
@@ -1409,31 +1490,78 @@ class EnterpriseManager:
             ]
         matched_proj: Optional[ProjectConfig] = None
 
+        meta_repo_url = str((repo_meta or {}).get("repo_url") or "").strip()
+        meta_repo_key = self._norm_repo_key(meta_repo_url) if meta_repo_url else ""
+        meta_branch = str((repo_meta or {}).get("branch") or "main").strip() or "main"
+        meta_scm = str((repo_meta or {}).get("scm_provider") or "LOCAL").strip().upper()
+        meta_display = str((repo_meta or {}).get("display_name") or "").strip()
+        meta_private = bool((repo_meta or {}).get("is_private", False))
+        meta_has_saved = bool((repo_meta or {}).get("has_saved_auth", False)) or (
+            self.has_repo_credentials(meta_repo_url) if meta_repo_url else False
+        )
+
         for p in self.projects:
             p_norm = os.path.abspath(p.target_path) if p.target_path else ""
-            if p_norm.lower() == norm_target.lower():
+            same_repo = bool(
+                meta_repo_key
+                and p.repo_url
+                and self._norm_repo_key(p.repo_url) == meta_repo_key
+                and (p.branch or "main") == meta_branch
+            )
+            if p_norm.lower() == norm_target.lower() or same_repo:
                 p.is_active = True
                 matched_proj = p
             else:
                 p.is_active = False
 
+        if matched_proj and repo_meta:
+            old_target = matched_proj.target_path
+            if old_target and os.path.abspath(old_target).lower() != norm_target.lower():
+                old_k = self._norm_project_key(old_target)
+                new_k = self._norm_project_key(norm_target)
+                if old_k in self.project_scan_cache and new_k not in self.project_scan_cache:
+                    migrated_entry = dict(self.project_scan_cache[old_k])
+                    migrated_entry["project_path"] = norm_target
+                    self.project_scan_cache[new_k] = migrated_entry
+            matched_proj.target_path = norm_target
+            if meta_scm in ("GITHUB", "GITLAB", "BITBUCKET"):
+                matched_proj.scm_provider = meta_scm  # type: ignore
+            if meta_repo_url:
+                matched_proj.repo_url = meta_repo_url
+            matched_proj.branch = meta_branch
+            matched_proj.is_private_repo = meta_private or matched_proj.is_private_repo
+            matched_proj.has_saved_auth = meta_has_saved or matched_proj.has_saved_auth
+            if meta_display and matched_proj.name.startswith("remote_"):
+                matched_proj.name = meta_display
+            if tech_stack:
+                matched_proj.languages = tech_stack
+            self._save_persisted_state()
+            return matched_proj
+
         if not matched_proj:
-            slug = re.sub(r"[^a-z0-9]+", "-", base_name.lower()).strip("-") or "workspace"
+            proj_display_name = meta_display or base_name
+            slug = re.sub(r"[^a-z0-9]+", "-", proj_display_name.lower()).strip("-") or "workspace"
+            scm_prov = meta_scm if meta_scm in ("GITHUB", "GITLAB", "BITBUCKET") else "LOCAL"
+            desc_text = (
+                f"{'Private' if meta_private else 'Public'} {scm_prov} repository ({meta_repo_url} @ {meta_branch})"
+                if meta_repo_url
+                else f"Scanned local application at {norm_target}"
+            )
             matched_proj = ProjectConfig(
                 id=f"proj-{slug}",
-                name=base_name,
-                description=f"Scanned local application at {norm_target}",
-                scm_provider="LOCAL",
-                repo_url="",
-                branch="main",
+                name=proj_display_name,
+                description=desc_text,
+                scm_provider=scm_prov,  # type: ignore
+                repo_url=meta_repo_url,
+                branch=meta_branch,
                 target_path=norm_target,
                 preset_id=self.active_preset_id or "preset-optimized",
                 override_global_settings=False,
                 custom_engines=list(self.enabled_engines),
                 automation=ProjectAutomationConfig(
-                    auto_scan_on_push=False,
-                    auto_scan_on_pr=False,
-                    target_branches=["main"],
+                    auto_scan_on_push=bool(meta_repo_url),
+                    auto_scan_on_pr=bool(meta_repo_url),
+                    target_branches=[meta_branch],
                     webhook_url="",
                     last_triggered_at=None,
                     last_trigger_event=None
@@ -1450,9 +1578,12 @@ class EnterpriseManager:
                 iac_count=0,
                 languages=tech_stack or [],
                 last_scan_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                is_active=True
+                is_active=True,
+                is_private_repo=meta_private,
+                has_saved_auth=meta_has_saved,
             )
             self.projects.insert(0, matched_proj)
+            self._save_persisted_state()
         elif tech_stack:
             matched_proj.languages = tech_stack
 
@@ -3244,12 +3375,38 @@ class EnterpriseManager:
                     self.active_user_id = data["active_user_id"]
                 if "account_audit_log" in data and isinstance(data["account_audit_log"], list):
                     self.account_audit_log = [e for e in data["account_audit_log"] if isinstance(e, dict)]
+                if "registered_projects" in data and isinstance(data["registered_projects"], list):
+                    existing_ids = {p.id for p in self.projects}
+                    existing_repos = {
+                        self._norm_repo_key(p.repo_url) for p in self.projects if p.repo_url
+                    }
+                    for p_dict in reversed(data["registered_projects"]):
+                        if not isinstance(p_dict, dict):
+                            continue
+                        try:
+                            restored = ProjectConfig(**p_dict)
+                            restored.is_active = False
+                            if restored.repo_url:
+                                restored.has_saved_auth = self.has_repo_credentials(restored.repo_url)
+                            rk = self._norm_repo_key(restored.repo_url) if restored.repo_url else ""
+                            if restored.id not in existing_ids and (not rk or rk not in existing_repos):
+                                self.projects.insert(1, restored)
+                                existing_ids.add(restored.id)
+                                if rk:
+                                    existing_repos.add(rk)
+                        except Exception:
+                            pass
         except Exception as e:
             logger.warning(f"Failed to load persisted integration hub state: {e}")
 
     def _save_persisted_state(self):
         try:
             os.makedirs(self.data_dir, exist_ok=True)
+            scm_and_custom_projects = [
+                p.model_dump()
+                for p in self.projects
+                if p.scm_provider != "LOCAL" or bool(p.repo_url)
+            ][:30]
             payload = {
                 "config": self.integration_config.model_dump(),
                 "tickets": [t.model_dump() for t in self.tickets],
@@ -3261,6 +3418,7 @@ class EnterpriseManager:
                 "active_account_id": self.active_account_id,
                 "active_user_id": self.active_user_id,
                 "account_audit_log": self.account_audit_log[:40],
+                "registered_projects": scm_and_custom_projects,
                 "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
             with open(self.state_file, "w", encoding="utf-8") as f:

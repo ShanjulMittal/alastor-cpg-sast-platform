@@ -2,16 +2,13 @@
 
 import React, { useState } from "react";
 import { useAuditStore } from "@/store/useAuditStore";
-import { ProjectConfig } from "@/types/cpg";
+import { GitHubRepoVerifyResponse, ProjectConfig } from "@/types/cpg";
 import {
   FolderGit2,
   GitBranch,
-  GitPullRequest,
-  GitCommit,
   ShieldAlert,
   Flame,
   Plus,
-  Play,
   Settings,
   Webhook,
   CheckCircle2,
@@ -21,21 +18,28 @@ import {
   X,
   Clock,
   Eye,
+  EyeOff,
   RefreshCw,
   GitCompare,
+  Lock,
+  Unlock,
+  KeyRound,
+  Loader2,
+  ExternalLink,
 } from "lucide-react";
 
 export function ProjectsHubView() {
   const projects = useAuditStore((s) => s.projects);
   const activateProject = useAuditStore((s) => s.activateProject);
   const createProject = useAuditStore((s) => s.createProject);
+  const verifyGitHubRepo = useAuditStore((s) => s.verifyGitHubRepo);
   const setWorkspaceViewMode = useAuditStore((s) => s.setWorkspaceViewMode);
   const setSettingsModalOpen = useAuditStore((s) => s.setSettingsModalOpen);
   const setIntegrationModalOpen = useAuditStore((s) => s.setIntegrationModalOpen);
   const isScanning = useAuditStore((s) => s.isScanning);
 
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
-  const [scmProvider, setScmProvider] = useState<"GITHUB" | "GITLAB" | "BITBUCKET" | "LOCAL">("LOCAL");
+  const [scmProvider, setScmProvider] = useState<"GITHUB" | "GITLAB" | "BITBUCKET" | "LOCAL">("GITHUB");
   const [projName, setProjName] = useState("");
   const [projDescription, setProjDescription] = useState("");
   const [repoUrl, setRepoUrl] = useState("");
@@ -43,25 +47,152 @@ export function ProjectsHubView() {
   const [targetPath, setTargetPath] = useState("");
   const [presetId, setPresetId] = useState("preset-optimized");
 
+  // GitHub Public / Private Import Auth State
+  const [isPrivateRepo, setIsPrivateRepo] = useState(false);
+  const [authToken, setAuthToken] = useState("");
+  const [authUsername, setAuthUsername] = useState("");
+  const [saveToken, setSaveToken] = useState(true);
+  const [showAuthToken, setShowAuthToken] = useState(false);
+  const [runScanImmediately, setRunScanImmediately] = useState(true);
+  const [isSubmittingImport, setIsSubmittingImport] = useState(false);
+  const [isVerifyingImportRepo, setIsVerifyingImportRepo] = useState(false);
+  const [importVerifyResult, setImportVerifyResult] = useState<GitHubRepoVerifyResponse | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+
+  const deriveRepoDisplayName = (rawUrl: string): string => {
+    const clean = rawUrl.trim().replace(/\.git$/i, "").replace(/\/+$/, "");
+    const parts = clean.split("/").filter(Boolean);
+    if (parts.length >= 2) {
+      return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
+    }
+    return parts[parts.length - 1] || "";
+  };
+
+  const handleVerifyImportRepo = async () => {
+    if (!repoUrl.trim()) {
+      setImportError("Paste a repository URL first (e.g. https://github.com/owner/repo).");
+      return;
+    }
+    setImportError(null);
+    setIsVerifyingImportRepo(true);
+    try {
+      const res = await verifyGitHubRepo({
+        repo_url: repoUrl.trim(),
+        branch: defaultBranch.trim() || undefined,
+        auth_token: authToken.trim() || undefined,
+        auth_username: authUsername.trim() || undefined,
+      });
+      setImportVerifyResult(res);
+      if (res) {
+        if (res.full_name && !projName.trim()) {
+          setProjName(res.full_name);
+        }
+        if (res.default_branch) {
+          setDefaultBranch(res.default_branch);
+        }
+        if (res.is_private === true || (res.requires_auth && !res.accessible)) {
+          setIsPrivateRepo(true);
+        } else if (res.is_private === false) {
+          setIsPrivateRepo(false);
+        }
+      }
+    } finally {
+      setIsVerifyingImportRepo(false);
+    }
+  };
+
   const handleImportSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!projName.trim() || !targetPath.trim()) return;
-    await createProject({
-      name: projName.trim(),
-      description: projDescription.trim() || `Local project directory at ${targetPath.trim()}`,
-      scm_provider: scmProvider,
-      repo_url: scmProvider === "LOCAL" ? "" : repoUrl.trim(),
-      branch: defaultBranch || "main",
-      target_path: targetPath.trim(),
-      preset_id: presetId,
-      auto_scan_on_push: false,
-      auto_scan_on_pr: false,
-    });
-    setProjName("");
-    setProjDescription("");
-    setRepoUrl("");
-    setTargetPath("");
-    setIsImportModalOpen(false);
+    setImportError(null);
+
+    if (scmProvider === "LOCAL") {
+      if (!projName.trim() || !targetPath.trim()) {
+        setImportError("Project Display Name and Local Filesystem Path are required.");
+        return;
+      }
+      setIsSubmittingImport(true);
+      try {
+        const res = await createProject({
+          name: projName.trim(),
+          description: projDescription.trim() || `Local project directory at ${targetPath.trim()}`,
+          scm_provider: "LOCAL",
+          repo_url: "",
+          branch: defaultBranch || "main",
+          target_path: targetPath.trim(),
+          preset_id: presetId,
+          auto_scan_on_push: false,
+          auto_scan_on_pr: false,
+          run_scan_immediately: runScanImmediately,
+        });
+        if (!res.ok) {
+          setImportError(res.error || "Failed to register local project.");
+          return;
+        }
+        setProjName("");
+        setProjDescription("");
+        setTargetPath("");
+        setIsImportModalOpen(false);
+      } finally {
+        setIsSubmittingImport(false);
+      }
+      return;
+    }
+
+    // Remote GitHub / GitLab / Bitbucket Repository Import
+    const cleanUrl = repoUrl.trim();
+    if (!cleanUrl) {
+      setImportError("Please paste the GitHub / Git repository URL.");
+      return;
+    }
+    if (isPrivateRepo && !authToken.trim() && !importVerifyResult?.has_saved_token) {
+      setImportError(
+        "Private repository selected: please provide a Personal Access Token (ghp_... or github_pat_...)."
+      );
+      return;
+    }
+
+    const effectiveName = projName.trim() || deriveRepoDisplayName(cleanUrl) || "Remote Git Repository";
+    setIsSubmittingImport(true);
+    try {
+      const res = await createProject({
+        name: effectiveName,
+        description:
+          projDescription.trim() ||
+          `${isPrivateRepo ? "Private" : "Public"} ${scmProvider} repository (${cleanUrl})`,
+        scm_provider: scmProvider,
+        repo_url: cleanUrl,
+        branch: defaultBranch.trim() || "main",
+        target_path: "",
+        preset_id: presetId,
+        auto_scan_on_push: false,
+        auto_scan_on_pr: false,
+        is_private_repo: isPrivateRepo,
+        auth_token: isPrivateRepo ? authToken.trim() || undefined : undefined,
+        auth_username: isPrivateRepo ? authUsername.trim() || undefined : undefined,
+        save_token: isPrivateRepo ? saveToken : false,
+        run_scan_immediately: runScanImmediately,
+      });
+
+      if (!res.ok) {
+        if (res.authRequired) {
+          setIsPrivateRepo(true);
+        }
+        setImportError(res.error || "Failed to clone or import remote repository.");
+        return;
+      }
+
+      setProjName("");
+      setProjDescription("");
+      setRepoUrl("");
+      setAuthToken("");
+      setImportVerifyResult(null);
+      setIsImportModalOpen(false);
+      if (runScanImmediately) {
+        setWorkspaceViewMode("DEEP_DIVE");
+      }
+    } finally {
+      setIsSubmittingImport(false);
+    }
   };
 
   const getRiskBadge = (proj: ProjectConfig) => {
@@ -128,10 +259,10 @@ export function ProjectsHubView() {
             <div className="space-y-1">
               <div className="flex items-center gap-2">
                 <span className="px-2 py-0.5 rounded-full bg-rose-950 text-amber-300 border border-rose-700 text-[10px] font-mono font-bold uppercase tracking-wider">
-                  ALASTOR • Local Project Registry
+                  ALASTOR • GitHub &amp; Local Project Registry
                 </span>
                 <span className="text-xs text-zinc-400 font-mono">
-                  • Real On-Disk SAST / SCA / IaC Scanning
+                  • Public URL Paste • Private PAT Auth • On-Disk SAST / SCA / IaC
                 </span>
               </div>
               <h1 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2">
@@ -139,8 +270,8 @@ export function ProjectsHubView() {
                 Project Management &amp; Security Posture Hub
               </h1>
               <p className="text-xs text-zinc-400 max-w-2xl">
-                Register and scan local project directories on disk. Unscanned directories show{" "}
-                <code className="text-zinc-200">0</code> findings until you run an actual scan.
+                Import <b className="text-emerald-300">Open / Public GitHub repositories</b> by simply pasting the URL, connect{" "}
+                <b className="text-amber-300">Private repositories</b> with a Personal Access Token, or register local directories on disk.
               </p>
             </div>
           </div>
@@ -164,11 +295,16 @@ export function ProjectsHubView() {
             </button>
             <button
               type="button"
-              onClick={() => setIsImportModalOpen(true)}
-              className="px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-cyan-950/60 transition-all"
+              onClick={() => {
+                setImportError(null);
+                setImportVerifyResult(null);
+                setScmProvider("GITHUB");
+                setIsImportModalOpen(true);
+              }}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 via-cyan-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-cyan-950/60 transition-all"
             >
               <Plus className="w-4 h-4" />
-              <span>Add Local Project</span>
+              <span>Import GitHub / Local Project</span>
             </button>
           </div>
         </div>
@@ -249,12 +385,41 @@ export function ProjectsHubView() {
                 }`}
               >
                 <div>
-                  {/* Top Row: SCM Badge + Risk Enumeration Badge */}
-                  <div className="flex items-center justify-between gap-2 mb-3">
-                    <div className="flex items-center gap-1.5">
+                  {/* Top Row: SCM Badge + Visibility + Risk Enumeration Badge */}
+                  <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="px-2 py-0.5 rounded bg-zinc-950 border border-zinc-700 text-[10px] font-mono font-bold text-cyan-300">
                         {proj.scm_provider}
                       </span>
+                      {proj.scm_provider !== "LOCAL" && (
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border flex items-center gap-1 ${
+                            proj.is_private_repo
+                              ? "bg-amber-950/80 border-amber-700 text-amber-300"
+                              : "bg-emerald-950/80 border-emerald-700 text-emerald-300"
+                          }`}
+                        >
+                          {proj.is_private_repo ? (
+                            <>
+                              <Lock className="w-2.5 h-2.5" />
+                              <span>PRIVATE</span>
+                            </>
+                          ) : (
+                            <>
+                              <Unlock className="w-2.5 h-2.5" />
+                              <span>PUBLIC</span>
+                            </>
+                          )}
+                        </span>
+                      )}
+                      {proj.is_private_repo && proj.has_saved_auth && (
+                        <span
+                          title="Personal Access Token stored in git-ignored local vault for 1-click Re-Scan"
+                          className="px-1.5 py-0.5 rounded bg-indigo-950/80 border border-indigo-700 text-indigo-300 text-[9px] font-mono font-bold"
+                        >
+                          AUTH SAVED
+                        </span>
+                      )}
                       <span className="flex items-center gap-1 text-[11px] font-mono text-zinc-400 bg-zinc-950 px-2 py-0.5 rounded border border-zinc-800">
                         <GitBranch className="w-3 h-3 text-indigo-400" />
                         {proj.branch}
@@ -273,10 +438,22 @@ export function ProjectsHubView() {
                     </span>
                   </div>
 
-                  {/* Project Title & Local Path */}
+                  {/* Project Title, Remote Repo URL & Local Path */}
                   <h2 className="text-base font-bold text-white flex items-center justify-between">
                     <span className="truncate">{proj.name}</span>
                   </h2>
+                  {proj.repo_url && (
+                    <a
+                      href={proj.repo_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[11px] font-mono text-indigo-400 hover:text-indigo-300 truncate mt-0.5 flex items-center gap-1"
+                      title={proj.repo_url}
+                    >
+                      <ExternalLink className="w-3 h-3 shrink-0" />
+                      <span className="truncate">{proj.repo_url}</span>
+                    </a>
+                  )}
                   <p className="text-[11px] font-mono text-zinc-400 truncate mt-0.5" title={proj.target_path}>
                     {proj.target_path}
                   </p>
@@ -450,15 +627,15 @@ export function ProjectsHubView() {
         </div>
       </div>
 
-      {/* Add Local Project Modal */}
+      {/* Import GitHub (Public URL / Private Token) or Local Project Modal */}
       {isImportModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-zinc-950 border border-zinc-800 rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden">
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-zinc-950 border border-zinc-800 rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden my-auto">
             <div className="px-5 py-4 bg-zinc-900 border-b border-zinc-800 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <FolderGit2 className="w-4 h-4 text-cyan-400" />
                 <span className="text-sm font-bold text-white">
-                  Add Local Project Directory
+                  Import GitHub Repository or Local Project
                 </span>
               </div>
               <button
@@ -470,17 +647,20 @@ export function ProjectsHubView() {
               </button>
             </div>
 
-            <form onSubmit={handleImportSubmit} className="p-5 space-y-4 text-xs">
+            <form onSubmit={handleImportSubmit} className="p-5 space-y-4 text-xs max-h-[82vh] overflow-y-auto">
               <div>
                 <label className="block text-[11px] font-mono uppercase text-zinc-400 mb-1.5">
-                  1. Source Type
+                  1. Source Provider
                 </label>
                 <div className="grid grid-cols-4 gap-2">
-                  {(["LOCAL", "GITHUB", "GITLAB", "BITBUCKET"] as const).map((scm) => (
+                  {(["GITHUB", "GITLAB", "BITBUCKET", "LOCAL"] as const).map((scm) => (
                     <button
                       type="button"
                       key={scm}
-                      onClick={() => setScmProvider(scm)}
+                      onClick={() => {
+                        setScmProvider(scm);
+                        setImportError(null);
+                      }}
                       className={`py-2 px-3 rounded-lg border font-mono text-xs font-bold transition-all ${
                         scmProvider === scm
                           ? "bg-cyan-950 border-cyan-500 text-cyan-300"
@@ -493,36 +673,237 @@ export function ProjectsHubView() {
                 </div>
               </div>
 
-              {scmProvider !== "LOCAL" && (
-                <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-700/70 text-[11px] text-amber-200 space-y-1">
-                  <div className="font-mono font-bold uppercase text-amber-300">
-                    Remote Cloud Clone ({scmProvider}) — Not Working For Now
+              {importError && (
+                <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-700/80 flex items-start gap-2 text-rose-200">
+                  <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <div className="leading-relaxed">
+                    <div className="font-bold text-rose-300">Repository Import / Auth Notice</div>
+                    <div className="text-[11px] mt-0.5">{importError}</div>
                   </div>
-                  <p className="text-zinc-300">
-                    Direct remote cloud repository cloning and OAuth repo listing are{" "}
-                    <b>not working for now</b>. Please clone the repository to your machine first and
-                    provide its local filesystem path below.
-                  </p>
+                </div>
+              )}
+
+              {scmProvider !== "LOCAL" ? (
+                <>
+                  {/* Public vs Private Toggle */}
+                  <div>
+                    <label className="block text-[11px] font-mono uppercase text-zinc-400 mb-1.5">
+                      2. Repository Visibility &amp; Authentication
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsPrivateRepo(false);
+                          setImportError(null);
+                        }}
+                        className={`p-3 rounded-xl border text-left transition-all flex items-start gap-2.5 ${
+                          !isPrivateRepo
+                            ? "bg-emerald-950/35 border-emerald-500/80"
+                            : "bg-zinc-900/50 border-zinc-800 hover:border-zinc-700"
+                        }`}
+                      >
+                        <Unlock className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                        <div>
+                          <div className="font-bold text-zinc-100 flex items-center gap-1.5">
+                            <span>Open / Public Repo</span>
+                            <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700">
+                              PASTE URL ONLY
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-zinc-400 mt-0.5">
+                            No token required — just paste the URL and clone &amp; scan.
+                          </p>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsPrivateRepo(true);
+                          setImportError(null);
+                        }}
+                        className={`p-3 rounded-xl border text-left transition-all flex items-start gap-2.5 ${
+                          isPrivateRepo
+                            ? "bg-amber-950/35 border-amber-500/80"
+                            : "bg-zinc-900/50 border-zinc-800 hover:border-zinc-700"
+                        }`}
+                      >
+                        <Lock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                        <div>
+                          <div className="font-bold text-zinc-100 flex items-center gap-1.5">
+                            <span>Private Repo</span>
+                            <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-700">
+                              TOKEN REQUIRED
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-zinc-400 mt-0.5">
+                            Authenticate securely with a GitHub / GitLab Personal Access Token.
+                          </p>
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Repository URL + Verify Button */}
+                  <div>
+                    <label className="block text-[11px] font-mono text-zinc-300 mb-1">
+                      {scmProvider} Repository URL *
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        required
+                        value={repoUrl}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setRepoUrl(val);
+                          setImportVerifyResult(null);
+                          setImportError(null);
+                          if (!projName.trim() && val.includes("/")) {
+                            const guessed = deriveRepoDisplayName(val);
+                            if (guessed) setProjName(guessed);
+                          }
+                        }}
+                        placeholder="https://github.com/owner/repository"
+                        className="flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-100 font-mono focus:outline-none focus:border-cyan-500"
+                      />
+                      <button
+                        type="button"
+                        disabled={isVerifyingImportRepo || !repoUrl.trim()}
+                        onClick={handleVerifyImportRepo}
+                        className="px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 border border-zinc-700 text-zinc-200 font-semibold flex items-center gap-1.5 shrink-0"
+                      >
+                        {isVerifyingImportRepo ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                        ) : (
+                          <CheckCircle2 className="w-3.5 h-3.5 text-cyan-400" />
+                        )}
+                        <span>Verify</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {importVerifyResult && (
+                    <div
+                      className={`p-2.5 rounded-xl border text-[11px] ${
+                        importVerifyResult.accessible
+                          ? "bg-emerald-950/30 border-emerald-700/70 text-emerald-200"
+                          : "bg-amber-950/40 border-amber-700/80 text-amber-200"
+                      }`}
+                    >
+                      <span className="font-bold font-mono mr-2">
+                        {importVerifyResult.is_private === true
+                          ? "[PRIVATE 🔒]"
+                          : importVerifyResult.is_private === false
+                          ? "[PUBLIC 🌐]"
+                          : "[REMOTE]"}
+                      </span>
+                      {importVerifyResult.message}
+                    </div>
+                  )}
+
+                  {/* Private Repo Token Inputs */}
+                  {isPrivateRepo && (
+                    <div className="p-3.5 rounded-xl bg-amber-950/20 border border-amber-700/50 space-y-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                        <div className="sm:col-span-2">
+                          <label className="block text-[11px] font-mono text-amber-300 mb-1 flex items-center gap-1.5">
+                            <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Personal Access Token (PAT) *</span>
+                          </label>
+                          <div className="relative flex items-center">
+                            <input
+                              type={showAuthToken ? "text" : "password"}
+                              value={authToken}
+                              onChange={(e) => {
+                                setAuthToken(e.target.value);
+                                setImportError(null);
+                              }}
+                              placeholder={
+                                importVerifyResult?.has_saved_token
+                                  ? "Saved token found in local vault (leave blank to reuse)"
+                                  : "ghp_... or github_pat_... (Contents: Read-only)"
+                              }
+                              autoComplete="off"
+                              className="w-full bg-zinc-950 border border-amber-600/60 rounded-lg pl-3 pr-9 py-2 text-xs text-white font-mono focus:outline-none focus:border-amber-400"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowAuthToken((v) => !v)}
+                              className="absolute right-2.5 text-zinc-400 hover:text-zinc-200"
+                            >
+                              {showAuthToken ? (
+                                <EyeOff className="w-3.5 h-3.5" />
+                              ) : (
+                                <Eye className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-mono text-zinc-300 mb-1">
+                            Username (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            value={authUsername}
+                            onChange={(e) => setAuthUsername(e.target.value)}
+                            placeholder="x-access-token"
+                            autoComplete="off"
+                            className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-amber-400"
+                          />
+                        </div>
+                      </div>
+
+                      <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={saveToken}
+                          onChange={(e) => setSaveToken(e.target.checked)}
+                          className="rounded border-zinc-700 bg-zinc-950 text-amber-500"
+                        />
+                        <span>
+                          Save token locally in git-ignored <code>.alastor_vault</code> so <b>Re-Scan &amp; Track</b> works with 1 click
+                        </span>
+                      </label>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div>
+                  <label className="block text-[11px] font-mono text-zinc-300 mb-1">
+                    Local Filesystem Directory Path *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={targetPath}
+                    onChange={(e) => setTargetPath(e.target.value)}
+                    placeholder="e.g. C:\Projects\MyService"
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 font-mono focus:outline-none focus:border-cyan-500"
+                  />
                 </div>
               )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[11px] font-mono text-zinc-300 mb-1">
-                    Project Display Name *
+                    Project Display Name {scmProvider === "LOCAL" ? "*" : "(Auto-detected from URL)"}
                   </label>
                   <input
                     type="text"
-                    required
+                    required={scmProvider === "LOCAL"}
                     value={projName}
                     onChange={(e) => setProjName(e.target.value)}
-                    placeholder="Enter project name"
+                    placeholder={scmProvider === "LOCAL" ? "Enter project name" : "owner/repository"}
                     className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500"
                   />
                 </div>
                 <div>
                   <label className="block text-[11px] font-mono text-zinc-300 mb-1">
-                    Branch Label
+                    Branch / Tag
                   </label>
                   <input
                     type="text"
@@ -532,20 +913,6 @@ export function ProjectsHubView() {
                     className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-cyan-500"
                   />
                 </div>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-mono text-zinc-300 mb-1">
-                  Local Filesystem Directory Path *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={targetPath}
-                  onChange={(e) => setTargetPath(e.target.value)}
-                  placeholder="e.g. C:\Projects\MyService"
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 font-mono focus:outline-none focus:border-cyan-500"
-                />
               </div>
 
               <div>
@@ -572,24 +939,22 @@ export function ProjectsHubView() {
                 </select>
               </div>
 
-              <div className="p-3 rounded-xl bg-zinc-900/80 border border-zinc-800 space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-mono uppercase text-zinc-400 font-bold">
-                    Automated Cloud Push / PR Webhooks
-                  </span>
-                  <span className="px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-700 text-[9px] font-mono font-bold">
-                    NOT WORKING FOR NOW
-                  </span>
-                </div>
-                <p className="text-[11px] text-zinc-400">
-                  Incoming cloud webhooks require a publicly routable HTTPS endpoint and are not active on{" "}
-                  <code>localhost</code>.
-                </p>
-              </div>
+              <label className="flex items-center gap-2 text-xs text-cyan-200 cursor-pointer bg-cyan-950/25 border border-cyan-800/60 p-3 rounded-xl">
+                <input
+                  type="checkbox"
+                  checked={runScanImmediately}
+                  onChange={(e) => setRunScanImmediately(e.target.checked)}
+                  className="rounded border-zinc-700 bg-zinc-900 text-cyan-500"
+                />
+                <span>
+                  <b>{scmProvider === "LOCAL" ? "Run Full CPG Scan Immediately" : "Clone Repository & Run Full CPG + SBOM + STRIDE Scan Immediately"}</b>
+                </span>
+              </label>
 
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button
                   type="button"
+                  disabled={isSubmittingImport}
                   onClick={() => setIsImportModalOpen(false)}
                   className="px-4 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800"
                 >
@@ -597,9 +962,27 @@ export function ProjectsHubView() {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-bold"
+                  disabled={isSubmittingImport}
+                  className={`px-4 py-2 rounded-lg text-white font-bold flex items-center gap-2 ${
+                    scmProvider !== "LOCAL" && isPrivateRepo
+                      ? "bg-amber-600 hover:bg-amber-500"
+                      : "bg-cyan-600 hover:bg-cyan-500"
+                  } disabled:opacity-50`}
                 >
-                  Register Local Project
+                  {isSubmittingImport ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>{scmProvider === "LOCAL" ? "Registering..." : "Cloning & Scanning..."}</span>
+                    </>
+                  ) : (
+                    <span>
+                      {scmProvider === "LOCAL"
+                        ? "Register Local Project"
+                        : isPrivateRepo
+                        ? "Authenticate, Clone & Import"
+                        : "Clone & Import Public Repo"}
+                    </span>
+                  )}
                 </button>
               </div>
             </form>

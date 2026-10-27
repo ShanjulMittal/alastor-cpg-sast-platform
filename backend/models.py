@@ -173,6 +173,39 @@ class SiteExtractResponse(BaseModel):
 
 class ScanRequest(BaseModel):
     target_path: str
+    branch: Optional[str] = None
+    repo_visibility: Literal["AUTO", "PUBLIC", "PRIVATE"] = "AUTO"
+    auth_token: Optional[str] = None
+    auth_username: Optional[str] = None
+    save_token: bool = False
+
+
+class GitHubRepoVerifyRequest(BaseModel):
+    repo_url: str
+    branch: Optional[str] = None
+    auth_token: Optional[str] = None
+    auth_username: Optional[str] = None
+
+
+class GitHubRepoVerifyResponse(BaseModel):
+    valid_url: bool = False
+    provider: Literal["GITHUB", "GITLAB", "BITBUCKET", "RAW_FILE", "OTHER"] = "GITHUB"
+    owner: str = ""
+    repo: str = ""
+    full_name: str = ""
+    normalized_url: str = ""
+    accessible: bool = False
+    is_private: Optional[bool] = None
+    requires_auth: bool = False
+    authenticated: bool = False
+    has_saved_token: bool = False
+    default_branch: str = "main"
+    selected_branch: str = "main"
+    primary_language: Optional[str] = None
+    stars: int = 0
+    size_kb: int = 0
+    description: str = ""
+    message: str = ""
 
 
 class DiscoveredElement(BaseModel):
@@ -226,6 +259,11 @@ class ScanResponse(BaseModel):
     categories: Optional[Dict[str, int]] = None
     tech_stack: Optional[List[str]] = None
     total_app_files: Optional[int] = None
+    scm_provider: Optional[str] = None
+    repo_url: Optional[str] = None
+    branch: Optional[str] = None
+    is_private_repo: Optional[bool] = None
+    display_name: Optional[str] = None
 
 
 class MetricsResponse(BaseModel):
@@ -345,6 +383,8 @@ class ProjectConfig(BaseModel):
     cpg_nodes_count: int = 0
     cpg_edges_count: int = 0
     is_active: bool = False
+    is_private_repo: bool = False
+    has_saved_auth: bool = False
     account_id: str = "acct-enterprise-hq"
     account_name: str = "Enterprise Security HQ"
 
@@ -359,6 +399,11 @@ class CreateProjectRequest(BaseModel):
     preset_id: str = "preset-optimized"
     auto_scan_on_push: bool = True
     auto_scan_on_pr: bool = True
+    is_private_repo: bool = False
+    auth_token: Optional[str] = None
+    auth_username: Optional[str] = None
+    save_token: bool = False
+    run_scan_immediately: bool = False
 
 
 class UpdateProjectAutomationRequest(BaseModel):
