@@ -2,14 +2,15 @@
 
 <img src="./docs/screenshots/alastor_demon_logo.jpg" alt="ALASTOR Mythological Daimon Crest" width="190" />
 
-# ALASTOR (`Ἀλάστωρ`) `v2.6.1`
+# ALASTOR (`Ἀλάστωρ`) `v2.6.2`
 
-### **The Relentless Open-Source Code Property Graph (CPG), Zero-Noise SAST, Live Reachable SCA, CI/CD & IaC, Secret Vault, STRIDE Threat Modeling & Executive ASPM Platform**
+### **The Relentless Open-Source Code Property Graph (CPG), Zero-Noise SAST, Public & Private GitHub Repo Scanner, Live Reachable SCA, CI/CD & IaC, Secret Vault, STRIDE Threat Modeling & Executive ASPM Platform**
 
-*Stop drowning in regex false positives and six-figure SaaS lock-in. Compile your codebase into a mathematical **AST + CFG + DFG + Call Graph** inside **Neo4j** — 100% locally on your own hardware.*
+*Stop drowning in regex false positives and six-figure SaaS lock-in. Paste any GitHub URL or select a local repo to compile your codebase into a mathematical **AST + CFG + DFG + Call Graph** inside **Neo4j** — 100% locally on your own hardware.*
 
-[![Version: v2.6.1 Enterprise](https://img.shields.io/badge/Release-v2.6.1%20Enterprise-7c3aed?style=for-the-badge)](./CHANGELOG.md)
-[![Self-Audit: 0 Findings (18/18 Pass)](https://img.shields.io/badge/Self--Audit-0%20Findings%20(18%2F18%20Pass)-10b981?style=for-the-badge)](./verify_harness.py)
+[![Version: v2.6.2 Enterprise](https://img.shields.io/badge/Release-v2.6.2%20Enterprise-7c3aed?style=for-the-badge)](./CHANGELOG.md)
+[![Self-Audit: 0 Findings (19/19 Pass)](https://img.shields.io/badge/Self--Audit-0%20Findings%20(19%2F19%20Pass)-10b981?style=for-the-badge)](./verify_harness.py)
+[![GitHub Scanner: Public URL & Private PAT](https://img.shields.io/badge/GitHub%20Scanner-Public%20URL%20%26%20Private%20PAT-2563eb?style=for-the-badge)](#-1c-instant-github-repository-scanner--open--public-paste-url-only-vs-private-pat-auth-required)
 [![False Positives: 0% AST-Verified](https://img.shields.io/badge/False%20Positives-0%25%20AST--Verified-059669?style=for-the-badge)](./backend/compiler/ast_parser.py)
 [![Semgrep Pro/OSS Parity: 0/0 Clean](https://img.shields.io/badge/Semgrep%20Pro%20%26%20OSS%20Audit-0%20Findings-06b6d4?style=for-the-badge)](./CHANGELOG.md)
 [![Live SCA: OSV.dev + CPG Reachability](https://img.shields.io/badge/Live%20SCA-OSV.dev%20%2B%20CPG%20Reachability-f59e0b?style=for-the-badge)](./backend/engine/osv_lockfile_scanner.py)
@@ -20,10 +21,11 @@
 <br />
 
 [**⚡ 3-Minute Quick Start**](#-3-minute-quick-start-100-local--sovereign) •
+[**🐙 GitHub Public & Private Scanner**](#-1c-instant-github-repository-scanner--open--public-paste-url-only-vs-private-pat-auth-required) •
 [**🏆 Why Download ALASTOR?**](#-why-security-engineers--developers-switch-to-alastor) •
 [**⚔️ vs. Semgrep / Checkmarx / Snyk**](#️-head-to-head-competitive-benchmark) •
 [**🧠 7-Pass CPG Architecture**](#-compiler-grade-7-pass-cpg-architecture) •
-[**📸 Complete 28-Screen Visual Tour**](#-complete-visual-tour--every-option-module-graph--modal) •
+[**📸 Complete 31-Screen Visual Tour**](#-complete-visual-tour--every-option-module-graph--modal) •
 [**🛡️ All 18 Security Rules**](#️-complete-18-rule-deterministic-security-matrix) •
 [**📖 Full Master SOP**](./docs/ALASTOR_Master_SOP_and_Product_Guide.md)
 
@@ -33,8 +35,8 @@
 
 ![ALASTOR Split Code & CPG Workbench in Alastor Infernal Dark Mythic Mode](./docs/screenshots/shot_03_code_review_dossier_and_diff.png)
 
-> **Named after Alastor (`Ἀλάστωρ` — *"The Unforgetting Avenger"*)**, the ancient Greek mythological spirit of retribution who hunts down hidden corruptions so no flaw escapes judgment, **ALASTOR `v2.6.1`** unifies **8 enterprise security products** into one blazing-fast, air-gap-capable desktop & web workbench:
-> 1. **Inter-Procedural Code Property Graph SAST** (`Tree-Sitter AST + CFG + DFG + :CALLS` over `Neo4j 5 + APOC`)
+> **Named after Alastor (`Ἀλάστωρ` — *"The Unforgetting Avenger"*)**, the ancient Greek mythological spirit of retribution who hunts down hidden corruptions so no flaw escapes judgment, **ALASTOR `v2.6.2`** unifies **8 enterprise security products** into one blazing-fast, air-gap-capable desktop & web workbench:
+> 1. **Inter-Procedural Code Property Graph SAST** (`Tree-Sitter AST + CFG + DFG + :CALLS` over `Neo4j 5 + APOC`) with **1-Click Open/Public & Private GitHub Repo Scanning**
 > 2. **AST-Verified Sanitizer Summary Engine** (`0%` False Positives on custom enterprise path/SSRF/SQLi/log validators)
 > 3. **Live OSV.dev Transitive Lockfile SCA** with **CPG Import Reachability Proof** (`REACHABLE` vs. `DORMANT`)
 > 4. **Infrastructure-as-Code & GitHub Actions CI/CD Pipeline Security** (`Dockerfile`, `Compose`, `.github/workflows/*.yml`)
@@ -47,9 +49,10 @@
 
 ## 🔥 Why Security Engineers & Developers Switch to ALASTOR
 
-| Legacy Scanner Pain Point | How ALASTOR `v2.6.1` Solves It Permanently |
+| Legacy Scanner Pain Point | How ALASTOR `v2.6.2` Solves It Permanently |
 | :--- | :--- |
 | **Regex Noise & Alert Fatigue**<br>*Pattern matchers flag sanitized variables and safe helper wrappers because they cannot verify AST guards across functions.* | **AST-Verified Inter-Procedural Sanitizer Summaries**: ALASTOR inspects the actual AST body of every helper function in your repo and promotes it to `is_sanitizer=True` **only** if it mathematically enforces path confinement (`commonpath` / `is_relative_to`), DNS private-IP SSRF checks (`ipaddress`), or CR/LF stripping. Result: **100% True Positive recall with `0%` False Positives.** |
+| **Friction-Heavy GitHub Onboarding**<br>*Commercial tools demand OAuth org installs, CI runners, or leak PAT tokens inside `.git/config` clone URLs.* | **Instant GitHub Repo Scanner (`Public URL` + `Private PAT`)**: For **Open / Public** repos, just paste the GitHub URL (`https://github.com/owner/repo` or `owner/repo`) and scan with **zero tokens**. For **Private** repos, ALASTOR authenticates via **ephemeral `GIT_CONFIG_*` HTTP `Authorization: Basic` headers** (never stored in clone URLs, `.git/config`, or logs) with pre-flight access verification and optional `.alastor_vault` local persistence for 1-click **`Re-Scan & Track Changes`**. |
 | **Unreachable Dependency CVE Floods**<br>*SCA tools dump 200+ lockfile warnings without checking if your code ever imports the vulnerable library.* | **Live OSV.dev + CPG Import Reachability (`SCA-2`)**: Queries Google's `api.osv.dev` across `package-lock.json` and `requirements.txt`, then cross-references your Neo4j CPG `Import` AST nodes to separate **`RUNTIME REACHABLE`** exploits from **`UNREACHABLE / DORMANT`** transitive noise. |
 | **Cryptic Rule IDs With Zero Fix Guidance**<br>*Developers get a CWE number and waste hours figuring out which upstream line to patch.* | **Best Fix Location (`BFL`) Chokepoint + `- Before` / `+ After` Code Diff**: Computes the single optimal dominance chokepoint line where a 1-line fix neutralizes every downstream sink, paired with copy-pasteable secure replacement code. |
 | **Mandatory Cloud Code Uploads & Per-Seat Pricing**<br>*Commercial SAST/ASPM platforms upload proprietary IP to vendor clouds and charge \$1,000+/dev/year.* | **100% Local-First, Sovereign & MIT Open Source**: Your source code, Neo4j CPG database, secret vault, and SBOM never leave `localhost`. Zero telemetry, zero seat limits, zero license keys. |
@@ -59,9 +62,10 @@
 
 ## ⚔️ Head-to-Head Competitive Benchmark
 
-| Capability | **ALASTOR `v2.6.1`** | **Semgrep OSS** | **Semgrep Pro** | **Checkmarx / Fortify** | **Snyk Code + SCA** |
+| Capability | **ALASTOR `v2.6.2`** | **Semgrep OSS** | **Semgrep Pro** | **Checkmarx / Fortify** | **Snyk Code + SCA** |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Analysis Representation** | **Full CPG (`AST+CFG+DFG+:CALLS`) in Neo4j** | Single-file AST / pattern | Cross-file AST + taint | Proprietary AST/DFG | Proprietary semantic graph |
+| **Direct GitHub Scan (Public URL + Private PAT)** | ✅ **Paste Public URL (`No Token`) + Ephemeral PAT Header** | ⚠️ Manual local `git clone` | ☁️ Cloud GitHub App | ⚠️ Heavy server Git setup | ☁️ Cloud OAuth required |
 | **Custom Helper Sanitizer Body Verification** | ✅ **Automatic AST Verification (`0%` FP)** | ❌ Flags custom helpers | ⚠️ Requires manual rule YAML | ⚠️ Manual custom filters | ❌ Limited custom rules |
 | **Inter-Procedural Route $\rightarrow$ Helper Taint** | ✅ **Built-In (`FastAPI`, `Flask`, `Express`)** | ❌ Intra-procedural only | ✅ Paid Commercial Tier | ✅ Paid Enterprise Tier | ✅ Paid Cloud Tier |
 | **Live Lockfile CVE + CPG Import Reachability** | ✅ **Built-In (`OSV.dev` + AST Imports)** | ❌ No SCA in OSS | ✅ Supply Chain Add-On | ✅ Paid SCA Add-On | ✅ Paid Cloud Tier |
@@ -79,7 +83,8 @@
 
 ```mermaid
 flowchart LR
-    subgraph IN["📂 Target Application / Repo / ZIP / Git URL"]
+    subgraph IN["📂 Target Application / Public Git URL / Private PAT Repo / ZIP"]
+        GIT["GitHub / GitLab / Bitbucket\nPublic URL (No Token) • Private PAT"]
         SRC["Python • JS • TS • TSX"]
         LOCK["package-lock.json • requirements.txt"]
         INFRA["Dockerfile • Compose • .github/workflows"]
@@ -103,7 +108,7 @@ flowchart LR
         ASPM["STRIDE Matrix • CycloneDX v1.5\nEPSS v4 • BFL Chokepoint • RACI"]
     end
 
-    SRC --> P1 --> P2 --> P3 --> P4 --> P5 --> NEO
+    GIT --> SRC --> P1 --> P2 --> P3 --> P4 --> P5 --> NEO
     NEO --> R18 --> ASPM
     LOCK --> OSV --> ASPM
     INFRA --> R18
@@ -113,11 +118,11 @@ flowchart LR
 
 ## 📸 Complete Visual Tour — Every Option, Module, Graph & Modal
 
-Every screenshot below is captured live from **ALASTOR `v2.6.1`** at `2400×1470` Retina resolution scanning a multi-service Python `FastAPI` + `React/TypeScript` + `Docker` + `GitHub Actions` FinTech gateway — showcasing **every menu, workspace, graph mode, sub-tab, modal, and theme** out of the box.
+Every screenshot below is captured live from **ALASTOR `v2.6.2`** at `2400×1470` Retina resolution scanning multi-service Python `FastAPI` + `React/TypeScript` + `Docker` + `GitHub Actions` repositories — showcasing **every menu, Public/Private GitHub repo scanner, workspace, graph mode, sub-tab, modal, and theme** out of the box.
 
 ---
 
-### 🏛️ 1. Mythological Portal Gate, Top 7-Dropdown Menu Bar & Left Activity Rail
+### 🏛️ 1. Mythological Portal Gate, Top 7-Dropdown Menu Bar, GitHub Repo Scanner & Left Activity Rail
 
 #### 1A. ALASTOR Mythological Launch Portal (`Portal Gate`)
 Greets operators with live `Neo4j CPG Connected` telemetry, active project status, **Continuous Track Changes** deltas (`Fixed` / `New` / `Unchanged` since last scan), 1-click **`Go to App (Saved Scan)`**, **`Re-Scan & Track Changes`**, and direct workspace launch cards.
@@ -126,10 +131,19 @@ Greets operators with live `Neo4j CPG Connected` telemetry, active project statu
 
 #### 1B. Desktop-Class 7-Dropdown Menu Bar + Left Side Function Rail
 Navigate effortlessly like a native security IDE:
-- **Top Application Menu Bar** ([`AppMenuBar.tsx`](./frontend/src/components/AppMenuBar.tsx)): `1. File & Scan` • `2. Workspace` • `3. CPG & Graphs` • `4. Threat Model & Secrets` • `5. Rule Engine & Profiles` • `6. Accounts & Users` • `7. Reports & Connectors` — plus live Active Profile, Active Tenant Account, and `Engineer / Management View` badges.
+- **Top Application Menu Bar** ([`AppMenuBar.tsx`](./frontend/src/components/AppMenuBar.tsx)): `1. File & Scan` (including **`Scan GitHub Repo (Public URL / Private Token)...`**) • `2. Workspace` • `3. CPG & Graphs` • `4. Threat Model & Secrets` • `5. Rule Engine & Profiles` • `6. Accounts & Users` • `7. Reports & Connectors` — plus live Active Profile, Active Tenant Account, and `Engineer / Management View` badges.
 - **Left Side Function Rail** ([`LeftFunctionBar.tsx`](./frontend/src/components/LeftFunctionBar.tsx)): 1-click switching across all **8 Enterprise Modules** (`Review`, `Threats`, `Rules`, `Accounts`, `Projects`, `Analytics`, `RACI`, `ASPM`), **Direct Graph & Secret Launchers** (`Secrets`, `Call Graph`, `Entrypoints`), and **Utility Controls** (`Explorer`, `Tickets`, `Ctrl+K`, `Config`).
 
 ![02 - Top Application Menu Bar and Left Side Function Rail](./docs/screenshots/shot_02_top_menu_and_left_rail.png)
+
+#### 1C. Instant GitHub Repository Scanner — Open / Public (Paste URL Only) vs. Private (PAT Auth Required)
+Click **`GitHub Scan`** in the top bar (or `1. File & Scan` $\rightarrow$ `Scan GitHub Repo`) to clone and audit any **GitHub**, **GitLab**, or **Bitbucket** repository directly into a UUID-isolated local sandbox with **DNS/IP SSRF protection**:
+- **🌐 Open / Public Repository (`NO TOKEN`)**: Simply paste `https://github.com/owner/repo` (or shorthand `owner/repo`), optionally click **`Verify Repo Access`** (`POST /api/github/verify-repo`) to confirm public visibility, default branch, and primary language, and hit **`Clone & Scan Repo`** — zero authentication or setup required! If you accidentally paste a private repo URL in Open mode, ALASTOR automatically detects it (`HTTP 401`), switches the modal to **Private Mode**, and prompts for your token.
+- **🔒 Private Repository (`AUTH REQUIRED`)**: Enforces a Personal Access Token (`ghp_...` Classic `repo` scope or `github_pat_...` Fine-Grained `Contents: Read-only`). Credentials are injected **exclusively via ephemeral `GIT_CONFIG_*` HTTP `Authorization: Basic` headers** (`GIT_TERMINAL_PROMPT=0`) — **never embedded in the clone URL, `.git/config`, process argv, or server logs** — with an optional local `.alastor_vault` toggle so **`Re-Scan & Track Changes`** works seamlessly on subsequent commits.
+
+![02b - GitHub Repository Scanner in Open Public Paste-URL-Only Mode](./docs/screenshots/shot_02b_github_public_repo_scanner.png)
+
+![02c - GitHub Repository Scanner in Private PAT Auth Required Mode](./docs/screenshots/shot_02c_github_private_repo_auth.png)
 
 ---
 
@@ -227,10 +241,12 @@ Built for enterprise security teams and MSSPs: isolate organizational enclaves (
 
 ### 📊 6. Module 5, Module 6 & Module 7 — Projects Hub, Compliance Analytics & RACI Governance
 
-#### 6A. Module 5 — Multi-Repository Projects Hub, Git/ZIP Scanner & CI/CD Webhooks (`PROJECTS_HUB`)
-Auto-discovers local workspaces, scans remote `HTTPS` Git URLs or uploaded `.zip`/folder archives inside UUID-isolated sandboxes, persists scan history snapshots (`Scan #1`, `Scan #2`, deltas), and provides ready-to-wire GitHub/GitLab webhook endpoints.
+#### 6A. Module 5 — Multi-Repository Projects Hub, GitHub Public/Private Import & CI/CD Webhooks (`PROJECTS_HUB`)
+Auto-discovers local workspaces, imports **Open / Public GitHub URLs (`Paste URL Only`)** or **Private GitHub / GitLab / Bitbucket repositories (`Token Required`)** with live `[PUBLIC 🌐]` / `[PRIVATE 🔒]` pre-flight detection, scans uploaded `.zip`/folder archives inside UUID-isolated sandboxes, persists scan history snapshots (`Scan #1`, `Scan #2`, deltas) with `.alastor_vault`-backed 1-click **`Re-Scan & Track Changes`**, and provides ready-to-wire CI/CD webhook endpoints.
 
 ![15 - Projects Hub Saved Scans and CI/CD Webhooks](./docs/screenshots/shot_15_projects_hub_and_webhooks.png)
+
+![15b - Projects Hub Import GitHub Repository Modal with Open Public and Private Token Modes](./docs/screenshots/shot_15b_projects_hub_github_import.png)
 
 #### 6B. Module 6 — Deep-Dive Executive Analytics & Regulatory Compliance (`DEEP_DIVE`)
 Real-time severity distributions, scan engine breakdowns (`SAST`, `SCA`, `IaC`), SLA aging buckets, and automated compliance readiness mapping against **`OWASP Top 10 (2021)`**, **`PCI-DSS v4.0`**, **`NIST SP 800-53 Rev. 5`**, and **`SOC 2 Type II`**.
@@ -370,13 +386,37 @@ npm ci
 npm run build
 npm run start
 ```
-Open **`http://localhost:3000`** in Chrome, Edge, Brave, or Firefox — select any local repository, paste a GitHub HTTPS URL, or drag-and-drop a project archive, and click **`Scan Target`**!
+Open **`http://localhost:3000`** in Chrome, Edge, Brave, or Firefox — select any local repository, click **`GitHub Scan`** to paste a Public GitHub URL or scan a Private repo with a PAT, or drag-and-drop a project archive!
+
+### Step 4 — Scanning GitHub Repositories (Public URL vs. Private Token)
+
+| Repo Visibility | UI Workflow (`http://localhost:3000`) | Headless REST API (`http://127.0.0.1:8000`) |
+| :--- | :--- | :--- |
+| **🌐 Open / Public Repo**<br>*(Zero Token Required)* | Click **`GitHub Scan`** $\rightarrow$ keep **`Open / Public Repository (NO TOKEN)`** selected $\rightarrow$ paste `https://github.com/owner/repo` (or `owner/repo`) $\rightarrow$ click **`Clone & Scan Repo`**. | `POST /api/scan` with `{"target_dir": "https://github.com/owner/repo", "repo_visibility": "public"}` |
+| **🔒 Private Repo**<br>*(PAT / Auth Required)* | Click **`GitHub Scan`** $\rightarrow$ switch to **`Private Repository (AUTH REQUIRED)`** $\rightarrow$ paste URL + Personal Access Token (`Classic repo` or `Fine-Grained Contents: Read-only`) $\rightarrow$ click **`Authenticate, Clone & Scan`**. | `POST /api/scan` with `{"target_dir": "https://github.com/org/private-repo", "repo_visibility": "private", "git_auth_token": "<YOUR_PAT>", "save_credentials": true}` |
+
+```bash
+# 1. Pre-flight check any GitHub / GitLab / Bitbucket repo (detects PUBLIC vs PRIVATE, default branch & language)
+curl -X POST http://127.0.0.1:8000/api/github/verify-repo \
+  -H "Content-Type: application/json" \
+  -d '{"repo_url": "https://github.com/ShanjulMittal/alastor-cpg-sast-platform"}'
+
+# 2. Scan an Open / Public GitHub repo (paste URL only — zero token needed)
+curl -X POST http://127.0.0.1:8000/api/scan \
+  -H "Content-Type: application/json" \
+  -d '{"target_dir": "https://github.com/ShanjulMittal/alastor-cpg-sast-platform", "repo_visibility": "public"}'
+
+# 3. Scan a Private GitHub repo (token injected via ephemeral GIT_CONFIG_* HTTP header — never saved in .git/config)
+curl -X POST http://127.0.0.1:8000/api/scan \
+  -H "Content-Type: application/json" \
+  -d '{"target_dir": "https://github.com/your-org/private-service", "repo_visibility": "private", "git_auth_token": "<YOUR_PAT>", "git_branch": "main", "save_credentials": true}'
+```
 
 ---
 
-## 🧪 Zero-Trust Proof: Run the 18-Assertion Autonomous Self-Audit
+## 🧪 Zero-Trust Proof: Run the 19-Assertion Autonomous Self-Audit
 
-Don't just take our word for it. ALASTOR ships with an autonomous end-to-end verification suite ([`verify_harness.py`](./verify_harness.py)) that boots the live CPG pipeline, verifies all **18 security assertions** (including `Assertion S` proving **100% True Positive detection and `0%` False Positive suppression** across sanitized vs. unsanitized endpoints, live OSV CVE reachability, STRIDE counts, RACI Golden Rules, CycloneDX v1.5 SBOM, Multi-Tenant RBAC, and SARIF v2.1.0), and concludes by **scanning ALASTOR's own production codebase (`cpg-sast-platform`) — asserting `0` unpatched vulnerabilities**:
+Don't just take our word for it. ALASTOR ships with an autonomous end-to-end verification suite ([`verify_harness.py`](./verify_harness.py)) that boots the live CPG pipeline, verifies all **19 security assertions** (including `Assertion S` proving **100% True Positive detection and `0%` False Positive suppression** across sanitized vs. unsanitized endpoints, `Assertion T` verifying **Open/Public GitHub URL-only cloning + Private Repo `401` PAT enforcement**, live OSV CVE reachability, STRIDE counts, RACI Golden Rules, CycloneDX v1.5 SBOM, Multi-Tenant RBAC, and SARIF v2.1.0), and concludes by **scanning ALASTOR's own production codebase (`cpg-sast-platform`) — asserting `0` unpatched vulnerabilities**:
 
 ```powershell
 # Windows PowerShell
@@ -388,7 +428,7 @@ Don't just take our word for it. ALASTOR ships with an autonomous end-to-end ver
 
 Expected result:
 ```text
-[PASS] 18 / 18 E2E Enterprise Assertions Verified (100%)
+[PASS] 19 / 19 E2E Enterprise Assertions Verified (100%)
 [PASS] Self-Audit of cpg-sast-platform: 0 Active Findings (SAST: 0, SCA: 0, IaC: 0, Secrets: 0)
 ```
 
@@ -398,11 +438,13 @@ Expected result:
 
 | Export / API Endpoint | Standard / Format | Use Case |
 | :--- | :--- | :--- |
+| `POST /api/github/verify-repo` | **GitHub / Git Remote Pre-Flight JSON** | Verify `public` vs. `private` visibility, default branch, language, and PAT access before cloning |
+| `POST /api/scan` & `POST /api/scan/track-changes` | **Public URL / Private PAT / Local Scan** | Scan local paths, Open/Public Git URLs (zero token), or Private repos (`GIT_CONFIG_*` header auth + delta tracking) |
 | `GET /api/export/sarif` | **OASIS SARIF `v2.1.0`** | Upload directly to **GitHub Advanced Security Code Scanning**, Azure DevOps, or VS Code SARIF Viewer |
 | `GET /api/sast-plus` (`cyclonedx_json`) | **OWASP CycloneDX `v1.5` JSON** | Executive Order 14028 supply-chain compliance, Dependency-Track, & customer procurement audits |
 | `GET /api/export/report?format=html\|md\|json` | **Executive HTML / Markdown / JSON** | Board-ready penetration test & secure code review deliverable with `BFL` diffs |
 | `GET /api/raci-governance` | **PMI / COBIT RACI JSON** | GRC & SOC 2 / ISO 27001 security accountability evidence |
-| `POST /api/scan` & `POST /api/webhooks/{provider}` | **REST JSON + CI/CD Webhooks** | Automated pull-request gating in GitHub Actions, GitLab CI, or Jenkins |
+| `POST /api/webhooks/{provider}` | **REST CI/CD Webhooks** | Automated pull-request gating in GitHub Actions, GitLab CI, or Jenkins |
 
 ---
 
@@ -410,7 +452,8 @@ Expected result:
 
 | Version | Date | Key Milestones |
 | :--- | :---: | :--- |
-| **`v2.6.1`** | **2026-10-25** | **AST-Verified Inter-Procedural Sanitizer Summary Engine (`0%` FP on custom helpers), `for`-loop iterator taint, call-site-routed inter-procedural DFG, DNS/IP SSRF guards, UUID-isolated scan sandboxes, and 100% Semgrep Pro & OSS `0`-finding parity.** |
+| **`v2.6.2`** | **2026-10-27** | **1-Click GitHub Repository Scanner (`Open / Public` Paste-URL-Only with zero token + `Private` PAT-authenticated mode via ephemeral `GIT_CONFIG_*` HTTP headers), pre-flight `POST /api/github/verify-repo` visibility & branch detector, `.alastor_vault` local credential vault for 1-click `Re-Scan & Track Changes`, and 19/19 Self-Audit pass.** |
+| **`v2.6.1`** | 2026-10-25 | AST-Verified Inter-Procedural Sanitizer Summary Engine (`0%` FP on custom helpers), `for`-loop iterator taint, call-site-routed inter-procedural DFG, DNS/IP SSRF guards, UUID-isolated scan sandboxes, and 100% Semgrep Pro & OSS `0`-finding parity. |
 | **`v2.6.0`** | 2026-10-25 | Live `OSV.dev` Lockfile CVE + CPG Import Reachability (`SCA-2`), GitHub Actions CI/CD Scanner (`IAC-3`), Inter-Procedural Route Taint (`RULE-10` Path Traversal, `RULE-11` SSRF, `RULE-12` Log Injection, `RULE-13` Deserialization/Crypto), Sanitizer-Aware SQLi (`RULE-7`), and Cloud/SDK Secret Hunter (`RULE-8`). |
 | **`v2.5.0`** | 2026-10-22 | Desktop Enterprise Shell (`AppMenuBar` + `LeftFunctionBar`), STRIDE Count & Observation Matrix (`✔ OK` vs `✖ Issue`), Secret Keys Vault, Rule Engine Profiles, Multi-Tenant RBAC Accounts, Cross-File Call Graph (`:CALLS`), Entrypoints Graph, and Decluttered 360° Spider Map. |
 | **`v2.0.0`** | 2026-10-19 | `SAST++++++` ASPM Suite, Written Observation Dossiers, Side-by-Side Before/After Code Diffs, `EPSS v4`, Interactive `RACI` Matrix, `CycloneDX v1.5` SBOM, and Continuous Track Changes Mode. |

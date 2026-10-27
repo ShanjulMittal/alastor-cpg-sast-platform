@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [2.6.2] — 2026-10-27 — Open / Public (Paste-URL-Only) & Private (Ephemeral PAT Header) GitHub Repository Scanner
+
+### Added
+- **Dual-Mode GitHub / GitLab / Bitbucket Repository Scanner ([`main.py`](./backend/main.py), [`models.py`](./backend/models.py), [`TopBar.tsx`](./frontend/src/components/TopBar.tsx), [`ProjectsHubView.tsx`](./frontend/src/components/ProjectsHubView.tsx), [`AppMenuBar.tsx`](./frontend/src/components/AppMenuBar.tsx))**:
+  - **Open / Public Repository Mode (`repo_visibility="public"`)**: Paste any public GitHub URL (`https://github.com/owner/repo`, `.git`, `/tree/<branch>`, or `owner/repo` shorthand) and clone + run the full 7-pass CPG, OSV SCA, IaC, Secret, and STRIDE pipeline with **zero tokens or setup**. Automatically detects if a pasted URL is actually private (`HTTP 401`) and guides the operator to Private mode.
+  - **Private Repository Mode (`repo_visibility="private"`)**: Enforces Personal Access Token (`PAT`) authentication (`HTTP 401` if omitted or invalid). Injects credentials **exclusively via ephemeral `GIT_CONFIG_*` HTTP `Authorization: Basic` headers** (`GIT_TERMINAL_PROMPT=0`) inside `_build_git_subprocess_env()` — ensuring tokens are **never** written into clone URLs, `.git/config`, process command-line arguments, or logs.
+  - **Live Pre-Flight Verification Endpoint (`POST /api/github/verify-repo`)**: Probes GitHub API metadata and `git ls-remote --heads` (`_probe_git_remote_heads`) with full DNS/IP SSRF protection to report `visibility_detected` (`public` vs. `private`), `auth_required`, `default_branch`, `language`, and repository description before cloning.
+  - **Local `.alastor_vault` Credential Store for 1-Click `Re-Scan & Track Changes`**: Optional local-only credential persistence (`chmod 0600`, `.gitignore`-excluded) enabling seamless 1-click **`Re-Scan & Track Changes`** on private repositories across commits.
+- **19th E2E Verification Assertion (`Assertion T` in [`verify_harness.py`](./verify_harness.py))**:
+  - Verifies live `POST /api/github/verify-repo` public detection, `401` rejection when `repo_visibility="private"` is called without a token, and end-to-end URL-only cloning + Neo4j CPG scanning of a live public GitHub repository (`19 / 19` assertions passing, `0` self-audit findings).
+
+---
+
 ## [2.6.1] — 2026-10-25 — AST-Verified Inter-Procedural Sanitizer Summary, `for`-Loop Iterator Taint & 100% Semgrep Pro/OSS Zero-Finding Parity
 
 ### Added
