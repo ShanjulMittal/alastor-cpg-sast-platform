@@ -91,7 +91,7 @@ export const EngineAccessWorkspace: React.FC = () => {
   const queries = platformSettings?.queries || [];
   const sanitizers = platformSettings?.custom_sanitizers || [];
   const enabledRulesCount = queries.filter((q) => q.enabled).length;
-  const totalRulesCount = queries.length || 18;
+  const totalRulesCount = queries.length || 21;
   const maxDfgDepth = platformSettings?.max_dfg_depth ?? 12;
 
   const selectedRule: SecurityQueryRule | null =
@@ -144,7 +144,7 @@ export const EngineAccessWorkspace: React.FC = () => {
   }> = [
     {
       id: "RULE_PROFILES",
-      label: `1. Rule Profiles (${enabledRulesCount || 18}/${totalRulesCount})`,
+      label: `1. Rule Profiles (${enabledRulesCount || 21}/${totalRulesCount})`,
       icon: <Sliders className="w-3.5 h-3.5 text-[var(--sig-gold)]" />,
     },
     {

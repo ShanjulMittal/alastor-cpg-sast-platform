@@ -580,7 +580,7 @@ export function StudioStatusBar() {
           <button
             type="button"
             onClick={() => setWorkspaceViewMode("RULE_ENGINE_PROFILES")}
-            title="Active Rule Profile — Click to open Engine & 18-Rule Matrix"
+            title="Active Rule Profile — Click to open Engine & 21-Rule Matrix"
             className="hidden sm:flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-[var(--surface-elevated)] text-[var(--ink-muted)] hover:text-[var(--ink-primary)] transition-colors shrink-0 whitespace-nowrap"
           >
             <Sliders className="w-3 h-3 text-[var(--sig-cyan)] shrink-0" />

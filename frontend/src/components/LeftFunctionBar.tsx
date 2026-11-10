@@ -100,7 +100,7 @@ export const LeftFunctionBar: React.FC = () => {
       id: "ENGINE_ACCESS",
       shortLabel: "Engine",
       title:
-        "5. Engine — Rule Profiles & 18-Rule Matrix, AST Sanitizers, Multi-Tenant Accounts/RBAC & Issue Connectors",
+        "5. Engine — Rule Profiles & 21-Rule Matrix, AST Sanitizers, Multi-Tenant Accounts/RBAC & Issue Connectors",
       icon: <Sliders className="w-4 h-4" />,
       isActive:
         workspaceViewMode === "ENGINE_ACCESS" ||

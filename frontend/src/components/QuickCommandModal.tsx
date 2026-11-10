@@ -139,7 +139,7 @@ export function QuickCommandModal() {
         category: "5 Studio Workspaces",
         title: "5. Engine & Access (Rule Profiles, Cypher, RBAC & Jira)",
         subtitle:
-          "18-Rule Matrix, Neo4j Cypher & AST Sanitizers, Multi-Tenant RBAC, and Jira/GitHub Sync",
+          "21-Rule Matrix, Neo4j Cypher & AST Sanitizers, Multi-Tenant RBAC, and Jira/GitHub Sync",
         icon: <Sliders className="w-4 h-4 text-[var(--sig-gold)]" />,
         badge: "Workspace 5",
         action: () => setWorkspaceViewMode("ENGINE_ACCESS"),
@@ -219,7 +219,7 @@ export function QuickCommandModal() {
       {
         id: "sub-engine-rules",
         category: "ASPM & Engine Sub-Tabs",
-        title: "Rule Profiles & 18-Rule Security Matrix",
+        title: "Rule Profiles & 21-Rule Security Matrix",
         subtitle:
           "Toggle SAST, SCA, IaC, and Secret rules or switch between Optimized and Zero-Trust profiles",
         icon: <Sliders className="w-4 h-4 text-[var(--sig-gold)]" />,

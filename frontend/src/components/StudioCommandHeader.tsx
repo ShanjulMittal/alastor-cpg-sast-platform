@@ -1110,7 +1110,7 @@ export function StudioCommandHeader() {
                       >
                         <span className="text-xs font-bold text-[var(--ink-primary)] flex items-center gap-1.5">
                           <Sliders className="w-3.5 h-3.5 text-[var(--sig-cyan)]" />
-                          Open Rule Engine &amp; 18-Rule Matrix
+                          Open Rule Engine &amp; 21-Rule Matrix
                         </span>
                         <span className="text-[10px] text-[var(--ink-muted)]">
                           Configure test profiles, AST sanitizers, and toggle

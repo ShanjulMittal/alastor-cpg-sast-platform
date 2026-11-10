@@ -419,7 +419,7 @@ export function AlastorPortalGate({ onEnterApp }: AlastorPortalGateProps) {
                     5. Engine &amp; Access
                   </div>
                   <p className="text-[10px] text-[var(--ink-muted)] leading-snug">
-                    18-Rule Matrix, Cypher Sanitizers, RBAC &amp; Jira/GitHub
+                    21-Rule Matrix, Cypher Sanitizers, RBAC &amp; Jira/GitHub
                   </p>
                 </button>
               </div>
