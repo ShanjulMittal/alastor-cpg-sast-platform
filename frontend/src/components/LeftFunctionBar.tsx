@@ -6,18 +6,13 @@ import {
   Code2,
   ShieldAlert,
   Sliders,
-  Users,
   FolderGit2,
-  BarChart3,
-  Scale,
   Layers,
   KeyRound,
   PhoneCall,
-  Compass,
   PanelLeftClose,
   PanelLeftOpen,
   Command,
-  Ticket,
   Settings,
 } from "lucide-react";
 import { WorkspaceViewMode } from "@/types/cpg";
@@ -33,13 +28,11 @@ export const LeftFunctionBar: React.FC = () => {
     findings,
     projects,
     platformSettings,
-    userAccountsState,
     filterSecretsOnly,
     setFilterSecretsOnly,
     isSidebarCollapsed,
     setSidebarCollapsed,
     setQuickCommandOpen,
-    setIntegrationModalOpen,
     setSettingsModalOpen,
   } = useAuditStore();
 
@@ -53,101 +46,84 @@ export const LeftFunctionBar: React.FC = () => {
   const enabledRulesCount =
     platformSettings?.queries?.filter((q) => q.enabled).length || 0;
   const totalRulesCount = platformSettings?.queries?.length || 0;
-  const accountsCount = userAccountsState?.accounts?.length || 3;
 
-  const primaryItems: Array<{
+  const primaryWorkspaces: Array<{
     id: WorkspaceViewMode;
     shortLabel: string;
     title: string;
     icon: React.ReactNode;
+    isActive: boolean;
     badge?: string | number;
-    badgeColor?: string;
-    accentColor: string;
+    isCriticalBadge?: boolean;
   }> = [
     {
       id: "REMEDIATION_IDE",
-      shortLabel: "Review",
-      title: "Code & CPG Review Workbench (AST / CFG / DFG / Call / Entrypoints)",
+      shortLabel: "Workbench",
+      title:
+        "1. Workbench — Flaw Explorer, Monaco Editor, Live BFL DiffEditor & 7 CPG Graphs (AST/CFG/DFG/Call/Entrypoints)",
       icon: <Code2 className="w-4 h-4" />,
-      badge: findings.length,
-      badgeColor: "bg-red-500/20 text-red-300 border-red-500/40",
-      accentColor: "amber",
+      isActive: workspaceViewMode === "REMEDIATION_IDE",
+      badge: findings.length > 0 ? findings.length : undefined,
+      isCriticalBadge: findings.length > 0,
     },
     {
       id: "THREAT_MODELING",
       shortLabel: "Threats",
-      title: "Threat Modeling Workspace (STRIDE, Trust Boundaries, Attack Surface & Secret Keys Vault)",
+      title:
+        "2. Threats — STRIDE Verdict Matrix, Trust Boundary Zones, Entrypoints & Cryptographic Secret Vault",
       icon: <ShieldAlert className="w-4 h-4" />,
+      isActive: workspaceViewMode === "THREAT_MODELING",
       badge: "STRIDE",
-      badgeColor: "bg-rose-500/20 text-rose-300 border-rose-500/40",
-      accentColor: "rose",
     },
     {
-      id: "RULE_ENGINE_PROFILES",
-      shortLabel: "Rules",
-      title: "Rule Engine & Test Profiles (Select Test Preset & Enable/Disable Individual Rules)",
-      icon: <Sliders className="w-4 h-4" />,
-      badge: totalRulesCount ? `${enabledRulesCount}/${totalRulesCount}` : "PROFILES",
-      badgeColor: "bg-cyan-500/20 text-cyan-300 border-cyan-500/40",
-      accentColor: "cyan",
-    },
-    {
-      id: "USER_PROFILES",
-      shortLabel: "Accounts",
-      title: "User Profiling, RBAC & Multi-Tenant Account Separation",
-      icon: <Users className="w-4 h-4" />,
-      badge: `${accountsCount} Accts`,
-      badgeColor: "bg-violet-500/20 text-violet-300 border-violet-500/40",
-      accentColor: "violet",
+      id: "EXECUTIVE_ASPM",
+      shortLabel: "ASPM",
+      title:
+        "3. ASPM — Impact Translator, CycloneDX v1.5 SBOM, API Attack Surface, Compliance Analytics, RACI Matrix & Roadmap",
+      icon: <Layers className="w-4 h-4" />,
+      isActive:
+        workspaceViewMode === "EXECUTIVE_ASPM" ||
+        workspaceViewMode === "DEEP_DIVE" ||
+        workspaceViewMode === "RACI_GOVERNANCE" ||
+        workspaceViewMode === "SAST_PLUS_SUITE",
     },
     {
       id: "PROJECTS_HUB",
-      shortLabel: "Projects",
-      title: "Projects Hub & Multi-Repo CI/CD Webhooks",
+      shortLabel: "Repos",
+      title:
+        "4. Repos — Local Auto-Discovery, Public/Private GitHub Import, Scan Snapshots & CI/CD Webhooks",
       icon: <FolderGit2 className="w-4 h-4" />,
-      badge: projects.length || undefined,
-      badgeColor: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
-      accentColor: "emerald",
+      isActive: workspaceViewMode === "PROJECTS_HUB",
+      badge: projects.length > 0 ? projects.length : undefined,
     },
     {
-      id: "DEEP_DIVE",
-      shortLabel: "Analytics",
-      title: "Deep Dive Analytics, SLA Aging & OWASP / PCI-DSS / SOC2 Compliance",
-      icon: <BarChart3 className="w-4 h-4" />,
-      accentColor: "indigo",
-    },
-    {
-      id: "RACI_GOVERNANCE",
-      shortLabel: "RACI",
-      title: "RACI Governance & Accountability Matrix",
-      icon: <Scale className="w-4 h-4" />,
-      accentColor: "amber",
-    },
-    {
-      id: "SAST_PLUS_SUITE",
-      shortLabel: "ASPM",
-      title: "SAST++++++ ASPM Suite (Plain-English Translator, Live SBOM & Remediation Roadmap)",
-      icon: <Layers className="w-4 h-4" />,
-      accentColor: "purple",
+      id: "ENGINE_ACCESS",
+      shortLabel: "Engine",
+      title:
+        "5. Engine — Rule Profiles & 18-Rule Matrix, AST Sanitizers, Multi-Tenant Accounts/RBAC & Issue Connectors",
+      icon: <Sliders className="w-4 h-4" />,
+      isActive:
+        workspaceViewMode === "ENGINE_ACCESS" ||
+        workspaceViewMode === "RULE_ENGINE_PROFILES" ||
+        workspaceViewMode === "USER_PROFILES",
+      badge: totalRulesCount
+        ? `${enabledRulesCount}/${totalRulesCount}`
+        : undefined,
     },
   ];
 
   return (
     <aside
-      aria-label="Side Function Bar"
-      className="w-[68px] shrink-0 bg-[#080b12] border-r border-slate-800/90 flex flex-col items-center justify-between py-2 select-none z-40 shadow-xl"
+      aria-label="Studio 5-Workspace Activity Rail"
+      className="w-14 shrink-0 bg-[var(--surface-panel)] border-r border-[var(--border-hairline)] text-[var(--ink-primary)] flex flex-col items-center justify-between py-2 select-none z-40"
     >
-      {/* Top Primary Workspaces */}
-      <div className="flex flex-col items-center gap-1 w-full px-1.5">
-        <div className="text-[8px] font-extrabold uppercase tracking-widest text-slate-500 mb-0.5">
-          Modules
-        </div>
-
-        {primaryItems.map((item) => {
-          const isActive = workspaceViewMode === item.id;
+      {/* Top 5 Focused Studio Workspaces */}
+      <div className="flex flex-col items-center gap-1 w-full px-1">
+        {primaryWorkspaces.map((item) => {
           return (
             <button
               key={item.id}
+              type="button"
               onClick={() => {
                 setWorkspaceViewMode(item.id);
                 if (item.id === "REMEDIATION_IDE" && filterSecretsOnly) {
@@ -155,26 +131,31 @@ export const LeftFunctionBar: React.FC = () => {
                 }
               }}
               title={item.title}
-              className={`group relative w-full py-1.5 px-1 rounded-lg flex flex-col items-center justify-center gap-0.5 transition-all border ${
-                isActive
-                  ? "bg-amber-500/15 text-amber-300 border-amber-500/50 shadow-sm shadow-amber-950/50"
-                  : "text-slate-400 hover:text-slate-100 hover:bg-slate-900/90 border-transparent"
+              className={`group relative w-full py-1.5 px-0.5 rounded-lg flex flex-col items-center justify-center gap-0.5 transition-all border ${
+                item.isActive
+                  ? "bg-[var(--surface-elevated)] text-[var(--ink-primary)] border-[var(--sig-gold)]/50 shadow-sm"
+                  : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)] hover:bg-[var(--surface-elevated)] border-transparent"
               }`}
             >
-              {isActive && (
-                <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r bg-amber-400" />
+              {item.isActive && (
+                <span className="absolute left-0 top-1.5 bottom-1.5 w-[2.5px] rounded-r bg-[var(--sig-gold)]" />
               )}
-              <div className="relative flex items-center justify-center">
+              <div
+                className={`relative flex items-center justify-center ${
+                  item.isActive ? "text-[var(--sig-gold)]" : ""
+                }`}
+              >
                 {item.icon}
               </div>
-              <span className="text-[9px] font-bold tracking-tight leading-tight text-center truncate w-full">
+              <span className="text-[8.5px] font-semibold tracking-tight leading-tight text-center truncate w-full">
                 {item.shortLabel}
               </span>
               {item.badge !== undefined && (
                 <span
-                  className={`text-[8px] font-mono font-extrabold px-1 py-0 rounded border leading-tight ${
-                    item.badgeColor ||
-                    "bg-slate-800 text-slate-300 border-slate-700"
+                  className={`text-[7.5px] font-mono font-bold px-1 py-0 rounded border leading-tight ${
+                    item.isCriticalBadge
+                      ? "bg-[var(--surface-void)] text-[var(--sig-crimson)] border-[var(--sig-crimson)]/50"
+                      : "bg-[var(--surface-void)] text-[var(--ink-muted)] border-[var(--border-hairline)]"
                   }`}
                 >
                   {item.badge}
@@ -183,126 +164,106 @@ export const LeftFunctionBar: React.FC = () => {
             </button>
           );
         })}
+      </div>
 
-        {/* Divider: Quick Graph & Secret Hunters */}
-        <div className="w-9 h-px bg-slate-800/90 my-1" />
-        <div className="text-[8px] font-extrabold uppercase tracking-widest text-slate-500">
-          Direct
-        </div>
-
-        {/* Secret Keys Filter Quick Button */}
+      {/* Bottom Quick-Toggles & Utilities */}
+      <div className="flex flex-col items-center gap-1 w-full px-1 pt-2 border-t border-[var(--border-hairline)]">
+        {/* Secrets Quick Filter */}
         <button
+          type="button"
           onClick={() => {
             const nextState = !filterSecretsOnly;
             setFilterSecretsOnly(nextState);
             setWorkspaceViewMode("REMEDIATION_IDE");
             if (isSidebarCollapsed) setSidebarCollapsed(false);
           }}
-          title={`Secret Keys Hunter (${secretFindingsCount} detected keys) — Click to filter Secret Keys & Credentials`}
-          className={`w-full py-1.5 px-1 rounded-lg flex flex-col items-center justify-center gap-0.5 transition-all border ${
+          title={`Secret Keys Filter (${secretFindingsCount} detected keys) — Click to filter Secret Keys & Credentials in Workbench`}
+          className={`w-full py-1 px-0.5 rounded-lg flex flex-col items-center justify-center gap-0.5 transition-all border ${
             filterSecretsOnly && workspaceViewMode === "REMEDIATION_IDE"
-              ? "bg-amber-500/25 text-amber-200 border-amber-400/70 shadow-sm"
-              : "text-amber-400/80 hover:text-amber-300 hover:bg-amber-950/30 border-transparent"
+              ? "bg-[var(--surface-elevated)] text-[var(--sig-gold)] border-[var(--sig-gold)]"
+              : "text-[var(--ink-muted)] hover:text-[var(--sig-gold)] hover:bg-[var(--surface-elevated)] border-transparent"
           }`}
         >
           <KeyRound className="w-3.5 h-3.5" />
-          <span className="text-[9px] font-bold leading-tight">Secrets</span>
-          <span className="text-[8px] font-mono font-extrabold px-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
-            {secretFindingsCount}
+          <span className="text-[8px] font-semibold leading-tight">
+            Secrets
           </span>
+          {secretFindingsCount > 0 && (
+            <span className="text-[7.5px] font-mono font-bold px-1 rounded bg-[var(--surface-void)] text-[var(--sig-gold)] border border-[var(--sig-gold)]/40">
+              {secretFindingsCount}
+            </span>
+          )}
         </button>
 
         {/* Call Graph Quick Launch */}
         <button
+          type="button"
           onClick={() => {
             setWorkspaceViewMode("REMEDIATION_IDE");
             setGraphViewMode("CALL_GRAPH");
             if (ideLayoutMode === "CODE_FOCUS") setIdeLayoutMode("SPLIT_BOTH");
           }}
           title="Open Inter-Procedural Call Graph (:CALLS relationships)"
-          className={`w-full py-1 px-1 rounded-lg flex flex-col items-center justify-center gap-0.5 transition-all border ${
+          className={`w-full py-1 px-0.5 rounded-lg flex flex-col items-center justify-center gap-0.5 transition-all border ${
             workspaceViewMode === "REMEDIATION_IDE" &&
             graphViewMode === "CALL_GRAPH"
-              ? "bg-purple-500/20 text-purple-200 border-purple-500/50"
-              : "text-slate-400 hover:text-purple-300 hover:bg-slate-900/80 border-transparent"
+              ? "bg-[var(--surface-elevated)] text-[var(--sig-cyan)] border-[var(--sig-cyan)]/60"
+              : "text-[var(--ink-muted)] hover:text-[var(--sig-cyan)] hover:bg-[var(--surface-elevated)] border-transparent"
           }`}
         >
           <PhoneCall className="w-3.5 h-3.5" />
-          <span className="text-[8.5px] font-bold leading-tight">Call Graph</span>
+          <span className="text-[8px] font-semibold leading-tight">
+            Calls
+          </span>
         </button>
 
-        {/* Entry Points Graph Quick Launch */}
+        {/* Explorer Sidebar Collapse Toggle */}
         <button
-          onClick={() => {
-            setWorkspaceViewMode("REMEDIATION_IDE");
-            setGraphViewMode("ENTRYPOINT_GRAPH");
-            if (ideLayoutMode === "CODE_FOCUS") setIdeLayoutMode("SPLIT_BOTH");
-          }}
-          title="Open Attack Surface Entry Points Graph (Routes, CLI, Sources -> Sinks)"
-          className={`w-full py-1 px-1 rounded-lg flex flex-col items-center justify-center gap-0.5 transition-all border ${
-            workspaceViewMode === "REMEDIATION_IDE" &&
-            graphViewMode === "ENTRYPOINT_GRAPH"
-              ? "bg-emerald-500/20 text-emerald-200 border-emerald-500/50"
-              : "text-slate-400 hover:text-emerald-300 hover:bg-slate-900/80 border-transparent"
+          type="button"
+          onClick={() => setSidebarCollapsed(!isSidebarCollapsed)}
+          title={
+            isSidebarCollapsed
+              ? "Expand Left Flaw Explorer Sidebar (Shortcut: b)"
+              : "Collapse Left Flaw Explorer Sidebar (Shortcut: b)"
+          }
+          className={`w-full py-1 px-0.5 rounded-lg flex flex-col items-center justify-center gap-0.5 text-[8px] font-semibold border transition-colors ${
+            !isSidebarCollapsed && workspaceViewMode === "REMEDIATION_IDE"
+              ? "bg-[var(--surface-elevated)] text-[var(--sig-gold)] border-[var(--border-hairline)]"
+              : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)] border-transparent hover:bg-[var(--surface-elevated)]"
           }`}
         >
-          <Compass className="w-3.5 h-3.5" />
-          <span className="text-[8.5px] font-bold leading-tight">Entrypoints</span>
-        </button>
-      </div>
-
-      {/* Bottom Utilities */}
-      <div className="flex flex-col items-center gap-1 w-full px-1.5 pt-2 border-t border-slate-800/80">
-        {workspaceViewMode === "REMEDIATION_IDE" && (
-          <button
-            onClick={() => setSidebarCollapsed(!isSidebarCollapsed)}
-            title={
-              isSidebarCollapsed
-                ? "Expand Left Flaw Explorer Sidebar"
-                : "Collapse Left Flaw Explorer Sidebar"
-            }
-            className={`w-full py-1.5 rounded-lg flex flex-col items-center justify-center gap-0.5 text-[9px] font-semibold border transition-colors ${
-              !isSidebarCollapsed
-                ? "bg-slate-900 text-amber-300 border-slate-700"
-                : "text-slate-400 hover:text-slate-200 border-transparent hover:bg-slate-900/60"
-            }`}
-          >
-            {isSidebarCollapsed ? (
-              <PanelLeftOpen className="w-3.5 h-3.5" />
-            ) : (
-              <PanelLeftClose className="w-3.5 h-3.5" />
-            )}
-            <span className="text-[8px]">Explorer</span>
-          </button>
-        )}
-
-        <button
-          onClick={() => setIntegrationModalOpen(true)}
-          title="Jira & GitHub Issues Bi-Directional Connectors"
-          className="w-full py-1.5 rounded-lg flex flex-col items-center justify-center gap-0.5 text-slate-400 hover:text-indigo-300 hover:bg-slate-900/70 transition-colors"
-        >
-          <Ticket className="w-3.5 h-3.5" />
-          <span className="text-[8px] font-semibold">Tickets</span>
+          {isSidebarCollapsed ? (
+            <PanelLeftOpen className="w-3.5 h-3.5" />
+          ) : (
+            <PanelLeftClose className="w-3.5 h-3.5" />
+          )}
+          <span>Explorer</span>
         </button>
 
+        {/* Quick Command Palette (Ctrl+K) */}
         <button
+          type="button"
           onClick={() => setQuickCommandOpen(true)}
           title="Quick Command Palette (Ctrl+K)"
-          className="w-full py-1.5 rounded-lg flex flex-col items-center justify-center gap-0.5 text-slate-400 hover:text-amber-300 hover:bg-slate-900/70 transition-colors"
+          className="w-full py-1 px-0.5 rounded-lg flex flex-col items-center justify-center gap-0.5 text-[var(--ink-muted)] hover:text-[var(--sig-gold)] hover:bg-[var(--surface-elevated)] transition-colors"
         >
           <Command className="w-3.5 h-3.5" />
           <span className="text-[8px] font-semibold">Ctrl+K</span>
         </button>
 
+        {/* Engine & Sanitizer Settings */}
         <button
+          type="button"
           onClick={() => setSettingsModalOpen(true, "GLOBAL_PROJECT")}
           title="Engine Thresholds & Custom Sanitizers"
-          className="w-full py-1.5 rounded-lg flex flex-col items-center justify-center gap-0.5 text-slate-400 hover:text-cyan-300 hover:bg-slate-900/70 transition-colors"
+          className="w-full py-1 px-0.5 rounded-lg flex flex-col items-center justify-center gap-0.5 text-[var(--ink-muted)] hover:text-[var(--sig-cyan)] hover:bg-[var(--surface-elevated)] transition-colors"
         >
           <Settings className="w-3.5 h-3.5" />
-          <span className="text-[8px] font-semibold">Config</span>
+          <span className="text-[8px] font-semibold">Settings</span>
         </button>
       </div>
     </aside>
   );
 };
+
+export default LeftFunctionBar;
