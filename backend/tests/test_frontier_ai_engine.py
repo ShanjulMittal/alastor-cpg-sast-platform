@@ -1,6 +1,9 @@
+import http.client
+import http.server
 import io
 import json
 import os
+import threading
 import urllib.error
 from pathlib import Path
 from unittest.mock import patch
@@ -457,3 +460,396 @@ def test_fastapi_ai_endpoints_integration(tmp_path: Path):
                 assert len(exp_json["step_walkthrough"]) == 2
     finally:
         main.current_scan_dir = prev_scan_dir
+
+
+def test_cross_provider_and_host_credential_isolation_and_clear(tmp_path: Path):
+    vault_dir = tmp_path / ".alastor_vault"
+    engine = FrontierAiEngine(vault_dir=str(vault_dir))
+
+    # 1. Set Gemini credential, then switch to openai_compatible with omitted key -> must NOT carry credential
+    _c1 = engine.update_config(
+        AiConfigUpdateRequest(
+            provider="gemini",
+            model="gemini-2.5-flash",
+            api_key="gem_unit_cred_9876",
+            persist_key=False,
+        )
+    )
+    assert _c1.has_api_key is True
+    switched_none = engine.update_config(
+        AiConfigUpdateRequest(
+            provider="openai_compatible",
+            model="llama3.2",
+            base_url="https://compat-a.example.com/v1",
+            api_key=None,
+            persist_key=False,
+        )
+    )
+    assert switched_none.has_api_key is False
+    assert switched_none.masked_api_key == ""
+
+    # 2. Set OpenAI credential, then switch to loopback openai_compatible passing stale UI mask -> must NOT leak Authorization header
+    _c2 = engine.update_config(
+        AiConfigUpdateRequest(
+            provider="openai",
+            model="gpt-4o-mini",
+            api_key="oai_unit_cred_5544",
+            persist_key=False,
+        )
+    )
+    assert _c2.has_api_key is True
+    switched_masked = engine.update_config(
+        AiConfigUpdateRequest(
+            provider="openai_compatible",
+            model="llama3.2",
+            base_url="http://localhost:11434/v1",
+            api_key="••••••••5544",
+            persist_key=False,
+        )
+    )
+    assert switched_masked.has_api_key is False
+    assert switched_masked.masked_api_key == ""
+
+    captured_headers = []
+
+    class _DummyOkResp:
+        def read(self):
+            return b'{"choices":[{"message":{"content":"{\\"ok\\":true}"}}],"usage":{"prompt_tokens":5,"completion_tokens":2}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def test_capture_urlopen(req_obj, timeout=28):
+        captured_headers.append(dict(req_obj.header_items()))
+        return _DummyOkResp()
+
+    with patch("urllib.request.urlopen", side_effect=test_capture_urlopen):
+        _ping = engine.test_connection()
+        assert _ping.ok is True
+    assert len(captured_headers) == 1
+    assert "Authorization" not in captured_headers[0]
+
+    # 3. Switching openai_compatible host with masked placeholder must also drop prior host's credential
+    _c3 = engine.update_config(
+        AiConfigUpdateRequest(
+            provider="openai_compatible",
+            model="qwen",
+            base_url="https://compat-a.example.com/v1",
+            api_key="compat_a_cred_3322",
+            persist_key=False,
+        )
+    )
+    assert _c3.has_api_key is True
+    switched_host = engine.update_config(
+        AiConfigUpdateRequest(
+            provider="openai_compatible",
+            model="qwen",
+            base_url="https://compat-b.example.com/v1",
+            api_key="••••••••3322",
+            persist_key=False,
+        )
+    )
+    assert switched_host.has_api_key is False
+
+    # 4. Explicit clearing via api_key="" and via clear_api_key=True revokes memory + persisted vault key
+    _c4 = engine.update_config(
+        AiConfigUpdateRequest(
+            provider="anthropic",
+            model="claude-3-5-haiku-latest",
+            api_key="ant_persisted_cred_1199",
+            persist_key=True,
+        )
+    )
+    assert _c4.has_api_key is True
+    cleared_empty = engine.update_config(
+        AiConfigUpdateRequest(
+            provider="anthropic",
+            model="claude-3-5-haiku-latest",
+            api_key="",
+            persist_key=True,
+        )
+    )
+    assert cleared_empty.has_api_key is False
+    assert cleared_empty.masked_api_key == ""
+    assert FrontierAiEngine(vault_dir=str(vault_dir)).get_public_config().has_api_key is False
+
+    _c5 = engine.update_config(
+        AiConfigUpdateRequest(
+            provider="anthropic",
+            model="claude-3-5-haiku-latest",
+            api_key="ant_persisted_cred_6677",
+            persist_key=True,
+        )
+    )
+    assert _c5.has_api_key is True
+    cleared_flag = engine.update_config(
+        AiConfigUpdateRequest(
+            provider="anthropic",
+            model="claude-3-5-haiku-latest",
+            api_key="••••••••6677",
+            persist_key=True,
+            clear_api_key=True,
+        )
+    )
+    assert cleared_flag.has_api_key is False
+    assert FrontierAiEngine(vault_dir=str(vault_dir)).get_public_config().has_api_key is False
+
+
+def test_redirect_ssrf_blocked_and_url_normalization_edge_cases(tmp_path: Path):
+    engine = FrontierAiEngine(vault_dir=str(tmp_path / ".alastor_vault"))
+
+    # 1. Trailing DNS dot on metadata/internal hosts and query/fragment injection rejected at config time
+    for unsafe_candidate in (
+        "https://metadata.google.internal./v1",
+        "https://service.internal./v1",
+        "https://compat.example.com/v1? leaked=1",
+        "https://compat.example.com/v1?x=1",
+        "https://compat.example.com/v1#frag",
+    ):
+        with pytest.raises(ValueError, match="Unsupported or unsafe"):
+            engine.update_config(
+                AiConfigUpdateRequest(
+                    provider="openai_compatible",
+                    model="m",
+                    base_url=unsafe_candidate,
+                    persist_key=False,
+                )
+            )
+
+    # 2. Live loopback HTTP server returning 302 -> cloud metadata IP MUST be blocked without following redirect
+    class _RedirectToMetadataHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or "0")
+            if length > 0:
+                _ = self.rfile.read(length)
+            self.send_response(302)
+            self.send_header("Location", "http://169.254.169.254/latest/meta-data/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, fmt, *args):
+            return
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RedirectToMetadataHandler)
+    port = srv.server_address[1]
+    srv_thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    srv_thread.start()
+    try:
+        _rcfg = engine.update_config(
+            AiConfigUpdateRequest(
+                provider="openai_compatible",
+                model="local-redirect-test",
+                base_url=f"http://127.0.0.1:{port}/v1",
+                persist_key=False,
+            )
+        )
+        assert _rcfg.provider == "openai_compatible"
+        redir_res = engine.test_connection()
+        assert redir_res.ok is False
+        assert redir_res.error_code == "REDIRECT_BLOCKED"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    # 3. Gemini leading 'models/' prefix + trailing '/v1beta' base_url normalized without double-encoding
+    seen_urls = []
+
+    class _GemResp:
+        def read(self):
+            return b'{"candidates":[{"content":{"parts":[{"text":"{\\"ok\\":true}"}]}}],"usageMetadata":{"promptTokenCount":6,"candidatesTokenCount":2}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def test_gem_url_capture(req_obj, timeout=28):
+        seen_urls.append(req_obj.full_url)
+        return _GemResp()
+
+    _gcfg = engine.update_config(
+        AiConfigUpdateRequest(
+            provider="gemini",
+            model="models/gemini-2.5-flash",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            api_key="gem_norm_cred_2468",
+            persist_key=False,
+        )
+    )
+    assert _gcfg.provider == "gemini"
+    with patch("urllib.request.urlopen", side_effect=test_gem_url_capture):
+        _gping = engine.test_connection()
+        assert _gping.ok is True
+    assert seen_urls == [
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    ]
+
+
+def test_http_client_disconnect_and_oserror_handled_gracefully(tmp_path: Path):
+    engine = FrontierAiEngine(vault_dir=str(tmp_path / ".alastor_vault"))
+    _cfg = engine.update_config(
+        AiConfigUpdateRequest(
+            provider="openai",
+            model="gpt-4o-mini",
+            api_key="oai_net_cred_1357",
+            persist_key=False,
+        )
+    )
+    assert _cfg.has_api_key is True
+    finding = _make_sample_finding(tmp_path)
+
+    def test_raise_remote_disconnected(req_obj, timeout=28):
+        raise http.client.RemoteDisconnected("Remote end closed connection without response")
+
+    with patch("urllib.request.urlopen", side_effect=test_raise_remote_disconnected):
+        conn_res = engine.test_connection()
+        assert conn_res.ok is False
+        assert conn_res.error_code == "NETWORK_ERROR"
+        assert "oai_net_cred_1357" not in conn_res.message
+
+    def test_raise_conn_reset(req_obj, timeout=28):
+        raise ConnectionResetError("Connection reset by peer")
+
+    with patch("urllib.request.urlopen", side_effect=test_raise_conn_reset):
+        val_res = engine.validate_findings([finding], [str(tmp_path)])
+        assert val_res.ok is False
+        assert val_res.error_code == "NETWORK_ERROR"
+        assert "oai_net_cred_1357" not in (val_res.user_message or "")
+
+
+def test_micro_slice_cross_file_context_and_no_suffix_collision(tmp_path: Path):
+    src_dir = tmp_path / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+
+    runner_lines = [f"# filler line {i}" for i in range(1, 80)]
+    runner_lines[11] = "    marker = 'WRONG_LINE_12_IN_RUNNER'"
+    runner_lines[40] = "def execute_job(cmd_arg):"
+    runner_lines[41] = "    return run_safe_wrapper(cmd_arg)"
+    (src_dir / "runner.py").write_text("\n".join(runner_lines), encoding="utf-8")
+
+    auth_lines = [f"# auth line {i}" for i in range(1, 30)]
+    auth_lines[11] = "    tainted_host = request.args.get('host')"
+    (src_dir / "auth_runner.py").write_text("\n".join(auth_lines), encoding="utf-8")
+
+    n_cross = CPGNode(
+        id="nc1",
+        label="Assignment",
+        ast_type="assign",
+        name="tainted_host",
+        code="tainted_host = request.args.get('host')",
+        filepath="src\\auth_runner.py",
+        start_line=12,
+        end_line=12,
+        start_col=4,
+        end_col=43,
+        scope_id="handle_req",
+        is_source=True,
+        is_sink=False,
+        is_sanitizer=False,
+    )
+    n_sink = CPGNode(
+        id="nc2",
+        label="Call",
+        ast_type="call",
+        name="run_safe_wrapper",
+        code="return run_safe_wrapper(cmd_arg)",
+        filepath="src\\runner.py",
+        start_line=42,
+        end_line=42,
+        start_col=4,
+        end_col=36,
+        scope_id="execute_job",
+        is_source=False,
+        is_sink=True,
+        is_sanitizer=False,
+    )
+    cross_finding = Finding(
+        id="FIND-CROSS-1",
+        rule_id="RULE-1",
+        severity="HIGH",
+        title="Cross-File Taint Flow",
+        description="Source in auth_runner flows to sink in runner.",
+        cwe_id="CWE-78",
+        path_nodes=[n_cross, n_sink],
+        path_edges=[{"id": "ec1", "source": "nc1", "target": "nc2", "type": "DFG_FLOWS_TO", "var_name": "tainted_host"}],
+        best_fix_location=BestFixLocation(
+            node_id="nc2",
+            filepath="src/runner.py",
+            line=42,
+            column=4,
+            code_snippet="return run_safe_wrapper(cmd_arg)",
+            explanation="Sanitize cmd_arg",
+            recommended_fix="Validate allowlist",
+        ),
+    )
+
+    engine = FrontierAiEngine(vault_dir=str(tmp_path / ".alastor_vault"))
+    slice_info = engine.build_cpg_micro_slice(cross_finding, [str(tmp_path)])
+    text = slice_info["slice_text"]
+
+    assert "WRONG_LINE_12_IN_RUNNER" not in text
+    assert "[Cross-file src/auth_runner.py:L12] tainted_host = request.args.get('host')" in text
+    assert "src/auth_runner.py:L12 --[DFG_FLOWS_TO:tainted_host]--> L42" in text
+    assert "L41: def execute_job(cmd_arg):" in text
+    assert "L42:     return run_safe_wrapper(cmd_arg)" in text
+
+    # Also verify bare basename suffix-collision case: 'auth_runner.py' must NOT match 'runner.py'
+    bare_finding = Finding(
+        id="FIND-CROSS-2",
+        rule_id="RULE-1",
+        severity="HIGH",
+        title="Basename Suffix Collision Check",
+        description="Bare auth_runner.py must not match runner.py.",
+        cwe_id="CWE-78",
+        path_nodes=[
+            CPGNode(
+                id="nb1",
+                label="Assignment",
+                ast_type="assign",
+                name="tainted_host",
+                code="tainted_host = request.args.get('host')",
+                filepath="auth_runner.py",
+                start_line=12,
+                end_line=12,
+                start_col=4,
+                end_col=43,
+                scope_id="handle_req",
+                is_source=True,
+                is_sink=False,
+                is_sanitizer=False,
+            ),
+            CPGNode(
+                id="nb2",
+                label="Call",
+                ast_type="call",
+                name="run_safe_wrapper",
+                code="return run_safe_wrapper(cmd_arg)",
+                filepath="runner.py",
+                start_line=42,
+                end_line=42,
+                start_col=4,
+                end_col=36,
+                scope_id="execute_job",
+                is_source=False,
+                is_sink=True,
+                is_sanitizer=False,
+            ),
+        ],
+        path_edges=[{"id": "eb1", "source": "nb1", "target": "nb2", "type": "DFG_FLOWS_TO", "var_name": "tainted_host"}],
+        best_fix_location=BestFixLocation(
+            node_id="nb2",
+            filepath="runner.py",
+            line=42,
+            column=4,
+            code_snippet="return run_safe_wrapper(cmd_arg)",
+            explanation="Sanitize cmd_arg",
+            recommended_fix="Validate allowlist",
+        ),
+    )
+    bare_slice = engine.build_cpg_micro_slice(bare_finding, [str(src_dir)])
+    assert "WRONG_LINE_12_IN_RUNNER" not in bare_slice["slice_text"]
+    assert "[Cross-file auth_runner.py:L12] tainted_host = request.args.get('host')" in bare_slice["slice_text"]

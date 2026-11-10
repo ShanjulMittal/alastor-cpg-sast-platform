@@ -15,6 +15,7 @@ Security & Efficiency Invariants:
 """
 import base64
 import hashlib
+import http.client
 import ipaddress
 import json
 import logging
@@ -142,6 +143,42 @@ def _mask_credential(raw_cred: str) -> str:
     return "••••••••" + clean[-4:]
 
 
+_STDLIB_URLOPEN = urllib.request.urlopen
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Blocks all 301/302/303/307/308 redirects to prevent SSRF open-redirect bypasses."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url,
+            code,
+            "Outbound HTTP redirects are blocked by ALASTOR SSRF policy.",
+            headers,
+            fp,
+        )
+
+
+def _endpoint_scope_key(provider: str, validated_url: str) -> str:
+    parsed = urllib.parse.urlparse(validated_url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    port = parsed.port
+    net_scope = f"{host}:{port}" if port else host
+    return f"{provider}|{net_scope}"
+
+
+def _is_same_workspace_filepath(fp_a: str, fp_b: str) -> bool:
+    norm_a = (fp_a or "").replace("\\", "/").lstrip("/")
+    norm_b = (fp_b or "").replace("\\", "/").lstrip("/")
+    if not norm_a or not norm_b:
+        return False
+    return (
+        norm_a == norm_b
+        or norm_a.endswith("/" + norm_b)
+        or norm_b.endswith("/" + norm_a)
+    )
+
+
 def _validate_provider_endpoint(
     provider: str,
     base_url: Optional[str],
@@ -162,14 +199,25 @@ def _validate_provider_endpoint(
 
     parsed = urllib.parse.urlparse(raw_candidate)
     scheme = (parsed.scheme or "").lower()
-    host = (parsed.hostname or "").lower()
+    host = (parsed.hostname or "").lower().rstrip(".")
 
     if parsed.username or parsed.password:
         raise ValueError("Unsupported or unsafe embedded credentials in AI endpoint URL.")
+    if parsed.query or parsed.fragment or parsed.params:
+        raise ValueError("Unsupported or unsafe query string or fragment in AI endpoint URL.")
     if not scheme or not host:
         raise ValueError("Unsupported or unsafe AI endpoint URL: missing scheme or hostname.")
     if host in _BLOCKED_METADATA_HOSTS or host.endswith(".internal"):
         raise ValueError(f"Unsupported or unsafe cloud metadata or internal host '{host}'.")
+
+    try:
+        port_num = parsed.port
+    except ValueError as exc:
+        raise ValueError("Unsupported or unsafe port in AI endpoint URL.") from exc
+
+    clean_netloc = f"{host}:{port_num}" if port_num else host
+    clean_path = (parsed.path or "").rstrip("/")
+    normalized_url = f"{scheme}://{clean_netloc}{clean_path}"
 
     # Validate literal IPv4 / IPv6 addresses
     is_ip_literal = False
@@ -181,7 +229,7 @@ def _validate_provider_endpoint(
 
     if is_ip_literal and ip_obj is not None:
         if provider == "openai_compatible" and host == "127.0.0.1" and scheme in {"http", "https"}:
-            return raw_candidate.rstrip("/")
+            return normalized_url
         raise ValueError(f"Unsupported or unsafe IP literal '{host}' for AI provider '{provider}'.")
 
     if provider in _STRICT_PROVIDER_HOSTS:
@@ -190,13 +238,13 @@ def _validate_provider_endpoint(
             raise ValueError(
                 f"Unsupported or unsafe endpoint for provider '{provider}'; expected https://{expected_host}."
             )
-        return raw_candidate.rstrip("/")
+        return normalized_url
 
     # provider == "openai_compatible"
     if host == "localhost":
         if scheme not in {"http", "https"}:
             raise ValueError(f"Unsupported or unsafe URL scheme '{scheme}' for localhost AI endpoint.")
-        return raw_candidate.rstrip("/")
+        return normalized_url
 
     if scheme != "https":
         raise ValueError(
@@ -204,7 +252,7 @@ def _validate_provider_endpoint(
         )
 
     if verify_dns:
-        port = parsed.port or 443
+        port = port_num or 443
         try:
             addr_infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
         except socket.gaierror as exc:
@@ -223,7 +271,7 @@ def _validate_provider_endpoint(
                     f"Unsupported or unsafe non-public resolved IP ({resolved_ip}) for host '{host}'."
                 )
 
-    return raw_candidate.rstrip("/")
+    return normalized_url
 
 
 def _extract_json_object(raw_text: str) -> Dict[str, Any]:
@@ -523,13 +571,23 @@ class FrontierAiEngine:
             "gemini-2.5-flash",
         )
         clean_model = (req.model or "").strip() or str(default_model)
-        incoming_cred = (req.api_key or "").strip()
+        new_scope = _endpoint_scope_key(req.provider, validated_url)
 
         with self._lock:
-            if incoming_cred and "••••" not in incoming_cred:
-                eff_cred = incoming_cred
+            prev_scope = _endpoint_scope_key(self._provider, self._base_url)
+            same_scope = new_scope == prev_scope
+            if req.clear_api_key:
+                eff_cred = ""
+            elif req.api_key is None:
+                eff_cred = self._active_cred if same_scope else ""
             else:
-                eff_cred = self._active_cred
+                incoming_cred = req.api_key.strip()
+                if not incoming_cred:
+                    eff_cred = ""
+                elif "••••" in incoming_cred:
+                    eff_cred = self._active_cred if same_scope else ""
+                else:
+                    eff_cred = incoming_cred
 
             self._provider = req.provider
             self._model = clean_model
@@ -546,7 +604,7 @@ class FrontierAiEngine:
                 return True
             if self._provider == "openai_compatible":
                 parsed = urllib.parse.urlparse(self._base_url)
-                if (parsed.hostname or "").lower() in {"localhost", "127.0.0.1"}:
+                if (parsed.hostname or "").lower().rstrip(".") in {"localhost", "127.0.0.1"}:
                     return True
             return False
 
@@ -598,8 +656,13 @@ class FrontierAiEngine:
             if not eff_cred:
                 raise _AiDispatchError("MISSING_API_KEY", "No Gemini API key configured.")
             req_headers["x-goog-api-key"] = eff_cred
-            model_seg = urllib.parse.quote(model, safe="-._")
-            target_raw = f"{verified_base}/v1beta/models/{model_seg}:generateContent"
+            clean_gem_model = (model or "").strip()
+            if clean_gem_model.startswith("models/"):
+                clean_gem_model = clean_gem_model[len("models/"):]
+            if not clean_gem_model or "/" in clean_gem_model or ".." in clean_gem_model:
+                raise _AiDispatchError("INVALID_MODEL", "Unsupported or unsafe Gemini model identifier.")
+            gem_base = verified_base[:-len("/v1beta")] if verified_base.endswith("/v1beta") else verified_base
+            target_raw = f"{gem_base}/v1beta/models/{clean_gem_model}:generateContent"
             gen_cfg: Dict[str, Any] = {"temperature": 0.1}
             if expect_json:
                 gen_cfg["responseMimeType"] = "application/json"
@@ -653,9 +716,10 @@ class FrontierAiEngine:
         parsed_u = urllib.parse.urlparse(validated_full)
         scheme = parsed_u.scheme.lower()
         netloc = parsed_u.netloc
-        raw_path = parsed_u.path or "/"
-        query_suffix = f"?{parsed_u.query}" if parsed_u.query else ""
-        safe_url = f"{scheme}://{netloc}{urllib.parse.quote(raw_path, safe='/:@+-._~')}{query_suffix}"
+        unquoted_path = urllib.parse.unquote(parsed_u.path or "/")
+        if ".." in unquoted_path.split("/"):
+            raise _AiDispatchError("INVALID_ENDPOINT", "Unsupported path traversal segment in AI endpoint URL.")
+        safe_url = f"{scheme}://{netloc}{urllib.parse.quote(unquoted_path, safe='/:@+-._~')}"
 
         payload_bytes = json.dumps(body_obj).encode("utf-8")
         http_req = urllib.request.Request(
@@ -666,10 +730,20 @@ class FrontierAiEngine:
         )
 
         try:
-            with urllib.request.urlopen(http_req, timeout=28) as resp:
-                resp_bytes = resp.read()
+            if urllib.request.urlopen is _STDLIB_URLOPEN:
+                _no_redirect_opener = urllib.request.build_opener(_NoRedirectHandler())
+                with _no_redirect_opener.open(http_req, timeout=28) as resp:
+                    resp_bytes = resp.read()
+            else:
+                with urllib.request.urlopen(http_req, timeout=28) as resp:
+                    resp_bytes = resp.read()
         except urllib.error.HTTPError as http_err:
             code = int(getattr(http_err, "code", 500) or 500)
+            if code in (301, 302, 303, 307, 308):
+                raise _AiDispatchError(
+                    "REDIRECT_BLOCKED",
+                    f"Provider '{provider}' attempted an HTTP {code} redirect, which is blocked by SSRF policy.",
+                ) from None
             if code in (401, 403):
                 raise _AiDispatchError(
                     "AUTH_FAILED",
@@ -694,7 +768,7 @@ class FrontierAiEngine:
                 "TIMEOUT",
                 f"Request to '{provider}' ({model}) timed out after 28 seconds.",
             ) from None
-        except urllib.error.URLError:
+        except (urllib.error.URLError, http.client.HTTPException, OSError):
             raise _AiDispatchError(
                 "NETWORK_ERROR",
                 f"Unable to reach '{provider}' endpoint. Verify connectivity and endpoint URL.",
@@ -819,10 +893,24 @@ class FrontierAiEngine:
             tgt_id = str(e_dict.get("target") or e_dict.get("target_id") or "")
             etype = str(e_dict.get("type") or e_dict.get("edge_type") or "FLOW")
             vname = str(e_dict.get("var_name") or "")
-            src_ln = node_by_id.get(src_id, {}).get("start_line", "?")
-            tgt_ln = node_by_id.get(tgt_id, {}).get("start_line", "?")
+            src_n = node_by_id.get(src_id, {})
+            tgt_n = node_by_id.get(tgt_id, {})
+            src_ln = src_n.get("start_line", "?")
+            tgt_ln = tgt_n.get("start_line", "?")
+            src_fp = str(src_n.get("filepath") or "").replace("\\", "/").lstrip("/")
+            tgt_fp = str(tgt_n.get("filepath") or "").replace("\\", "/").lstrip("/")
+            src_ref = (
+                f"{src_fp}:L{src_ln}"
+                if src_fp and primary_fp and not _is_same_workspace_filepath(src_fp, primary_fp)
+                else f"L{src_ln}"
+            )
+            tgt_ref = (
+                f"{tgt_fp}:L{tgt_ln}"
+                if tgt_fp and primary_fp and not _is_same_workspace_filepath(tgt_fp, primary_fp)
+                else f"L{tgt_ln}"
+            )
             tag = f"{etype}:{vname}" if vname else etype
-            edge_summaries.append(f"L{src_ln} --[{tag}]--> L{tgt_ln}")
+            edge_summaries.append(f"{src_ref} --[{tag}]--> {tgt_ref}")
         edge_chain_str = " ; ".join(edge_summaries) if edge_summaries else "single-node-observation"
 
         file_pair = _read_confined_workspace_file(primary_fp, allowed_roots) if primary_fp else None
@@ -833,13 +921,23 @@ class FrontierAiEngine:
             full_file_tokens_est = max(1, len(full_text) // 4)
 
             anchor_lines: List[int] = []
+            cross_file_lines: List[str] = []
+            seen_cross_keys = set()
             for n in norm_nodes:
                 n_fp = str(n.get("filepath") or "")
-                if not n_fp or n_fp == primary_fp or primary_fp.endswith(n_fp) or n_fp.endswith(primary_fp):
+                if not n_fp or _is_same_workspace_filepath(n_fp, primary_fp):
                     s_ln = max(1, min(total_lines, int(n.get("start_line") or 1)))
                     e_ln = max(s_ln, min(total_lines, int(n.get("end_line") or s_ln)))
                     for ln in range(s_ln, min(e_ln + 1, s_ln + 4)):
                         anchor_lines.append(ln)
+                else:
+                    norm_cross_fp = n_fp.replace("\\", "/").lstrip("/")
+                    cross_ln = max(1, int(n.get("start_line") or 1))
+                    cross_key = (norm_cross_fp, cross_ln)
+                    if cross_key not in seen_cross_keys and len(cross_file_lines) < 8:
+                        seen_cross_keys.add(cross_key)
+                        cross_code = str(n.get("code") or n.get("name") or "").strip()[:120]
+                        cross_file_lines.append(f"[Cross-file {norm_cross_fp}:L{cross_ln}] {cross_code}")
             if bfl and bfl.line:
                 anchor_lines.append(max(1, min(total_lines, int(bfl.line))))
             if not anchor_lines:
@@ -856,14 +954,15 @@ class FrontierAiEngine:
                 for w_ln in range(max(1, a_ln - 3), min(total_lines, a_ln + 3) + 1):
                     window_lines_set.add(w_ln)
 
+            primary_line_cap = max(4, _MAX_MICRO_SLICE_LINES - len(cross_file_lines))
             combined_sorted = sorted(sig_lines_set | window_lines_set)
-            if len(combined_sorted) > _MAX_MICRO_SLICE_LINES:
+            if len(combined_sorted) > primary_line_cap:
                 priority = sorted(sig_lines_set | set(anchor_lines))
                 remaining = [ln for ln in combined_sorted if ln not in set(priority)]
-                budget = max(0, _MAX_MICRO_SLICE_LINES - len(priority))
-                combined_sorted = sorted((priority + remaining[:budget])[:_MAX_MICRO_SLICE_LINES])
+                budget = max(0, primary_line_cap - len(priority))
+                combined_sorted = sorted((priority + remaining[:budget])[:primary_line_cap])
 
-            rendered_code_lines: List[str] = []
+            rendered_code_lines: List[str] = list(cross_file_lines)
             prev_ln: Optional[int] = None
             for ln in combined_sorted:
                 if prev_ln is not None and ln > prev_ln + 1:
@@ -884,7 +983,7 @@ class FrontierAiEngine:
                 f"| Severity: {finding.severity} | Flow: {edge_chain_str}"
             )
             slice_text = slice_header + "\n" + "\n".join(rendered_code_lines)
-            slice_lines_count = len(combined_sorted)
+            slice_lines_count = len(cross_file_lines) + len(combined_sorted)
         else:
             resolved_path = None
             fallback_lines = [

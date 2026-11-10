@@ -1124,6 +1124,7 @@ class AiConfigUpdateRequest(BaseModel):
     base_url: Optional[str] = None
     api_key: Optional[str] = None
     persist_key: bool = True
+    clear_api_key: bool = False
 
 
 class AiPublicConfigResponse(BaseModel):
