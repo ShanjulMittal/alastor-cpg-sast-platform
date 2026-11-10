@@ -723,7 +723,13 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         await Promise.all([
           get().fetchFindings(),
           get().fetchMetrics(),
+          get().fetchProjects(),
           get().fetchTrackChanges(),
+        ]);
+        void Promise.all([
+          get().fetchDeepDiveAnalytics(),
+          get().fetchRaciGovernance(),
+          get().fetchSastPlusSuite(),
         ]);
         return data;
       }
@@ -767,7 +773,13 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         await Promise.all([
           get().fetchFindings(),
           get().fetchMetrics(),
+          get().fetchProjects(),
           get().fetchTrackChanges(),
+        ]);
+        void Promise.all([
+          get().fetchDeepDiveAnalytics(),
+          get().fetchRaciGovernance(),
+          get().fetchSastPlusSuite(),
         ]);
         const currentSelected = get().selectedFinding;
         if (currentSelected) {
@@ -1353,7 +1365,12 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           activeEndLine: null,
         }));
         if (needsScan) {
-          if (proj.scm_provider !== "LOCAL" && proj.repo_url) {
+          const hasLocalCheckout =
+            Boolean(proj.target_path) &&
+            !proj.target_path.startsWith("http://") &&
+            !proj.target_path.startsWith("https://") &&
+            !proj.target_path.startsWith("git@");
+          if (proj.scm_provider !== "LOCAL" && proj.repo_url && !hasLocalCheckout) {
             if (proj.is_private_repo && !proj.has_saved_auth) {
               get().openTargetPicker(
                 "URL",

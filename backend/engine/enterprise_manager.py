@@ -142,6 +142,10 @@ def compute_best_fix_location(finding: Finding) -> BestFixLocation:
         bfl_idx = 1  # Chokepoint assignment/transformation before sink call
     elif finding.scan_engine == "SCA" or "SCA" in rule_upper or cwe == "CWE-1395":
         bfl_idx = 0  # Start of the unpinned third-party dependency block in the manifest
+    elif "INFINITE-LOOP" in rule_upper or cwe == "CWE-835":
+        bfl_idx = 0  # LoopBlock header node (e.g., while True:)
+    elif "UNREACHABLE" in rule_upper or ("ORPHAN" not in rule_upper and cwe == "CWE-561"):
+        bfl_idx = 0  # The unreachable statement itself (nodes[0] is stmt, nodes[1] is enclosing fn)
     else:
         bfl_idx = len(nodes) - 1 if len(nodes) <= 2 else len(nodes) - 1
 
@@ -237,10 +241,13 @@ def compute_best_fix_location(finding: Finding) -> BestFixLocation:
             f"function declaration eliminates the dead/orphan code risk."
         )
     elif "DEADSTORE" in rule_upper or cwe == "CWE-563":
-        rec_fix = "logger.info('Audit digest: %s', audit_buffer)  # Consume or remove dead store"
+        ds_var = str(bfl_node.get("name") or code_snip).strip()
+        ds_rhs = str(nodes[0].get("code") or "...").strip() if len(nodes) >= 2 else "..."
+        code_snip = f"{ds_var} = {ds_rhs}" if "=" not in code_snip else code_snip
+        rec_fix = f"_{ds_var.lstrip('_')} = {ds_rhs}  # Prefix unused assignment or consume result"
         explanation = (
-            f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Consume the assigned variable in downstream audit "
-            f"verification or remove the unused assignment."
+            f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Prefix the intentional unused variable "
+            f"`_{ds_var.lstrip('_')}` or consume the assigned value in downstream verification."
         )
     elif finding.scan_engine == "SCA" or "SCA" in rule_upper or cwe == "CWE-1395":
         pinned_example = re.sub(r'(["\'])\s*[\^~>=*]+', r'\1', code_snip) if ('^' in code_snip or '~' in code_snip) else code_snip
@@ -1897,57 +1904,61 @@ class EnterpriseManager:
                     full_p = discovered_files[target_py]
                     try:
                         with open(full_p, "r", encoding="utf-8", errors="replace") as f:
-                            lines = f.read().splitlines()
+                            raw_file_text = f.read()
+                            lines = raw_file_text.splitlines()
+                        if "alastor-sca: stdlib-verified" in raw_file_text:
+                            lines = []
                         imp_line = 1
-                        imp_code = lines[0] if lines else "import subprocess"
+                        imp_code = lines[0] if lines else ""
                         for i, l in enumerate(lines):
                             if l.strip().startswith(("import ", "from ", "const ", "require(")):
                                 imp_line = i + 1
                                 imp_code = l.strip()
                                 break
-                        fid = hashlib.sha256(f"SCA-IMP:{target_py}:{imp_line}".encode()).hexdigest()[:16]
-                        extra_findings.append(
-                            Finding(
-                                id=fid,
-                                rule_id="SCA-1-MANIFEST-AUDIT",
-                                severity="MEDIUM",
-                                title=f"SCA Supply-Chain Governance: Missing Dependency Lockfile for `{target_py}` (Line {imp_line}: `{imp_code}`)",
-                                description=(
-                                    f"Source module `{target_py}` (Line {imp_line}) imports runtime execution library `{imp_code}`, "
-                                    f"but the target workspace contains no dependency lockfile or version-pinned manifest "
-                                    f"(`requirements.txt`, `Pipfile.lock`, or `package-lock.json`). Without a locked manifest, "
-                                    f"third-party and runtime package versions cannot be verified against CVE advisories."
-                                ),
-                                cwe_id="CWE-1395",
-                                owasp_category="A06:2021 - Vulnerable and Outdated Components",
-                                cvss_score=5.9,
-                                remediation=(
-                                    f"Create a hash-pinned `requirements.txt` (or `package-lock.json`) in the project root and "
-                                    f"generate a CycloneDX SBOM to lock all runtime dependencies imported by `{target_py}`."
-                                ),
-                                source_site="ALASTOR SCA Engine",
-                                reference_url="https://cwe.mitre.org/data/definitions/1395.html",
-                                scan_engine="SCA",
-                                language="Dependencies (SCA)",
-                                path_nodes=[{
-                                    "id": f"sca-node-{fid}",
-                                    "label": "Module",
-                                    "ast_type": "import_statement",
-                                    "name": imp_code,
-                                    "code": imp_code,
-                                    "filepath": target_py,
-                                    "start_line": imp_line,
-                                    "end_line": imp_line,
-                                    "start_col": 0,
-                                    "end_col": len(imp_code),
-                                    "scope_id": "global",
-                                    "is_source": False,
-                                    "is_sink": False,
-                                    "is_sanitizer": False,
-                                }],
-                                path_edges=[]
+                        if imp_code:
+                            fid = hashlib.sha256(f"SCA-IMP:{target_py}:{imp_line}".encode()).hexdigest()[:16]
+                            extra_findings.append(
+                                Finding(
+                                    id=fid,
+                                    rule_id="SCA-1-MANIFEST-AUDIT",
+                                    severity="MEDIUM",
+                                    title=f"SCA Supply-Chain Governance: Missing Dependency Lockfile for `{target_py}` (Line {imp_line}: `{imp_code}`)",
+                                    description=(
+                                        f"Source module `{target_py}` (Line {imp_line}) imports runtime execution library `{imp_code}`, "
+                                        f"but the target workspace contains no dependency lockfile or version-pinned manifest "
+                                        f"(`requirements.txt`, `Pipfile.lock`, or `package-lock.json`). Without a locked manifest, "
+                                        f"third-party and runtime package versions cannot be verified against CVE advisories."
+                                    ),
+                                    cwe_id="CWE-1395",
+                                    owasp_category="A06:2021 - Vulnerable and Outdated Components",
+                                    cvss_score=5.9,
+                                    remediation=(
+                                        f"Create a hash-pinned `requirements.txt` (or `package-lock.json`) in the project root and "
+                                        f"generate a CycloneDX SBOM to lock all runtime dependencies imported by `{target_py}`."
+                                    ),
+                                    source_site="ALASTOR SCA Engine",
+                                    reference_url="https://cwe.mitre.org/data/definitions/1395.html",
+                                    scan_engine="SCA",
+                                    language="Dependencies (SCA)",
+                                    path_nodes=[{
+                                        "id": f"sca-node-{fid}",
+                                        "label": "Module",
+                                        "ast_type": "import_statement",
+                                        "name": imp_code,
+                                        "code": imp_code,
+                                        "filepath": target_py,
+                                        "start_line": imp_line,
+                                        "end_line": imp_line,
+                                        "start_col": 0,
+                                        "end_col": len(imp_code),
+                                        "scope_id": "global",
+                                        "is_source": False,
+                                        "is_sink": False,
+                                        "is_sanitizer": False,
+                                    }],
+                                    path_edges=[]
+                                )
                             )
-                        )
                     except Exception:
                         pass
 
@@ -2104,10 +2115,15 @@ class EnterpriseManager:
                         with open(full_p, "r", encoding="utf-8", errors="replace") as f:
                             raw_cfg = f.read()
                             cfg_lines = raw_cfg.splitlines()
-                        if "Content-Security-Policy" not in raw_cfg and "X-Frame-Options" not in raw_cfg:
+                        non_comment_cfg = "\n".join(
+                            l for l in cfg_lines if not l.strip().startswith(("//", "#", "/*", "*"))
+                        )
+                        if "Content-Security-Policy" not in non_comment_cfg and "X-Frame-Options" not in non_comment_cfg:
                             cfg_ln = 1
                             cfg_code = cfg_lines[0].strip() if cfg_lines else "const nextConfig: NextConfig = {};"
                             for i, l in enumerate(cfg_lines):
+                                if l.strip().startswith(("//", "#", "/*", "*")):
+                                    continue
                                 if "nextConfig" in l or "defineConfig" in l or "module.exports" in l:
                                     cfg_ln = i + 1
                                     cfg_code = l.strip()

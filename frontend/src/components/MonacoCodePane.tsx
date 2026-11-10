@@ -816,18 +816,44 @@ export function MonacoCodePane() {
 
       {/* HIGH-IMPACT EMERALD "✓ THREAD SEVERED · CPG RE-VERIFIED" BANNER */}
       {lastAppliedPatch && (
-        <div className="bg-emerald-950/90 border-b border-emerald-500/80 px-3 py-2 flex items-center justify-between gap-3 text-xs shrink-0 transition-all duration-300">
+        <div
+          className={`${
+            lastAppliedPatch.verifiedSevered
+              ? "bg-emerald-950/90 border-emerald-500/80"
+              : "bg-amber-950/90 border-amber-500/80"
+          } border-b px-3 py-2 flex items-center justify-between gap-3 text-xs shrink-0 transition-all duration-300`}
+        >
           <div className="flex items-center gap-2 min-w-0 flex-wrap">
-            <span className="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-400 text-emerald-200 font-mono text-[10px] font-extrabold tracking-wider flex items-center gap-1 shrink-0">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+            <span
+              className={`px-2 py-0.5 rounded font-mono text-[10px] font-extrabold tracking-wider flex items-center gap-1 shrink-0 ${
+                lastAppliedPatch.verifiedSevered
+                  ? "bg-emerald-500/20 border border-emerald-400 text-emerald-200"
+                  : "bg-amber-500/20 border border-amber-400 text-amber-200"
+              }`}
+            >
+              <ShieldCheck
+                className={`w-3.5 h-3.5 ${
+                  lastAppliedPatch.verifiedSevered ? "text-emerald-400" : "text-amber-400"
+                }`}
+              />
               {lastAppliedPatch.verifiedSevered
                 ? "✓ THREAD SEVERED · 0 REACHABLE PATHS IN CPG"
-                : "✓ PATCH APPLIED TO WORKSPACE"}
+                : "⚠ PATCH APPLIED · MANUAL REFINEMENT NEEDED TO SEVER PATH"}
             </span>
-            <span className="font-mono text-[11px] text-emerald-100 truncate">
+            <span
+              className={`font-mono text-[11px] truncate ${
+                lastAppliedPatch.verifiedSevered ? "text-emerald-100" : "text-amber-100"
+              }`}
+            >
               Patched <strong className="text-white">{lastAppliedPatch.filepath}</strong>
             </span>
-            <span className="font-mono text-[10px] px-1.5 py-0.2 rounded bg-zinc-950/80 border border-emerald-700/70 text-emerald-300">
+            <span
+              className={`font-mono text-[10px] px-1.5 py-0.2 rounded bg-zinc-950/80 border ${
+                lastAppliedPatch.verifiedSevered
+                  ? "border-emerald-700/70 text-emerald-300"
+                  : "border-amber-700/70 text-amber-300"
+              }`}
+            >
               patch:{lastAppliedPatch.patchId}
             </span>
           </div>

@@ -175,6 +175,30 @@ def classify_taint(code_snippet: str, node_type: str, raw_text: str) -> Tuple[bo
                     if _is_unsafe_html_assignment(clean_raw):
                         is_sink = True
                     break
+        elif sp in ("subprocess.Popen", "subprocess.run", "subprocess.call", "subprocess.check_output"):
+            if sp in clean_code or sp in clean_raw:
+                if node_type in ("call", "call_expression", "attribute", "member_expression"):
+                    if "shell=False" in clean_raw and "shell=True" not in clean_raw and (
+                        "shlex.quote(" in clean_raw or "shlex.split(" in clean_raw or "[" in clean_raw
+                    ):
+                        is_sanitizer = True
+                    else:
+                        is_sink = True
+                    break
+        elif sp in ("cursor.execute", "session.execute"):
+            if sp in clean_code or sp in clean_raw:
+                if node_type in ("call", "call_expression", "attribute", "member_expression"):
+                    if (
+                        ("?" in clean_raw or "%s" in clean_raw)
+                        and 'f"' not in clean_raw
+                        and "f'" not in clean_raw
+                        and ".format(" not in clean_raw
+                        and " + " not in clean_raw
+                    ):
+                        is_sanitizer = True
+                    else:
+                        is_sink = True
+                    break
         elif sp in clean_code or sp in clean_raw:
             if node_type in ("call", "call_expression", "attribute", "member_expression"):
                 is_sink = True
@@ -187,6 +211,36 @@ def classify_taint(code_snippet: str, node_type: str, raw_text: str) -> Tuple[bo
             if clean_code.startswith(f"{san}(") or clean_raw.startswith(f"{san}(") or clean_code == san or clean_raw == san:
                 is_sanitizer = True
                 break
+
+    if not is_sanitizer and node_type in ("call", "call_expression", "assignment", "assignment_expression", "variable_declarator"):
+        for inline_san in (
+            "shlex.quote(",
+            "os.path.basename(",
+            "path.basename(",
+            "os.path.commonpath(",
+            "secure_filename(",
+            "ast.literal_eval(",
+            "yaml.safe_load(",
+            "DOMPurify.sanitize(",
+            "html.escape(",
+            "bleach.clean(",
+            "urllib.parse.quote(",
+            "encodeURIComponent(",
+            "secrets.token_urlsafe(",
+            "secrets.token_hex(",
+            "defusedxml.",
+            '.replace("\\r"',
+            ".replace('\\r'",
+            'filter="data"',
+            "filter='data'",
+        ):
+            if inline_san in clean_raw:
+                is_sanitizer = True
+                break
+
+    if is_sanitizer:
+        is_sink = False
+        is_source = False
 
     return is_source, is_sink, is_sanitizer
 

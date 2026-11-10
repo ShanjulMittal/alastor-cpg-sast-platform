@@ -188,30 +188,38 @@ class DFGBuilder:
 
         target_var_name = target_cpg.name
 
-        # Detect if right-hand side has a source node (e.g. sys.argv[1])
-        source_cpg = self.find_source_node_in_tree(right)
-        if source_cpg:
-            self.emit_dfg_edge(source_cpg.id, target_cpg.id, var_name=target_var_name)
-
-        # Identify all variable uses in right
+        # Identify all variable uses in right and check if right is a sanitizer call
         uses = self._extract_variable_uses(right)
         right_cpg = self.find_cpg_node(right)
 
-        # If right is a sanitizer call (e.g. int(raw_id)), ensure: use -> sanitizer -> target
-        if right_cpg and right_cpg.is_sanitizer:
+        # Detect if right-hand side has a source node (e.g. sys.argv[1])
+        source_cpg = self.find_source_node_in_tree(right)
+
+        # If right is a sanitizer call (e.g. shlex.quote(sys.argv[1]), int(raw_id)), ensure:
+        # source/use -> sanitizer -> target (and mark target as sanitized)
+        if (right_cpg and right_cpg.is_sanitizer) or (assign_cpg and assign_cpg.is_sanitizer):
+            target_cpg.is_sanitizer = True
+            if source_cpg and right_cpg and source_cpg.id != right_cpg.id:
+                self.emit_dfg_edge(source_cpg.id, right_cpg.id, var_name=target_var_name)
             for use_cpg in uses:
                 # Link previous definition to use
                 self._link_reaching_definitions(use_cpg, scope_id)
-                # Link use to sanitizer
-                self.emit_dfg_edge(use_cpg.id, right_cpg.id, var_name=use_cpg.name)
-            # Link sanitizer to target
-            self.emit_dfg_edge(right_cpg.id, target_cpg.id, var_name=target_var_name)
+                if right_cpg:
+                    # Link use to sanitizer
+                    self.emit_dfg_edge(use_cpg.id, right_cpg.id, var_name=use_cpg.name)
+            if right_cpg:
+                # Link sanitizer to target
+                self.emit_dfg_edge(right_cpg.id, target_cpg.id, var_name=target_var_name)
         elif right_cpg and right_cpg.label == "Call":
+            if source_cpg:
+                self.emit_dfg_edge(source_cpg.id, target_cpg.id, var_name=target_var_name)
             for use_cpg in uses:
                 self._link_reaching_definitions(use_cpg, scope_id)
                 self.emit_dfg_edge(use_cpg.id, right_cpg.id, var_name=use_cpg.name)
             self.emit_dfg_edge(right_cpg.id, target_cpg.id, var_name=target_var_name)
         else:
+            if source_cpg:
+                self.emit_dfg_edge(source_cpg.id, target_cpg.id, var_name=target_var_name)
             for use_cpg in uses:
                 self._link_reaching_definitions(use_cpg, scope_id)
                 self.emit_dfg_edge(use_cpg.id, target_cpg.id, var_name=target_var_name)

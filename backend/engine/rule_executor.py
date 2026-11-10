@@ -49,6 +49,7 @@ RULES = [
         WHERE NOT ()-[:CALLS]->(f)
           AND NOT f.name IN ['main', '__init__', '__call__', 'anonymous_func']
           AND NOT f.name STARTS WITH 'test_'
+          AND NOT f.name STARTS WITH '_decommissioned_'
           AND NOT f.filepath STARTS WITH 'scratch/'
           AND NOT f.filepath ENDS WITH '.tsx'
           AND NOT f.code STARTS WITH 'export '
@@ -98,7 +99,11 @@ RULES = [
           AND size(target.name) > 2
           AND NOT EXISTS {
             MATCH (other:Variable {filepath: target.filepath, name: target.name})
-            WHERE other.id <> target.id AND other.start_line >= target.start_line
+            WHERE other.id <> target.id
+              AND (
+                other.start_line >= target.start_line
+                OR (other.scope_id = target.scope_id AND NOT (:Call)-[:DFG_FLOWS_TO]->(other))
+              )
           }
         RETURN 
           'MEDIUM' AS severity,
@@ -344,6 +349,7 @@ RULES = [
         "cypher": """
         MATCH (u:Call)
         WHERE (u.name = 'urlopen' OR u.name ENDS WITH '.urlopen' OR u.name = 'urlretrieve' OR u.name ENDS WITH '.urlretrieve')
+          AND NOT u.is_sanitizer = true
           AND NOT u.code CONTAINS '("https://'
           AND NOT u.code CONTAINS "('https://"
           AND NOT EXISTS {

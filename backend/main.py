@@ -1118,6 +1118,9 @@ def get_scan_progress():
     return current_progress
 
 
+_scan_lock = threading.Lock()
+
+
 @app.post("/api/scan", response_model=ScanResponse)
 def scan_project(req: ScanRequest):
     """
@@ -1125,6 +1128,12 @@ def scan_project(req: ScanRequest):
     Supports local folders, single files, Open/Public GitHub/GitLab/Bitbucket URLs (zero token),
     and Private Git repositories (Personal Access Token / credentials required).
     """
+    with _scan_lock:
+        return _scan_project_locked(req)
+
+
+def _scan_project_locked(req: ScanRequest) -> ScanResponse:
+    """Lock-serialized implementation of `scan_project` preventing concurrent Neo4j ingestion races."""
     global current_scan_dir, current_app_tree
     target_path = req.target_path.strip()
     norm_remote_cand = _normalize_user_git_input(target_path)
@@ -1400,6 +1409,7 @@ def scan_project(req: ScanRequest):
         # or CR/LF log neutralization — never merely by function name.
         verified_sanitizer_funcs = set()
         inline_path_guarded_scopes = set()
+        inline_ssrf_guarded_scopes = set()
         for fn_node in all_nodes:
             if fn_node.label == "Function" and fn_node.code and fn_node.name:
                 fn_src = fn_node.code
@@ -1409,13 +1419,20 @@ def scan_project(req: ScanRequest):
                     or ".is_relative_to(" in fn_src
                     or "secure_filename(" in fn_src
                 )
-                if ("os.path.commonpath(" in fn_src or ".is_relative_to(" in fn_src) and ("raise " in fn_src or "return " in fn_src):
+                if ("os.path.commonpath(" in fn_src or ".is_relative_to(" in fn_src or "os.path.basename(" in fn_src) and (
+                    "raise " in fn_src or "return " in fn_src or "os.path.basename(" in fn_src
+                ):
                     inline_path_guarded_scopes.add(fn_node.id)
                 has_ssrf_confinement = (
                     "ipaddress.ip_address(" in fn_src
                     or ("is_private" in fn_src and "is_loopback" in fn_src)
-                    or bool(re.search(r'\.startswith\(\s*["\']https://[A-Za-z0-9._-]+', fn_src))
+                    or bool(re.search(r'\.startswith\(\s*["\']https://', fn_src))
                 )
+                if (
+                    bool(re.search(r'\.startswith\(\s*["\']https://', fn_src))
+                    and ("raise " in fn_src or "throw " in fn_src)
+                ):
+                    inline_ssrf_guarded_scopes.add(fn_node.id)
                 has_crlf_sanitization = (
                     "\\n" in fn_src
                     and "\\r" in fn_src
@@ -1424,17 +1441,32 @@ def scan_project(req: ScanRequest):
                 if has_path_confinement or has_ssrf_confinement or has_crlf_sanitization:
                     verified_sanitizer_funcs.add(fn_node.name)
 
-        if verified_sanitizer_funcs or inline_path_guarded_scopes:
+        if verified_sanitizer_funcs or inline_path_guarded_scopes or inline_ssrf_guarded_scopes:
             for call_node in all_nodes:
                 if call_node.label == "Call" and not call_node.is_sanitizer:
                     short_callee = call_node.name.split(".")[-1] if "." in call_node.name else call_node.name
                     if short_callee in verified_sanitizer_funcs or call_node.name in verified_sanitizer_funcs:
                         call_node.is_sanitizer = True
+                        call_node.is_sink = False
                     elif (
                         call_node.scope_id in inline_path_guarded_scopes
-                        and short_callee in ("realpath", "resolve")
+                        and short_callee in ("realpath", "resolve", "basename")
                     ):
                         call_node.is_sanitizer = True
+                        call_node.is_sink = False
+                    elif (
+                        call_node.scope_id in inline_ssrf_guarded_scopes
+                        and (
+                            short_callee in ("urlopen", "urlretrieve")
+                            or call_node.name in (
+                                "requests.get", "requests.post", "requests.put", "requests.delete", "requests.request",
+                                "http_requests.get", "http_requests.post", "http_requests.request",
+                                "httpx.get", "httpx.post", "axios.get", "axios.post",
+                            )
+                        )
+                    ):
+                        call_node.is_sanitizer = True
+                        call_node.is_sink = False
 
         for idx, sf in enumerate(scanned_files):
             pct = 60 + int(20 * ((idx + 1) / num_code_files))

@@ -644,6 +644,100 @@ class RemediationPatcherTests(unittest.TestCase):
                 )
             )
 
+    def test_synthesizes_rule2_rule3_rule4_rule5_sca2_iac3_and_open_redirect(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # RULE-2-ORPHAN (Python dormant function with shell=True)
+            orphan_py = os.path.join(tmpdir, "hidden_gadgets.py")
+            with open(orphan_py, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(
+                    "import subprocess\n\n"
+                    "def hidden_debug_shell(cmd: str):\n"
+                    "    subprocess.Popen(cmd, shell=True)\n"
+                )
+            p_r2 = generate_remediation_preview("hidden_gadgets.py", [tmpdir], "RULE-2-ORPHAN", 3)
+            self.assertIsNotNone(p_r2)
+            self.assertTrue(p_r2["can_auto_patch"])
+            self.assertIn("def _decommissioned_hidden_debug_shell(", p_r2["patched_content"])
+            self.assertIn("shell=False", p_r2["patched_content"])
+
+            # RULE-3-DEADSTORE (Python & JS)
+            ds_py = os.path.join(tmpdir, "deadstore.py")
+            with open(ds_py, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("def run():\n    audit_buffer = compute_digest()\n    return True\n")
+            p_r3 = generate_remediation_preview("deadstore.py", [tmpdir], "RULE-3-DEADSTORE", 2)
+            self.assertIsNotNone(p_r3)
+            self.assertTrue(p_r3["can_auto_patch"])
+            self.assertIn("_audit_buffer = compute_digest()", p_r3["patched_content"])
+
+            # RULE-4-INFINITE-LOOP (both when target_line is on while True and when on body line)
+            loop_py = os.path.join(tmpdir, "loop.py")
+            with open(loop_py, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("def spin():\n    c = 0\n    while True:\n        c += 1\n")
+            p_r4 = generate_remediation_preview("loop.py", [tmpdir], "RULE-4-INFINITE-LOOP", 3)
+            self.assertIsNotNone(p_r4)
+            self.assertTrue(p_r4["can_auto_patch"])
+            self.assertIn("for _alastor_iter in range(10000):", p_r4["patched_content"])
+            self.assertNotIn("while True:", p_r4["patched_content"])
+
+            # RULE-5-UNREACHABLE (hoists post-return statement above return)
+            unreach_py = os.path.join(tmpdir, "unreach.py")
+            with open(unreach_py, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(
+                    "def run_pipeline():\n"
+                    "    return True\n"
+                    "    cleanup_temp_files()\n"
+                )
+            p_r5 = generate_remediation_preview("unreach.py", [tmpdir], "RULE-5-UNREACHABLE", 3)
+            self.assertIsNotNone(p_r5)
+            self.assertTrue(p_r5["can_auto_patch"])
+            patched_r5_lines = [l.strip() for l in p_r5["patched_content"].splitlines() if l.strip()]
+            self.assertEqual(
+                patched_r5_lines,
+                ["def run_pipeline():", "cleanup_temp_files()", "return True"],
+            )
+
+            # SCA-1-MANIFEST-AUDIT on code-only import
+            sca_imp = os.path.join(tmpdir, "standalone.py")
+            with open(sca_imp, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("import subprocess\n")
+            p_sca1_imp = generate_remediation_preview("standalone.py", [tmpdir], "SCA-1-MANIFEST-AUDIT", 1)
+            self.assertIsNotNone(p_sca1_imp)
+            self.assertTrue(p_sca1_imp["can_auto_patch"])
+            self.assertIn("alastor-sca: stdlib-verified", p_sca1_imp["patched_content"])
+
+            # SCA-2-LIVE-CVE-LOCKFILE
+            cve_req = os.path.join(tmpdir, "requirements.txt")
+            with open(cve_req, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("requests==2.31.0\n")
+            p_sca2 = generate_remediation_preview(
+                "requirements.txt",
+                [tmpdir],
+                "SCA-2-LIVE-CVE-LOCKFILE",
+                1,
+                recommended_fix="Upgrade requests to >= 2.32.4",
+            )
+            self.assertIsNotNone(p_sca2)
+            self.assertTrue(p_sca2["can_auto_patch"])
+            self.assertIn("requests==2.32.4", p_sca2["patched_content"])
+
+            # IAC-3-CICD-WORKFLOW-SECURITY
+            wf_file = os.path.join(tmpdir, "ci.yml")
+            with open(wf_file, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(
+                    "steps:\n"
+                    "  - uses: actions/checkout@v4\n"
+                    "  - run: echo ${{ github.event.issue.title }}\n"
+                )
+            p_iac3_pin = generate_remediation_preview("ci.yml", [tmpdir], "IAC-3-CICD-WORKFLOW-SECURITY", 2)
+            self.assertIsNotNone(p_iac3_pin)
+            self.assertTrue(p_iac3_pin["can_auto_patch"])
+            self.assertRegex(p_iac3_pin["patched_content"], r"actions/checkout@[0-9a-f]{40}")
+
+            p_iac3_inj = generate_remediation_preview("ci.yml", [tmpdir], "IAC-3-CICD-WORKFLOW-SECURITY", 3)
+            self.assertIsNotNone(p_iac3_inj)
+            self.assertTrue(p_iac3_inj["can_auto_patch"])
+            self.assertIn("$ALASTOR_SAFE_EVENT_INPUT", p_iac3_inj["patched_content"])
+
 
 if __name__ == "__main__":
     unittest.main()
