@@ -501,6 +501,55 @@ class TriageUpdateRequest(BaseModel):
     author: str = "Security Lead"
 
 
+class RemediatePreviewRequest(BaseModel):
+    finding_id: str
+    filepath: str
+    target_line: int = 1
+    rule_id: str = ""
+    recommended_fix: Optional[str] = None
+
+
+class RemediatePreviewResponse(BaseModel):
+    can_auto_patch: bool
+    filepath: str
+    expected_sha256: str
+    original_content: str
+    patched_content: str
+    fix_summary: str
+    target_line: int
+
+
+class RemediateApplyRequest(BaseModel):
+    finding_id: str
+    filepath: str
+    rule_id: str = ""
+    expected_sha256: str
+    patched_content: str
+
+
+class RemediateApplyResponse(BaseModel):
+    status: str
+    patch_id: str
+    filepath: str
+    verified_severed: bool
+    remaining_findings_count: int
+    fixed_delta_count: int
+    message: str
+
+
+class RemediateUndoRequest(BaseModel):
+    patch_id: str
+
+
+class RemediateUndoResponse(BaseModel):
+    status: str
+    patch_id: str
+    filepath: str
+    restored_sha256: str
+    active_findings_count: int
+    message: str
+
+
 # ---------------------------------------------------------------------------
 # 4. Settings & Customization Engine Models
 # ---------------------------------------------------------------------------

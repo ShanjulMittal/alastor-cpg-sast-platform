@@ -39,13 +39,21 @@ from models import (
     SastPlusSuiteResponse, ScanSnapshotRecord, TrackChangesSummary,
     CreateTestProfileRequest, BatchRuleSelectionRequest,
     CreateAccountRequest, CreateUserProfileRequest, SwitchUserOrAccountRequest,
-    UserAccountsStateResponse
+    UserAccountsStateResponse,
+    RemediatePreviewRequest, RemediatePreviewResponse,
+    RemediateApplyRequest, RemediateApplyResponse,
+    RemediateUndoRequest, RemediateUndoResponse,
 )
 from database.neo4j_client import Neo4jClient
 from database.batch_ingestor import BatchIngestor
 from engine.rule_executor import RuleExecutor
 from engine.vuln_extractor import VulnExtractorEngine
 from engine.enterprise_manager import EnterpriseManager
+from engine.remediation_patcher import (
+    apply_workspace_patch,
+    generate_remediation_preview,
+    undo_workspace_patch,
+)
 from compiler.scanner import scan_directory, CODE_EXTENSIONS, IGNORE_DIRS
 from compiler.ast_parser import ASTNormalizer
 from compiler.cfg_builder import CFGBuilder
@@ -2248,16 +2256,14 @@ def _read_authorized_workspace_file(raw_path: str, allowed_roots: List[str]) -> 
     return None
 
 
-@app.get("/api/file")
-def get_file_content(path: str = Query(..., description="Relative or absolute filepath")):
-    """Returns raw source code for Monaco editor rendering within authorized scan roots."""
-    global current_scan_dir
+def _get_authorized_remediation_roots() -> List[str]:
+    """Returns canonical list of authorized scan & project roots for file read and remediation endpoints."""
     base_scan_dir = os.getenv("CPG_SCAN_BASE", os.getcwd())
     remote_workspace_root = os.path.realpath(os.path.join(os.path.dirname(base_scan_dir), ".remote_targets"))
     uploaded_workspace_root = os.path.realpath(os.path.join(os.path.dirname(base_scan_dir), ".uploaded_targets"))
     scan_parent = os.path.dirname(current_scan_dir) if current_scan_dir and os.path.isfile(current_scan_dir) else current_scan_dir
     project_roots = [p.target_path for p in enterprise_mgr.projects if p.target_path]
-    allowed_roots = [
+    return [
         current_scan_dir,
         scan_parent,
         remote_workspace_root,
@@ -2269,6 +2275,55 @@ def get_file_content(path: str = Query(..., description="Relative or absolute fi
         *project_roots,
     ]
 
+
+def _get_remediation_vault_root() -> str:
+    """Returns server-derived `.alastor_patches` undo journal directory path."""
+    base_scan_dir = os.getenv("CPG_SCAN_BASE", os.getcwd())
+    return os.path.realpath(os.path.join(os.path.dirname(base_scan_dir), ".alastor_patches"))
+
+
+def _finding_matches_remediated_target(
+    finding: Finding,
+    finding_id: str,
+    rule_id: str,
+    filepath: str,
+    orig_line: int,
+) -> bool:
+    """Determines whether an active finding post-scan corresponds to the patched target."""
+    if finding.id == finding_id:
+        return True
+    if not rule_id or finding.rule_id != rule_id:
+        return False
+    f_fp = (
+        finding.best_fix_location.filepath
+        if finding.best_fix_location and finding.best_fix_location.filepath
+        else (str(finding.path_nodes[-1].get("filepath") or "") if finding.path_nodes else "")
+    ).replace("\\", "/").lstrip("/")
+    req_fp = (filepath or "").replace("\\", "/").lstrip("/")
+    if not f_fp or not req_fp:
+        return False
+    same_file = (
+        f_fp == req_fp
+        or f_fp.endswith("/" + req_fp)
+        or req_fp.endswith("/" + f_fp)
+    )
+    if not same_file:
+        return False
+    if orig_line <= 0:
+        return True
+    f_line = (
+        finding.best_fix_location.line
+        if finding.best_fix_location and finding.best_fix_location.line
+        else (int(finding.path_nodes[-1].get("start_line") or 0) if finding.path_nodes else 0)
+    )
+    return f_line == orig_line
+
+
+@app.get("/api/file")
+def get_file_content(path: str = Query(..., description="Relative or absolute filepath")):
+    """Returns raw source code for Monaco editor rendering within authorized scan roots."""
+    allowed_roots = _get_authorized_remediation_roots()
+
     try:
         content = _read_authorized_workspace_file(path, allowed_roots)
     except Exception as e:
@@ -2277,6 +2332,182 @@ def get_file_content(path: str = Query(..., description="Relative or absolute fi
     if content is None:
         raise HTTPException(status_code=404, detail=f"File not found or outside authorized scan workspace: {_sanitize_log(path)}")
     return {"filepath": path, "content": content}
+
+
+@app.post("/api/remediate/preview", response_model=RemediatePreviewResponse)
+def remediate_preview(req: RemediatePreviewRequest):
+    """Generates a confined SHA256-guarded deterministic BFL remediation diff preview."""
+    effective_rule = req.rule_id
+    effective_fix = req.recommended_fix
+    if _cached_findings and (not effective_rule or not effective_fix):
+        cached_match = next((f for f in _cached_findings if f.id == req.finding_id), None)
+        if cached_match:
+            if not effective_rule:
+                effective_rule = cached_match.rule_id
+            if not effective_fix:
+                effective_fix = (
+                    cached_match.best_fix_location.recommended_fix
+                    if cached_match.best_fix_location and cached_match.best_fix_location.recommended_fix
+                    else cached_match.remediation
+                )
+
+    preview = generate_remediation_preview(
+        raw_filepath=req.filepath,
+        allowed_roots=_get_authorized_remediation_roots(),
+        rule_id=effective_rule,
+        target_line=req.target_line,
+        recommended_fix=effective_fix,
+    )
+    if preview is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"File not found or outside authorized scan workspace: {_sanitize_log(req.filepath)}",
+        )
+    logger.info(
+        "Prepared remediation preview for %s (finding=%s, auto=%s)",
+        _sanitize_log(req.filepath),
+        _sanitize_log(req.finding_id),
+        preview["can_auto_patch"],
+    )
+    return RemediatePreviewResponse(**preview)
+
+
+@app.post("/api/remediate/apply", response_model=RemediateApplyResponse)
+def remediate_apply(req: RemediateApplyRequest):
+    """Applies a SHA256-verified remediation patch, writes a 0o600 undo journal entry, and re-verifies via CPG."""
+    pre_findings: List[Finding] = []
+    try:
+        pre_findings = [
+            f for f in get_or_compute_findings()
+            if f.triage_status != "NOT_EXPLOITABLE"
+        ]
+    except Exception as pre_err:
+        logger.warning("Pre-patch findings lookup degraded: %s", _sanitize_log(pre_err))
+
+    orig_finding = next((f for f in pre_findings if f.id == req.finding_id), None)
+    orig_line = (
+        orig_finding.best_fix_location.line
+        if orig_finding and orig_finding.best_fix_location
+        else (
+            int(orig_finding.path_nodes[-1].get("start_line") or 0)
+            if orig_finding and orig_finding.path_nodes
+            else 0
+        )
+    )
+
+    try:
+        applied = apply_workspace_patch(
+            raw_filepath=req.filepath,
+            allowed_roots=_get_authorized_remediation_roots(),
+            patch_vault_root=_get_remediation_vault_root(),
+            expected_sha256=req.expected_sha256,
+            patched_content=req.patched_content,
+            finding_id=req.finding_id,
+            rule_id=req.rule_id,
+        )
+    except FileNotFoundError as fnf_exc:
+        raise HTTPException(status_code=404, detail=_sanitize_log(fnf_exc)) from fnf_exc
+    except ValueError as val_exc:
+        raise HTTPException(status_code=409, detail=_sanitize_log(val_exc)) from val_exc
+
+    post_findings: List[Finding] = []
+    scan_degraded = False
+    if current_scan_dir and os.path.exists(current_scan_dir):
+        try:
+            _scan_res = scan_project(ScanRequest(target_path=current_scan_dir))
+            post_findings = [
+                f for f in get_or_compute_findings()
+                if f.triage_status != "NOT_EXPLOITABLE"
+            ]
+        except Exception as scan_err:
+            scan_degraded = True
+            logger.warning("Instant CPG re-verification scan degraded: %s", _sanitize_log(scan_err))
+            try:
+                post_findings = enterprise_mgr.enrich_findings(
+                    enterprise_mgr.run_sca_and_iac_scanners(current_scan_dir)
+                )
+            except Exception:
+                post_findings = []
+
+    still_present = any(
+        _finding_matches_remediated_target(
+            f, req.finding_id, req.rule_id, req.filepath, orig_line
+        )
+        for f in post_findings
+    )
+    is_non_cpg_rule = (req.rule_id or "").upper().startswith(("SCA-", "IAC-"))
+    verified_severed = (not still_present) and (not scan_degraded or is_non_cpg_rule)
+    remaining_count = len(post_findings)
+    fixed_delta = max(0, len(pre_findings) - remaining_count)
+
+    logger.info(
+        "Applied remediation patch %s on %s (severed=%s, remaining=%d)",
+        _sanitize_log(applied["patch_id"]),
+        _sanitize_log(applied["filepath"]),
+        verified_severed,
+        remaining_count,
+    )
+    msg = (
+        f"Applied patch {applied['patch_id'][:8]} to {applied['filepath']}; CPG re-verification confirmed taint path severed."
+        if verified_severed
+        else f"Applied patch {applied['patch_id'][:8]} to {applied['filepath']}; re-run full CPG scan to confirm severance."
+    )
+    return RemediateApplyResponse(
+        status=applied["status"],
+        patch_id=applied["patch_id"],
+        filepath=applied["filepath"],
+        verified_severed=verified_severed,
+        remaining_findings_count=remaining_count,
+        fixed_delta_count=fixed_delta,
+        message=msg,
+    )
+
+
+@app.post("/api/remediate/undo", response_model=RemediateUndoResponse)
+def remediate_undo(req: RemediateUndoRequest):
+    """Restores exact pre-patch workspace bytes from the `.alastor_patches` undo journal and refreshes CPG findings."""
+    try:
+        undone = undo_workspace_patch(
+            patch_id=req.patch_id,
+            allowed_roots=_get_authorized_remediation_roots(),
+            patch_vault_root=_get_remediation_vault_root(),
+        )
+    except ValueError as val_exc:
+        raise HTTPException(status_code=400, detail=_sanitize_log(val_exc)) from val_exc
+    except FileNotFoundError as fnf_exc:
+        raise HTTPException(status_code=404, detail=_sanitize_log(fnf_exc)) from fnf_exc
+
+    active_findings: List[Finding] = []
+    if current_scan_dir and os.path.exists(current_scan_dir):
+        try:
+            _undo_scan = scan_project(ScanRequest(target_path=current_scan_dir))
+            active_findings = [
+                f for f in get_or_compute_findings()
+                if f.triage_status != "NOT_EXPLOITABLE"
+            ]
+        except Exception as scan_err:
+            logger.warning("Post-undo CPG re-scan degraded: %s", _sanitize_log(scan_err))
+            try:
+                active_findings = enterprise_mgr.enrich_findings(
+                    enterprise_mgr.run_sca_and_iac_scanners(current_scan_dir)
+                )
+            except Exception:
+                active_findings = []
+
+    logger.info(
+        "Reverted remediation patch %s on %s (active_findings=%d)",
+        _sanitize_log(undone["patch_id"]),
+        _sanitize_log(undone["filepath"]),
+        len(active_findings),
+    )
+    return RemediateUndoResponse(
+        status=undone["status"],
+        patch_id=undone["patch_id"],
+        filepath=undone["filepath"],
+        restored_sha256=undone["restored_sha256"],
+        active_findings_count=len(active_findings),
+        message=f"Reverted patch {undone['patch_id'][:8]} and restored {undone['filepath']} ({undone['restored_sha256'][:12]}).",
+    )
 
 
 @app.get("/api/node-at-location")

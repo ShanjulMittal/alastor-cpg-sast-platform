@@ -23,6 +23,7 @@ yarn-error.log*
 .uploaded_targets/
 .remote_targets/
 .alastor_vault/
+.alastor_patches/
 backend/data/*.json
 .alastor_*.json
 
