@@ -109,6 +109,7 @@ interface AuditState {
   isDiffEditorOpen: boolean;
   activePathStepIndex: number;
   remediationPreview: RemediatePreviewResponse | null;
+  remediationError: string | null;
   isApplyingPatch: boolean;
   lastAppliedPatch: {
     patchId: string;
@@ -390,6 +391,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   isDiffEditorOpen: false,
   activePathStepIndex: 0,
   remediationPreview: null,
+  remediationError: null,
   isApplyingPatch: false,
   lastAppliedPatch: null,
   audienceMode: "NON_CODER_MANAGEMENT",
@@ -679,7 +681,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       });
       if (res.ok) {
         const data: RemediatePreviewResponse = await res.json();
-        set({ remediationPreview: data });
+        set({ remediationPreview: data, remediationError: null });
       }
     } catch (err) {
       console.error("Failed to fetch remediation preview:", err);
@@ -691,7 +693,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     const preview = get().remediationPreview;
     if (!finding || !preview) return null;
 
-    set({ isApplyingPatch: true });
+    set({ isApplyingPatch: true, remediationError: null });
     try {
       const res = await fetch(`${BACKEND_URL}/api/remediate/apply`, {
         method: "POST",
@@ -713,6 +715,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
             filepath: data.filepath,
             verifiedSevered: data.verified_severed,
           },
+          remediationError: null,
           isApplyingPatch: false,
           isDiffEditorOpen: false,
         });
@@ -723,11 +726,20 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         ]);
         return data;
       }
-      set({ isApplyingPatch: false });
+      if (res.status === 409) {
+        let detail = "Target file was modified externally (SHA256 mismatch). Refresh Diff to reload.";
+        try {
+          const errBody = await res.json();
+          if (errBody?.detail) detail = String(errBody.detail);
+        } catch {}
+        set({ isApplyingPatch: false, remediationError: detail });
+        return null;
+      }
+      set({ isApplyingPatch: false, remediationError: `Failed to apply patch (HTTP ${res.status})` });
       return null;
     } catch (err) {
       console.error("Failed to apply remediation patch:", err);
-      set({ isApplyingPatch: false });
+      set({ isApplyingPatch: false, remediationError: "Network error while applying remediation patch." });
       return null;
     }
   },
@@ -736,7 +748,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     const lastPatch = get().lastAppliedPatch;
     if (!lastPatch) return false;
 
-    set({ isApplyingPatch: true });
+    set({ isApplyingPatch: true, remediationError: null });
     try {
       const res = await fetch(`${BACKEND_URL}/api/remediate/undo`, {
         method: "POST",
@@ -748,6 +760,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       if (res.ok) {
         set({
           lastAppliedPatch: null,
+          remediationError: null,
           isApplyingPatch: false,
         });
         await Promise.all([
@@ -814,17 +827,50 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           );
         }
 
-        if (parsed.executiveAspmTab) {
+        if (
+          parsed.executiveAspmTab &&
+          [
+            "TRANSLATOR",
+            "SBOM",
+            "ATTACK_SURFACE",
+            "ROADMAP",
+            "ACADEMY",
+            "ANALYTICS",
+            "RACI",
+          ].includes(parsed.executiveAspmTab)
+        ) {
           updates.executiveAspmTab = parsed.executiveAspmTab;
         }
 
-        if (parsed.engineAccessTab) {
+        if (
+          parsed.engineAccessTab &&
+          [
+            "RULE_PROFILES",
+            "CYPHER_SANITIZERS",
+            "ACCOUNTS_RBAC",
+            "ISSUE_CONNECTORS",
+          ].includes(parsed.engineAccessTab)
+        ) {
           updates.engineAccessTab = parsed.engineAccessTab;
         }
 
         set(updates);
 
-        if (parsed.workspaceViewMode) {
+        if (
+          parsed.workspaceViewMode &&
+          [
+            "REMEDIATION_IDE",
+            "THREAT_MODEL",
+            "EXECUTIVE_ASPM",
+            "PROJECTS",
+            "ENGINE_ACCESS",
+            "DEEP_DIVE",
+            "RACI_GOVERNANCE",
+            "SAST_PLUS_SUITE",
+            "RULE_PROFILES",
+            "USER_ACCOUNTS",
+          ].includes(parsed.workspaceViewMode)
+        ) {
           get().setWorkspaceViewMode(parsed.workspaceViewMode);
         }
         return;

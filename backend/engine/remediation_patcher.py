@@ -9,6 +9,7 @@ Security Invariants:
      entries matching a strict `^[0-9a-f]{24,32}$` hex `patch_id`.
 2. Optimistic concurrency control enforces exact SHA256 verification before mutating disk.
 """
+import ast
 import base64
 import hashlib
 import json
@@ -30,7 +31,6 @@ _PRUNED_WALK_DIRS = {
 
 _SHELL_TRUE_FLAG = "shell" + "=True"
 _SHELL_FALSE_FLAG = "shell=False"
-_OS_SYSTEM_CALL = "os." + "system("
 _CP_EXEC_CALL = "child_process." + "exec("
 
 
@@ -77,12 +77,29 @@ def _ensure_python_import(lines: List[str], module_name: str) -> List[str]:
             return lines
 
     insert_idx = 0
-    for idx, line in enumerate(lines):
-        stripped = line.strip()
+    docstring_end_idx = 0
+    try:
+        tree = ast.parse("\n".join(lines))
+        if (
+            tree.body
+            and isinstance(tree.body[0], ast.Expr)
+            and isinstance(tree.body[0].value, ast.Constant)
+            and isinstance(tree.body[0].value.value, str)
+            and tree.body[0].end_lineno
+        ):
+            docstring_end_idx = int(tree.body[0].end_lineno)
+    except SyntaxError:
+        docstring_end_idx = 0
+
+    for idx in range(docstring_end_idx, len(lines)):
+        stripped = lines[idx].strip()
         if stripped.startswith(("import ", "from ")):
             insert_idx = idx + 1
         elif stripped and not stripped.startswith(("#", '"""', "'''")):
             break
+
+    if insert_idx < docstring_end_idx:
+        insert_idx = docstring_end_idx
 
     updated = list(lines)
     updated.insert(insert_idx, f"import {module_name}")

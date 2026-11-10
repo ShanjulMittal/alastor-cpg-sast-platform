@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useAuditStore } from "@/store/useAuditStore";
 import { EngineAccessTab, SecurityQueryRule } from "@/types/cpg";
 import { RuleEngineProfilesView } from "./RuleEngineProfilesView";
@@ -54,6 +54,26 @@ export const EngineAccessWorkspace: React.FC = () => {
   const [sanDesc, setSanDesc] = useState("");
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [isSyncingTickets, setIsSyncingTickets] = useState(false);
+  const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showTransientBanner = (msg: string, ms = 3500) => {
+    if (bannerTimerRef.current) {
+      clearTimeout(bannerTimerRef.current);
+    }
+    setStatusBanner(msg);
+    bannerTimerRef.current = setTimeout(() => {
+      setStatusBanner(null);
+      bannerTimerRef.current = null;
+    }, ms);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (bannerTimerRef.current) {
+        clearTimeout(bannerTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!platformSettings) fetchPlatformSettings();
@@ -95,10 +115,10 @@ export const EngineAccessWorkspace: React.FC = () => {
     });
     setSanName("");
     setSanDesc("");
-    setStatusBanner(
-      `Registered AST Sanitizer '${sanName.trim()}' (${sanLang} • ${sanCwe})`
+    showTransientBanner(
+      `Registered AST Sanitizer '${sanName.trim()}' (${sanLang} • ${sanCwe})`,
+      3500
     );
-    setTimeout(() => setStatusBanner(null), 3500);
   };
 
   const handleDfgDepthChange = async (depth: number) => {
@@ -106,16 +126,14 @@ export const EngineAccessWorkspace: React.FC = () => {
       scope: platformSettings?.active_scope || "GLOBAL",
       max_dfg_depth: depth,
     });
-    setStatusBanner(`Updated Neo4j DFG Inter-Procedural Hop Depth to ${depth}`);
-    setTimeout(() => setStatusBanner(null), 3000);
+    showTransientBanner(`Updated Neo4j DFG Inter-Procedural Hop Depth to ${depth}`, 3000);
   };
 
   const handleAutoSyncIssues = async () => {
     setIsSyncingTickets(true);
     await autoSyncTickets();
     setIsSyncingTickets(false);
-    setStatusBanner("Synchronized Issue Tracker with active CPG findings.");
-    setTimeout(() => setStatusBanner(null), 3500);
+    showTransientBanner("Synchronized Issue Tracker with active CPG findings.", 3500);
   };
 
   const tabs: Array<{
