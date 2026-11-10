@@ -329,9 +329,8 @@ def test_fastapi_ai_endpoints_integration(tmp_path: Path):
         with (
             patch.object(main, "frontier_ai_engine", iso_engine),
             patch.object(main, "get_or_compute_findings", return_value=[finding]),
+            TestClient(main.app) as client,
         ):
-            client = TestClient(main.app)
-
             # 1. GET /api/ai/config
             r_get = client.get("/api/ai/config")
             assert r_get.status_code == 200

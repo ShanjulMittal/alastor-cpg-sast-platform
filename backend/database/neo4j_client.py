@@ -1,6 +1,7 @@
 """
 Singleton Neo4j Bolt driver and database initialization procedures.
 """
+import atexit
 import os
 import re
 import logging
@@ -50,13 +51,39 @@ class Neo4jClient:
     def __init__(self):
         self.uri = os.environ.get("NEO4J_URI") or "bolt://localhost:7687"
         runtime_auth = resolve_neo4j_runtime_auth()
+        self._runtime_auth = runtime_auth
         self.user = runtime_auth[0] if runtime_auth else ""
-        self.driver: Driver = GraphDatabase.driver(
-            self.uri,
-            auth=runtime_auth,
-            max_connection_lifetime=3600,
-            max_connection_pool_size=50
-        )
+        self._driver: Optional[Driver] = None
+        atexit.register(self.close)
+
+    @property
+    def driver(self) -> Driver:
+        if self._driver is None:
+            self._driver = GraphDatabase.driver(
+                self.uri,
+                auth=self._runtime_auth,
+                max_connection_lifetime=3600,
+                max_connection_pool_size=50,
+            )
+        return self._driver
+
+    @driver.setter
+    def driver(self, value: Optional[Driver]) -> None:
+        if self._driver is not None and self._driver is not value:
+            try:
+                self._driver.close()
+            except Exception:
+                pass
+        self._driver = value
+
+    @driver.deleter
+    def driver(self) -> None:
+        if self._driver is not None:
+            try:
+                self._driver.close()
+            except Exception:
+                pass
+            self._driver = None
 
     @classmethod
     def get_instance(cls) -> "Neo4jClient":
@@ -127,6 +154,11 @@ class Neo4jClient:
         logger.info("Cleared existing graph database.")
 
     def close(self) -> None:
-        if self.driver:
-            self.driver.close()
+        if self._driver is not None:
+            try:
+                self._driver.close()
+            except Exception:
+                pass
+            self._driver = None
+        if Neo4jClient._instance is self:
             Neo4jClient._instance = None

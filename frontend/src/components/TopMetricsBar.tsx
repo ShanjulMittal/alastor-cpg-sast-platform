@@ -723,16 +723,16 @@ export function TopMetricsBar() {
                     onClick={() =>
                       handleNativeOsDialog(pickerTab === "FILE" ? "file" : "folder", true)
                     }
-                    className="w-full py-2 px-2.5 rounded-lg bg-gradient-to-r from-cyan-50 to-sky-100 hover:from-cyan-100 hover:to-sky-200 border border-cyan-700/80 text-cyan-200 text-xs font-medium flex items-center justify-center gap-1.5 shadow-sm transition-all"
+                    className="w-full py-2 px-2.5 rounded-lg bg-gradient-to-r from-cyan-50 to-sky-100 hover:from-cyan-100 hover:to-sky-200 border border-cyan-700/80 text-cyan-900 text-xs font-medium flex items-center justify-center gap-1.5 shadow-sm transition-all"
                   >
                     {isNativeDialogOpen ? (
                       <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-800" />
                         <span>Opening OS Dialog...</span>
                       </>
                     ) : (
                       <>
-                        <FolderOpen className="w-3.5 h-3.5 text-cyan-400" />
+                        <FolderOpen className="w-3.5 h-3.5 text-cyan-800" />
                         <span>
                           Open Windows {pickerTab === "FILE" ? "File" : "Folder"} Dialog
                         </span>

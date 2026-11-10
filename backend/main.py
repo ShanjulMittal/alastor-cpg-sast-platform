@@ -12,6 +12,7 @@ import ipaddress
 import logging
 import threading
 import subprocess
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse, quote as url_quote
 from typing import List, Optional, Dict, Any, Tuple
@@ -100,10 +101,20 @@ def update_progress(
         error=error
     )
 
+@asynccontextmanager
+async def app_lifespan(_app: FastAPI):
+    startup_event()
+    try:
+        yield
+    finally:
+        shutdown_event()
+
+
 app = FastAPI(
     title="ALASTOR Enterprise Deterministic CPG, STRIDE Threat Modeling & SAST++++++ Engine",
     version="2.6.1",
-    description="Compiler-grade deterministic Code Property Graph, STRIDE Threat Modeling, Live Lockfile CVE Reachability, Secret Keys Vault, Rule Engine Profiles, Multi-Tenant RBAC, and ASPM platform."
+    description="Compiler-grade deterministic Code Property Graph, STRIDE Threat Modeling, Live Lockfile CVE Reachability, Secret Keys Vault, Rule Engine Profiles, Multi-Tenant RBAC, and ASPM platform.",
+    lifespan=app_lifespan,
 )
 
 # CORS setup
@@ -854,14 +865,20 @@ def _resolve_remote_url_target(
     return dest_dir, None
 
 
-@app.on_event("startup")
 def startup_event():
     """Initializes Neo4j connection, verifies APOC, applies graph constraints, and restores cached scan state."""
     global current_scan_dir, current_app_tree, _cached_findings, _cached_findings_time, _last_neo4j_ingested_dir
+    _default_root_norm = os.path.normcase(os.path.abspath(enterprise_mgr.platform_root))
+    _caller_overrode_scan_dir = (
+        not current_scan_dir
+        or os.path.normcase(os.path.abspath(current_scan_dir)) != _default_root_norm
+    )
     try:
         neo4j_client.verify_connectivity_and_apoc()
         neo4j_client.init_schema()
         logger.info("Database initialized successfully.")
+        if _caller_overrode_scan_dir:
+            return
         # Find the most recently scanned project in scan_history_cache.json if available
         _latest_ts = ""
         for _entry in enterprise_mgr.project_scan_cache.values():
@@ -907,7 +924,6 @@ def startup_event():
         logger.error(f"Failed to initialize Neo4j: {e}", exc_info=True)
 
 
-@app.on_event("shutdown")
 def shutdown_event():
     neo4j_client.close()
 

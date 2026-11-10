@@ -26,7 +26,7 @@ html[data-theme="olympian-light"] {
   --ink-secondary: #334155;
   --ink-muted: #475569;
   --sig-crimson: #be123c;
-  --sig-gold: #b45309;
+  --sig-gold: #92400e;
   --sig-emerald: #047857;
   --sig-cyan: #0e7490;
   --sev-critical: #be123c;
@@ -67,7 +67,7 @@ html[data-theme="athena-parchment"] {
   --ink-secondary: #44362a;
   --ink-muted: #574838;
   --sig-crimson: #be123c;
-  --sig-gold: #b45309;
+  --sig-gold: #92400e;
   --sig-emerald: #047857;
   --sig-cyan: #0e7490;
   --sev-critical: #be123c;
@@ -108,9 +108,9 @@ html[data-theme="hyperborean-light"] {
   --ink-secondary: #263e5c;
   --ink-muted: #3b5573;
   --sig-crimson: #be123c;
-  --sig-gold: #b45309;
+  --sig-gold: #92400e;
   --sig-emerald: #047857;
-  --sig-cyan: #0284c7;
+  --sig-cyan: #0369a1;
   --sev-critical: #be123c;
   --sev-high: #92400e;
   --sev-medium: #854d0e;
@@ -269,7 +269,7 @@ html .hover\:bg-cyan-900:hover {
   background-color: #a5f3fc !important;
 }
 html :is(.text-cyan-100, .text-cyan-200, .text-cyan-300, .text-cyan-400) {
-  color: #0e7490 !important;
+  color: #155e75 !important;
 }
 html :is(
   .border-cyan-900,
@@ -871,7 +871,7 @@ html :is(
   [class*=" text-cyan-300/"],
   .group:hover .group-hover\:text-cyan-300
 ) {
-  color: #0e7490 !important;
+  color: #155e75 !important;
 }
 
 html :is(

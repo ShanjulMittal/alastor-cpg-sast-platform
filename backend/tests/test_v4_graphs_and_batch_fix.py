@@ -355,135 +355,134 @@ def test_api_graph_enrichment_and_batch_remediate_endpoint(tmp_path: Path):
     try:
         main.current_scan_dir = str(tmp_path)
         main.current_app_tree = AppTreeAnalyzer(str(tmp_path)).analyze()
-        client = TestClient(main.app)
+        with TestClient(main.app) as client:
+            # 1. GET /api/graph?view_mode=FINDING_PATH synthesizes 3-node chain
+            with patch.object(main, "get_or_compute_findings", return_value=[lone_finding, yaml_finding]):
+                fp_resp = client.get("/api/graph", params={"view_mode": "FINDING_PATH", "finding_id": "F-CRYPTO-API"})
+                assert fp_resp.status_code == 200
+                fp_data = fp_resp.json()
+                assert len(fp_data["nodes"]) == 3
+                assert len(fp_data["edges"]) == 2
+                assert fp_data["edges"][0]["step_index"] == 1
+                assert fp_data["edges"][0]["flow_label"]
 
-        # 1. GET /api/graph?view_mode=FINDING_PATH synthesizes 3-node chain
-        with patch.object(main, "get_or_compute_findings", return_value=[lone_finding, yaml_finding]):
-            fp_resp = client.get("/api/graph", params={"view_mode": "FINDING_PATH", "finding_id": "F-CRYPTO-API"})
-            assert fp_resp.status_code == 200
-            fp_data = fp_resp.json()
-            assert len(fp_data["nodes"]) == 3
-            assert len(fp_data["edges"]) == 2
-            assert fp_data["edges"][0]["step_index"] == 1
-            assert fp_data["edges"][0]["flow_label"]
+            # 2. GET /api/graph?view_mode=APP_TREE falls back to current_app_tree when Neo4j has 0 AppFile nodes & includes IMPORTS edge
+            mock_session_cm = MagicMock()
+            mock_session = MagicMock()
+            mock_session.run.return_value.single.return_value = {"all_nodes": [], "all_edges": []}
+            mock_session_cm.__enter__.return_value = mock_session
+            with patch.object(main.neo4j_client, "driver") as mock_driver:
+                mock_driver.session.return_value = mock_session_cm
+                tree_resp = client.get("/api/graph", params={"view_mode": "APP_TREE"})
+                assert tree_resp.status_code == 200
+                tree_data = tree_resp.json()
+                node_ids = {n["id"] for n in tree_data["nodes"]}
+                assert "file:api.ts" in node_ids
+                assert "file:utils/Sanitizer.ts" in node_ids
+                import_edges = [e for e in tree_data["edges"] if e["type"] == "IMPORTS"]
+                assert any(
+                    e["id"] == "xfile:api.ts->utils/Sanitizer.ts"
+                    and e["source"] == "file:api.ts"
+                    and e["target"] == "file:utils/Sanitizer.ts"
+                    and e.get("flow_label")
+                    and isinstance(e.get("step_index"), int)
+                    and e["step_index"] >= 1
+                    for e in import_edges
+                )
+                assert [e["step_index"] for e in tree_data["edges"]] == list(
+                    range(1, len(tree_data["edges"]) + 1)
+                )
 
-        # 2. GET /api/graph?view_mode=APP_TREE falls back to current_app_tree when Neo4j has 0 AppFile nodes & includes IMPORTS edge
-        mock_session_cm = MagicMock()
-        mock_session = MagicMock()
-        mock_session.run.return_value.single.return_value = {"all_nodes": [], "all_edges": []}
-        mock_session_cm.__enter__.return_value = mock_session
-        with patch.object(main.neo4j_client, "driver") as mock_driver:
-            mock_driver.session.return_value = mock_session_cm
-            tree_resp = client.get("/api/graph", params={"view_mode": "APP_TREE"})
-            assert tree_resp.status_code == 200
-            tree_data = tree_resp.json()
-            node_ids = {n["id"] for n in tree_data["nodes"]}
-            assert "file:api.ts" in node_ids
-            assert "file:utils/Sanitizer.ts" in node_ids
-            import_edges = [e for e in tree_data["edges"] if e["type"] == "IMPORTS"]
-            assert any(
-                e["id"] == "xfile:api.ts->utils/Sanitizer.ts"
-                and e["source"] == "file:api.ts"
-                and e["target"] == "file:utils/Sanitizer.ts"
-                and e.get("flow_label")
-                and isinstance(e.get("step_index"), int)
-                and e["step_index"] >= 1
-                for e in import_edges
-            )
-            assert [e["step_index"] for e in tree_data["edges"]] == list(
-                range(1, len(tree_data["edges"]) + 1)
-            )
-
-        # 2b. GET /api/graph?view_mode=APP_TREE with Neo4j AppFile nodes and current_app_tree=None still appends IMPORTS edges,
-        #     and GET /api/app-tree preserves cross_file_edges + imports_files in serialized response.
-        main.current_app_tree = None
-        mock_session.run.return_value.single.return_value = {
-            "all_nodes": [
-                {"props": {"id": "file:api.ts", "filepath": "api.ts"}, "label": "AppFile"},
-                {"props": {"id": "file:utils/Sanitizer.ts", "filepath": "utils/Sanitizer.ts"}, "label": "AppFile"},
-            ],
-            "all_edges": [
-                {"id": "contains:root->api", "source": "dir:root", "target": "file:api.ts", "type": "CONTAINS", "var_name": None},
-            ],
-        }
-        with patch.object(main.neo4j_client, "driver") as mock_driver:
-            mock_driver.session.return_value = mock_session_cm
-            neo_tree_resp = client.get("/api/graph", params={"view_mode": "APP_TREE"})
-            assert neo_tree_resp.status_code == 200
-            neo_edges = neo_tree_resp.json()["edges"]
-            assert any(e["type"] == "IMPORTS" and "cleanInput" in (e.get("flow_label") or "") for e in neo_edges)
-            assert any(e["type"] == "CONTAINS" and e.get("flow_label") == "CONTAINS ▶" for e in neo_edges)
-            assert [e["step_index"] for e in neo_edges] == list(range(1, len(neo_edges) + 1))
-
-            # DFG_ONLY edge humanization + step_index check
+            # 2b. GET /api/graph?view_mode=APP_TREE with Neo4j AppFile nodes and current_app_tree=None still appends IMPORTS edges,
+            #     and GET /api/app-tree preserves cross_file_edges + imports_files in serialized response.
+            main.current_app_tree = None
             mock_session.run.return_value.single.return_value = {
                 "all_nodes": [
-                    {"id": "n1", "label": "Parameter", "filepath": "api.ts", "start_line": 1, "end_line": 1},
-                    {"id": "n2", "label": "Call", "filepath": "api.ts", "start_line": 2, "end_line": 2},
+                    {"props": {"id": "file:api.ts", "filepath": "api.ts"}, "label": "AppFile"},
+                    {"props": {"id": "file:utils/Sanitizer.ts", "filepath": "utils/Sanitizer.ts"}, "label": "AppFile"},
                 ],
                 "all_edges": [
-                    {"id": "dfg-1", "source": "n1", "target": "n2", "type": "DFG_FLOWS_TO", "var_name": "x"},
+                    {"id": "contains:root->api", "source": "dir:root", "target": "file:api.ts", "type": "CONTAINS", "var_name": None},
                 ],
             }
-            dfg_resp = client.get("/api/graph", params={"view_mode": "DFG_ONLY"})
-            assert dfg_resp.status_code == 200
-            dfg_edges = dfg_resp.json()["edges"]
-            assert len(dfg_edges) == 1
-            assert dfg_edges[0]["flow_label"] == "TAINT (x) ▶"
-            assert dfg_edges[0]["step_index"] == 1
+            with patch.object(main.neo4j_client, "driver") as mock_driver:
+                mock_driver.session.return_value = mock_session_cm
+                neo_tree_resp = client.get("/api/graph", params={"view_mode": "APP_TREE"})
+                assert neo_tree_resp.status_code == 200
+                neo_edges = neo_tree_resp.json()["edges"]
+                assert any(e["type"] == "IMPORTS" and "cleanInput" in (e.get("flow_label") or "") for e in neo_edges)
+                assert any(e["type"] == "CONTAINS" and e.get("flow_label") == "CONTAINS ▶" for e in neo_edges)
+                assert [e["step_index"] for e in neo_edges] == list(range(1, len(neo_edges) + 1))
 
-        app_tree_resp = client.get("/api/app-tree")
-        assert app_tree_resp.status_code == 200
-        app_tree_json = app_tree_resp.json()
-        assert any(
-            ce["source_filepath"] == "api.ts" and ce["target_filepath"] == "utils/Sanitizer.ts"
-            for ce in app_tree_json["cross_file_edges"]
-        )
+                # DFG_ONLY edge humanization + step_index check
+                mock_session.run.return_value.single.return_value = {
+                    "all_nodes": [
+                        {"id": "n1", "label": "Parameter", "filepath": "api.ts", "start_line": 1, "end_line": 1},
+                        {"id": "n2", "label": "Call", "filepath": "api.ts", "start_line": 2, "end_line": 2},
+                    ],
+                    "all_edges": [
+                        {"id": "dfg-1", "source": "n1", "target": "n2", "type": "DFG_FLOWS_TO", "var_name": "x"},
+                    ],
+                }
+                dfg_resp = client.get("/api/graph", params={"view_mode": "DFG_ONLY"})
+                assert dfg_resp.status_code == 200
+                dfg_edges = dfg_resp.json()["edges"]
+                assert len(dfg_edges) == 1
+                assert dfg_edges[0]["flow_label"] == "TAINT (x) ▶"
+                assert dfg_edges[0]["step_index"] == 1
 
-        # 3. POST /api/remediate/batch-apply fixes both findings & runs single CPG re-scan
-        with (
-            patch.object(main, "_get_authorized_remediation_roots", return_value=[str(tmp_path)]),
-            patch.object(main, "_get_remediation_vault_root", return_value=vault_dir),
-            patch.object(main, "scan_project", return_value=None) as mock_scan,
-            patch.object(
-                main,
-                "get_or_compute_findings",
-                side_effect=[[lone_finding, yaml_finding], []],
-            ),
-        ):
-            req_payload = BatchRemediateRequest(finding_ids=["F-CRYPTO-API", "F-YAML-API"]).model_dump()
-            batch_resp = client.post("/api/remediate/batch-apply", json=req_payload)
-            assert batch_resp.status_code == 200
-            parsed = BatchRemediateResponse(**batch_resp.json())
-            assert parsed.status == "BATCH_APPLIED"
-            assert parsed.applied_count == 2
-            assert parsed.verified_severed_count == 2
-            assert parsed.remaining_findings_count == 0
-            assert "service.py" in parsed.patched_files
-            assert "sha256" in parsed.unified_diff
-            assert "safe_load" in parsed.unified_diff
-            assert mock_scan.call_count == 1
-
-        # 4. POST /api/remediate/batch-apply maps FileNotFoundError -> 404 and ValueError -> 409
-        with (
-            patch.object(main, "get_or_compute_findings", return_value=[lone_finding]),
-            patch.object(main, "batch_apply_workspace_patches", side_effect=ValueError("SHA256 mismatch")),
-        ):
-            conflict_resp = client.post(
-                "/api/remediate/batch-apply",
-                json=BatchRemediateRequest(finding_ids=["F-CRYPTO-API"]).model_dump(),
+            app_tree_resp = client.get("/api/app-tree")
+            assert app_tree_resp.status_code == 200
+            app_tree_json = app_tree_resp.json()
+            assert any(
+                ce["source_filepath"] == "api.ts" and ce["target_filepath"] == "utils/Sanitizer.ts"
+                for ce in app_tree_json["cross_file_edges"]
             )
-            assert conflict_resp.status_code == 409
 
-        with (
-            patch.object(main, "get_or_compute_findings", return_value=[lone_finding]),
-            patch.object(main, "batch_apply_workspace_patches", side_effect=FileNotFoundError("Missing file")),
-        ):
-            missing_resp = client.post(
-                "/api/remediate/batch-apply",
-                json=BatchRemediateRequest(finding_ids=["F-CRYPTO-API"]).model_dump(),
-            )
-            assert missing_resp.status_code == 404
+            # 3. POST /api/remediate/batch-apply fixes both findings & runs single CPG re-scan
+            with (
+                patch.object(main, "_get_authorized_remediation_roots", return_value=[str(tmp_path)]),
+                patch.object(main, "_get_remediation_vault_root", return_value=vault_dir),
+                patch.object(main, "scan_project", return_value=None) as mock_scan,
+                patch.object(
+                    main,
+                    "get_or_compute_findings",
+                    side_effect=[[lone_finding, yaml_finding], []],
+                ),
+            ):
+                req_payload = BatchRemediateRequest(finding_ids=["F-CRYPTO-API", "F-YAML-API"]).model_dump()
+                batch_resp = client.post("/api/remediate/batch-apply", json=req_payload)
+                assert batch_resp.status_code == 200
+                parsed = BatchRemediateResponse(**batch_resp.json())
+                assert parsed.status == "BATCH_APPLIED"
+                assert parsed.applied_count == 2
+                assert parsed.verified_severed_count == 2
+                assert parsed.remaining_findings_count == 0
+                assert "service.py" in parsed.patched_files
+                assert "sha256" in parsed.unified_diff
+                assert "safe_load" in parsed.unified_diff
+                assert mock_scan.call_count == 1
+
+            # 4. POST /api/remediate/batch-apply maps FileNotFoundError -> 404 and ValueError -> 409
+            with (
+                patch.object(main, "get_or_compute_findings", return_value=[lone_finding]),
+                patch.object(main, "batch_apply_workspace_patches", side_effect=ValueError("SHA256 mismatch")),
+            ):
+                conflict_resp = client.post(
+                    "/api/remediate/batch-apply",
+                    json=BatchRemediateRequest(finding_ids=["F-CRYPTO-API"]).model_dump(),
+                )
+                assert conflict_resp.status_code == 409
+
+            with (
+                patch.object(main, "get_or_compute_findings", return_value=[lone_finding]),
+                patch.object(main, "batch_apply_workspace_patches", side_effect=FileNotFoundError("Missing file")),
+            ):
+                missing_resp = client.post(
+                    "/api/remediate/batch-apply",
+                    json=BatchRemediateRequest(finding_ids=["F-CRYPTO-API"]).model_dump(),
+                )
+                assert missing_resp.status_code == 404
     finally:
         main.current_scan_dir = prev_scan_dir
         main.current_app_tree = prev_app_tree

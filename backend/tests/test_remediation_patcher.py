@@ -400,74 +400,73 @@ class RemediationPatcherTests(unittest.TestCase):
             prev_scan_dir = main.current_scan_dir
             main.current_scan_dir = tmpdir
             try:
-                client = TestClient(main.app)
+                with TestClient(main.app) as client:
+                    # Path traversal must return 404
+                    trav_resp = client.post(
+                        "/api/remediate/preview",
+                        json={
+                            "finding_id": "F-TRAV",
+                            "filepath": "../../etc/passwd",
+                            "target_line": 1,
+                            "rule_id": "RULE-1-TAINT",
+                        },
+                    )
+                    self.assertEqual(trav_resp.status_code, 404)
 
-                # Path traversal must return 404
-                trav_resp = client.post(
-                    "/api/remediate/preview",
-                    json={
-                        "finding_id": "F-TRAV",
-                        "filepath": "../../etc/passwd",
-                        "target_line": 1,
-                        "rule_id": "RULE-1-TAINT",
-                    },
-                )
-                self.assertEqual(trav_resp.status_code, 404)
-
-                prev_resp = client.post(
-                    "/api/remediate/preview",
-                    json={
-                        "finding_id": "F-SHELL-1",
-                        "filepath": "service.py",
-                        "target_line": 2,
-                        "rule_id": "RULE-6-SHELL-INJECTION",
-                    },
-                )
-                self.assertEqual(prev_resp.status_code, 200)
-                prev_json = prev_resp.json()
-                self.assertTrue(prev_json["can_auto_patch"])
-
-                with (
-                    patch.object(main, "_get_remediation_vault_root", return_value=vault_dir),
-                    patch.object(main, "scan_project", return_value=None),
-                    patch.object(main, "get_or_compute_findings", return_value=[]),
-                ):
-                    apply_resp = client.post(
-                        "/api/remediate/apply",
+                    prev_resp = client.post(
+                        "/api/remediate/preview",
                         json={
                             "finding_id": "F-SHELL-1",
                             "filepath": "service.py",
+                            "target_line": 2,
                             "rule_id": "RULE-6-SHELL-INJECTION",
-                            "expected_sha256": prev_json["expected_sha256"],
-                            "patched_content": prev_json["patched_content"],
                         },
                     )
-                    self.assertEqual(apply_resp.status_code, 200)
-                    apply_json = apply_resp.json()
-                    self.assertEqual(apply_json["status"], "applied")
-                    self.assertTrue(apply_json["verified_severed"])
+                    self.assertEqual(prev_resp.status_code, 200)
+                    prev_json = prev_resp.json()
+                    self.assertTrue(prev_json["can_auto_patch"])
 
-                    # Re-applying with stale expected_sha256 must map ValueError -> HTTP 409
-                    stale_resp = client.post(
-                        "/api/remediate/apply",
-                        json={
-                            "finding_id": "F-SHELL-1",
-                            "filepath": "service.py",
-                            "rule_id": "RULE-6-SHELL-INJECTION",
-                            "expected_sha256": prev_json["expected_sha256"],
-                            "patched_content": "# stale edit\n",
-                        },
-                    )
-                    self.assertEqual(stale_resp.status_code, 409)
+                    with (
+                        patch.object(main, "_get_remediation_vault_root", return_value=vault_dir),
+                        patch.object(main, "scan_project", return_value=None),
+                        patch.object(main, "get_or_compute_findings", return_value=[]),
+                    ):
+                        apply_resp = client.post(
+                            "/api/remediate/apply",
+                            json={
+                                "finding_id": "F-SHELL-1",
+                                "filepath": "service.py",
+                                "rule_id": "RULE-6-SHELL-INJECTION",
+                                "expected_sha256": prev_json["expected_sha256"],
+                                "patched_content": prev_json["patched_content"],
+                            },
+                        )
+                        self.assertEqual(apply_resp.status_code, 200)
+                        apply_json = apply_resp.json()
+                        self.assertEqual(apply_json["status"], "applied")
+                        self.assertTrue(apply_json["verified_severed"])
 
-                    undo_resp = client.post(
-                        "/api/remediate/undo",
-                        json={"patch_id": apply_json["patch_id"]},
-                    )
-                    self.assertEqual(undo_resp.status_code, 200)
-                    undo_json = undo_resp.json()
-                    self.assertEqual(undo_json["status"], "reverted")
-                    self.assertEqual(undo_json["restored_sha256"], prev_json["expected_sha256"])
+                        # Re-applying with stale expected_sha256 must map ValueError -> HTTP 409
+                        stale_resp = client.post(
+                            "/api/remediate/apply",
+                            json={
+                                "finding_id": "F-SHELL-1",
+                                "filepath": "service.py",
+                                "rule_id": "RULE-6-SHELL-INJECTION",
+                                "expected_sha256": prev_json["expected_sha256"],
+                                "patched_content": "# stale edit\n",
+                            },
+                        )
+                        self.assertEqual(stale_resp.status_code, 409)
+
+                        undo_resp = client.post(
+                            "/api/remediate/undo",
+                            json={"patch_id": apply_json["patch_id"]},
+                        )
+                        self.assertEqual(undo_resp.status_code, 200)
+                        undo_json = undo_resp.json()
+                        self.assertEqual(undo_json["status"], "reverted")
+                        self.assertEqual(undo_json["restored_sha256"], prev_json["expected_sha256"])
             finally:
                 main.current_scan_dir = prev_scan_dir
 
@@ -510,87 +509,86 @@ class RemediationPatcherTests(unittest.TestCase):
 
             prev_scan_dir = main.current_scan_dir
             try:
-                client = TestClient(main.app)
-
-                # (a) Matching (rule_id, filepath) finding disappears -> verified_severed=True, fixed_delta_count=1
                 main.current_scan_dir = tmpdir
-                patched_a = 'import shlex\nimport subprocess\nsubprocess.run(shlex.split("ls -la"), shell=False)\n'
-                with (
-                    patch.object(main, "_get_remediation_vault_root", return_value=vault_dir),
-                    patch.object(main, "scan_project", return_value=None),
-                    patch.object(
-                        main,
-                        "get_or_compute_findings",
-                        side_effect=[[pre_finding, unrelated_finding], [unrelated_finding]],
-                    ),
-                ):
-                    resp_a = client.post(
-                        "/api/remediate/apply",
-                        json={
-                            "finding_id": "F-PRE-1",
-                            "filepath": "worker.py",
-                            "rule_id": "",
-                            "expected_sha256": orig_sha,
-                            "patched_content": patched_a,
-                        },
-                    )
-                    self.assertEqual(resp_a.status_code, 200)
-                    data_a = resp_a.json()
-                    self.assertTrue(data_a["verified_severed"])
-                    self.assertEqual(data_a["fixed_delta_count"], 1)
-                    self.assertEqual(data_a["remaining_findings_count"], 1)
+                with TestClient(main.app) as client:
+                    # (a) Matching (rule_id, filepath) finding disappears -> verified_severed=True, fixed_delta_count=1
+                    patched_a = 'import shlex\nimport subprocess\nsubprocess.run(shlex.split("ls -la"), shell=False)\n'
+                    with (
+                        patch.object(main, "_get_remediation_vault_root", return_value=vault_dir),
+                        patch.object(main, "scan_project", return_value=None),
+                        patch.object(
+                            main,
+                            "get_or_compute_findings",
+                            side_effect=[[pre_finding, unrelated_finding], [unrelated_finding]],
+                        ),
+                    ):
+                        resp_a = client.post(
+                            "/api/remediate/apply",
+                            json={
+                                "finding_id": "F-PRE-1",
+                                "filepath": "worker.py",
+                                "rule_id": "",
+                                "expected_sha256": orig_sha,
+                                "patched_content": patched_a,
+                            },
+                        )
+                        self.assertEqual(resp_a.status_code, 200)
+                        data_a = resp_a.json()
+                        self.assertTrue(data_a["verified_severed"])
+                        self.assertEqual(data_a["fixed_delta_count"], 1)
+                        self.assertEqual(data_a["remaining_findings_count"], 1)
 
-                # Reset file for (b): non-fixing fallback comment shifts unfixed finding from L=2 to L=4 (new node/finding ID)
-                with open(vuln_file, "w", encoding="utf-8", newline="\n") as fh:
-                    fh.write(original)
-                shifted_patch = '# ALASTOR BFL Fix Guidance: replace subshell\n# TODO\nimport subprocess\nsubprocess.run("ls -la", shell=True)\n'
-                with (
-                    patch.object(main, "_get_remediation_vault_root", return_value=vault_dir),
-                    patch.object(main, "scan_project", return_value=None),
-                    patch.object(
-                        main,
-                        "get_or_compute_findings",
-                        side_effect=[[pre_finding], [shifted_finding]],
-                    ),
-                ):
-                    resp_b = client.post(
-                        "/api/remediate/apply",
-                        json={
-                            "finding_id": "F-PRE-1",
-                            "filepath": "worker.py",
-                            "rule_id": "",
-                            "expected_sha256": orig_sha,
-                            "patched_content": shifted_patch,
-                        },
-                    )
-                    self.assertEqual(resp_b.status_code, 200)
-                    data_b = resp_b.json()
-                    self.assertFalse(data_b["verified_severed"])
-                    self.assertEqual(data_b["fixed_delta_count"], 0)
-                    self.assertNotIn("confirmed taint path severed", data_b["message"])
+                    # Reset file for (b): non-fixing fallback comment shifts unfixed finding from L=2 to L=4 (new node/finding ID)
+                    with open(vuln_file, "w", encoding="utf-8", newline="\n") as fh:
+                        fh.write(original)
+                    shifted_patch = '# ALASTOR BFL Fix Guidance: replace subshell\n# TODO\nimport subprocess\nsubprocess.run("ls -la", shell=True)\n'
+                    with (
+                        patch.object(main, "_get_remediation_vault_root", return_value=vault_dir),
+                        patch.object(main, "scan_project", return_value=None),
+                        patch.object(
+                            main,
+                            "get_or_compute_findings",
+                            side_effect=[[pre_finding], [shifted_finding]],
+                        ),
+                    ):
+                        resp_b = client.post(
+                            "/api/remediate/apply",
+                            json={
+                                "finding_id": "F-PRE-1",
+                                "filepath": "worker.py",
+                                "rule_id": "",
+                                "expected_sha256": orig_sha,
+                                "patched_content": shifted_patch,
+                            },
+                        )
+                        self.assertEqual(resp_b.status_code, 200)
+                        data_b = resp_b.json()
+                        self.assertFalse(data_b["verified_severed"])
+                        self.assertEqual(data_b["fixed_delta_count"], 0)
+                        self.assertNotIn("confirmed taint path severed", data_b["message"])
 
-                # Reset file for (c): current_scan_dir unset/empty -> scan skipped -> verified_severed=False
-                with open(vuln_file, "w", encoding="utf-8", newline="\n") as fh:
-                    fh.write(original)
-                main.current_scan_dir = ""
-                with (
-                    patch.object(main, "_get_authorized_remediation_roots", return_value=[tmpdir]),
-                    patch.object(main, "_get_remediation_vault_root", return_value=vault_dir),
-                    patch.object(main, "get_or_compute_findings", return_value=[pre_finding]),
-                ):
-                    resp_c = client.post(
-                        "/api/remediate/apply",
-                        json={
-                            "finding_id": "F-PRE-1",
-                            "filepath": "worker.py",
-                            "rule_id": "RULE-6-SHELL-INJECTION",
-                            "expected_sha256": orig_sha,
-                            "patched_content": patched_a,
-                        },
-                    )
-                    self.assertEqual(resp_c.status_code, 200)
-                    data_c = resp_c.json()
-                    self.assertFalse(data_c["verified_severed"])
+                    # Reset file for (c): current_scan_dir unset/empty -> scan skipped -> verified_severed=False
+                    with open(vuln_file, "w", encoding="utf-8", newline="\n") as fh:
+                        fh.write(original)
+                    main.current_scan_dir = ""
+                    with (
+                        patch.object(main, "_get_authorized_remediation_roots", return_value=[tmpdir]),
+                        patch.object(main, "_get_remediation_vault_root", return_value=vault_dir),
+                        patch.object(main, "get_or_compute_findings", return_value=[pre_finding]),
+                    ):
+                        resp_c = client.post(
+                            "/api/remediate/apply",
+                            json={
+                                "finding_id": "F-PRE-1",
+                                "filepath": "worker.py",
+                                "rule_id": "RULE-6-SHELL-INJECTION",
+                                "expected_sha256": orig_sha,
+                                "patched_content": patched_a,
+                            },
+                        )
+                        self.assertEqual(resp_c.status_code, 200)
+                        data_c = resp_c.json()
+                        self.assertFalse(data_c["verified_severed"])
             finally:
                 main.current_scan_dir = prev_scan_dir
 
