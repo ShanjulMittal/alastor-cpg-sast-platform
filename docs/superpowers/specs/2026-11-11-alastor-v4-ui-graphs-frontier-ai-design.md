@@ -73,9 +73,21 @@ ALASTOR v4.0 upgrades the platform across three tightly integrated pillars while
         - `Rule Engine, Cypher & Sanitizer Studio` (`RuleEngineProfilesView` + `EngineAccessWorkspace` + Live Web CVE Intel)
         - `RACI Governance, RBAC & Integrations` (`RaciGovernanceView` + `UserAccountProfileView` + `IntegrationHubModal` Jira/GitHub connectors)
         - `Export Center` (One-click SARIF, HTML Executive Dossier, Markdown, CSV, CycloneDX SBOM, Unified `.patch` bundle).
-   - Right: `⌘K / Ctrl+K` Quick Command button, Theme/Appearance toggle (preserving all 6 themes), and **`✨ Frontier AI` Copilot Drawer Toggle** (with live `% Tokens Saved` badge).
+   - Right: `⌘K / Ctrl+K` Quick Command button, Settings/Preferences button, and **`✨ Frontier AI` Copilot Drawer Toggle** (with live `% Tokens Saved` badge).
 
-### 3.2 Net-New Workflow Additions
+### 3.2 Mandatory Light-Only High-Contrast Daylight Theme System
+Per explicit user requirement, **all dark themes (`alastor-infernal`, `hecate-arcane`, `stygian-abyss`) are retired**; ALASTOR v4.0 runs **exclusively in crisp, high-visibility Light Mode** so every text label, code snippet, table cell, badge, and graph arrow is effortlessly legible:
+1. **Default & Enforced Light Palette (`frontend/src/app/layout.tsx`, `globals.css`, `useAuditStore.ts`):**
+   - `:root` and `<html class="light" data-theme="olympian-light" data-theme-mode="light">` default directly to **Olympian Daylight** (`#f8fafc` app canvas, `#ffffff` elevated cards/panels, `#e2e8f0` crisp borders, `#0f172a` deep slate primary ink, `#334155` secondary ink, `#475569` muted labels — all >= 4.5:1 WCAG AA contrast).
+   - `hydrateUiPreferences()` automatically migrates any previously persisted dark `appTheme` in `localStorage` to `"olympian-light"` (only light palettes `olympian-light`, `athena-parchment`, and `hyperborean-light` remain selectable).
+2. **Light-Mode Monaco Editor & DiffEditor (`MonacoCodePane.tsx`):**
+   - Switch Monaco `Editor` and `DiffEditor` from `theme="vs-dark"` to `theme="light"` with crisp high-contrast vulnerability/BFL/severed line highlights and readable gutter glyphs.
+3. **Light-Mode ReactFlow & 360° Canvas (`ReactFlowGraphPane.tsx`, `CustomGraphNode.tsx`, `DirectionalFlowEdge.tsx`, `ThreatModelingView.tsx`):**
+   - Architectural daylight canvas (`#f8fafc` background with `#cbd5e1` grid dots), crisp `#ffffff` node cards with `1.5px` semantic borders and soft elevation shadows, `#0f172a` bold titles, `#1e293b` code pills on `#f1f5f9`, and saturated high-contrast directional arrows & edge badges (`#0369a1` taint/flow, `#be123c` critical sink, `#b45309` BFL chokepoint, `#047857` guarded/containment, `#6d28d9` cross-file imports/calls).
+4. **Full-Component Contrast Harmonization (`globals.css` + Component Audit):**
+   - Audit and replace hardcoded dark-surface assumptions (`bg-slate-950`, `bg-black/80`, `text-white` on light cards, pale `text-slate-300`/`text-zinc-400` on white surfaces, dark SVG chart fills) across all 25+ frontend components so `text-white` appears **only** inside solid saturated button/badge fills (`bg-blue-600`, `bg-emerald-600`, `bg-rose-600`, `bg-slate-900`).
+
+### 3.3 Net-New Workflow Additions
 1. **Centralized API Client (`frontend/src/lib/api.ts`):** Single typed API client wrapping `BACKEND_URL`, structured error parsing, and timeout handling; removes hardcoded `http://localhost:8000` strings from `ReactFlowGraphPane.tsx` and sibling views.
 2. **One-Click Batch Auto-Fix (`POST /api/remediate/batch-apply`):**
    - Backend endpoint iterating over deterministic `can_auto_patch` findings (either specified `finding_ids` or all open auto-patchable findings in the active project), applying non-overlapping BFL patches safely bottom-up per file with backup snapshots in `.alastor_patches/`, running a single CPG verification re-scan at the end, and returning `{applied_count, skipped_count, verified_severed_ids, unified_diff, remaining_findings}` + undo support.
@@ -141,5 +153,6 @@ ALASTOR v4.0 upgrades the platform across three tightly integrated pillars while
    - Batch auto-fix (`POST /api/remediate/batch-apply`) + post-batch rescan verification test.
    - Cross-file `IMPORTS`/`CALLS` extraction & single-node 3-step graph synthesis tests.
 2. **Frontend & Full-Stack Verification:**
+   - Light-only theme verification: confirm `layout.tsx`, `globals.css`, `useAuditStore.ts`, `MonacoCodePane.tsx`, and `ReactFlowGraphPane.tsx` enforce light mode with zero dark theme options or white-on-white text regressions.
    - `npx tsc --noEmit` (`0` TypeScript errors) and `npm run build` (`0` Next.js production build errors).
    - `python verify_harness.py` (`20/20` baseline & synthetic assertions passing) + self-audit scan on `cpg-sast-platform` (`0` findings).
