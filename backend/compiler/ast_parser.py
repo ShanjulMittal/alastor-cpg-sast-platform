@@ -272,6 +272,19 @@ class ASTNormalizer:
     def _traverse(self, ts_node: tree_sitter.Node, parent_cpg: Optional[CPGNode] = None) -> Optional[CPGNode]:
         node_type = ts_node.type
 
+        # Skip pure compile-time declarations, comments, and non-executable JSX closing/text subtrees
+        if node_type in (
+            "interface_declaration", "type_alias_declaration", "type_annotation",
+            "type_arguments", "type_parameters", "import_statement", "import_from_statement",
+            "comment", "line_comment", "block_comment", "jsx_text", "jsx_closing_element",
+            "string_content", "string_start", "string_end", "string_fragment", "escape_sequence",
+        ):
+            return None
+
+        # Skip static JSX attribute names and static JSX string attributes (e.g., className="...")
+        if ts_node.parent is not None and ts_node.parent.type == "jsx_attribute" and node_type in ("property_identifier", "string"):
+            return None
+
         # Track Python @app.get/post/... and @router.get/post/... route definitions so their untrusted parameters become taint sources
         if node_type == "decorated_definition":
             dec_texts = [
@@ -284,11 +297,32 @@ class ASTNormalizer:
                     if ch.type == "function_definition":
                         self._route_func_byte_ranges.append((ch.start_byte, ch.end_byte))
         
-        # Filter anonymous trivia tokens like parentheses and punctuation from becoming primary CPGNodes
-        # but retain identifiers, statements, expressions, and literals.
+        # Filter anonymous trivia tokens and non-semantic syntax wrappers from becoming primary CPGNodes
+        # while retaining all identifiers (including property_identifier / shorthand_property_identifier), statements, and calls.
         is_structural = (
-            ts_node.is_named or 
-            node_type in ("assignment", "call", "subscript", "attribute", "identifier")
+            (
+                ts_node.is_named or 
+                node_type in ("assignment", "call", "subscript", "attribute", "identifier")
+            )
+            and node_type not in (
+                "string_content", "string_start", "string_end", "string_fragment", "escape_sequence",
+                "string", "integer", "float", "number", "true", "false", "none", "null", "boolean",
+                "template_string", "template_substitution", "interpolation",
+                "binary_expression", "boolean_operator", "comparison_operator", "not_operator",
+                "unary_expression", "conditional_expression", "ternary_expression", "await_expression",
+                "spread_element", "as_expression", "satisfies_expression", "non_null_expression",
+                "comment", "line_comment", "block_comment",
+                "jsx_element", "jsx_opening_element", "jsx_closing_element", "jsx_self_closing_element",
+                "jsx_attribute", "jsx_expression", "jsx_text",
+                "type", "type_annotation", "type_identifier", "predefined_type", "type_arguments",
+                "type_parameters", "interface_declaration", "type_alias_declaration", "property_signature",
+                "import_statement", "import_from_statement", "import_specifier", "import_clause",
+                "named_imports", "dotted_name",
+                "argument_list", "arguments", "pair", "keyword_argument",
+                "dictionary", "list", "tuple", "set", "object", "array",
+                "parenthesized_expression", "expression_statement",
+                "lexical_declaration", "variable_declaration", "decorator",
+            )
         )
         
         cpg_node = None

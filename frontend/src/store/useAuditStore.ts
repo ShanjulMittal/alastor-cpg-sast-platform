@@ -258,6 +258,7 @@ interface AuditState {
   }) => Promise<{ ok: boolean; project: ProjectConfig | null; error?: string; authRequired?: boolean }>;
   updateProjectAutomation: (projectId: string, payload: Record<string, any>) => Promise<void>;
   activateProject: (projectId: string, runScan?: boolean) => Promise<void>;
+  deleteProject: (projectId: string) => Promise<boolean>;
   triggerProjectWebhook: (projectId: string, eventType: "push" | "pull_request", branch?: string) => Promise<void>;
   fetchDeepDiveAnalytics: () => Promise<void>;
   updateFindingTriage: (
@@ -860,15 +861,15 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           parsed.workspaceViewMode &&
           [
             "REMEDIATION_IDE",
-            "THREAT_MODEL",
+            "THREAT_MODELING",
             "EXECUTIVE_ASPM",
-            "PROJECTS",
+            "PROJECTS_HUB",
             "ENGINE_ACCESS",
             "DEEP_DIVE",
             "RACI_GOVERNANCE",
             "SAST_PLUS_SUITE",
-            "RULE_PROFILES",
-            "USER_ACCOUNTS",
+            "RULE_ENGINE_PROFILES",
+            "USER_PROFILES",
           ].includes(parsed.workspaceViewMode)
         ) {
           get().setWorkspaceViewMode(parsed.workspaceViewMode);
@@ -1314,25 +1315,44 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   },
 
   activateProject: async (projectId, runScan = false) => {
+    const existingProj = get().projects.find((p) => p.id === projectId);
+    const needsScan =
+      runScan ||
+      Boolean(existingProj && !existingProj.last_scan_at && !existingProj.has_cached_scan);
+
+    // Optimistically mark the selected project as active on frame 1
+    set((state) => ({
+      projects: state.projects.map((p) => ({
+        ...p,
+        is_active: p.id === projectId,
+      })),
+      ...(existingProj?.target_path ? { projectPath: existingProj.target_path } : {}),
+    }));
+
     try {
       const res = await fetch(
-        `${BACKEND_URL}/api/projects/${encodeURIComponent(projectId)}/activate`,
+        `${BACKEND_URL}/api/projects/${encodeURIComponent(projectId)}/activate?skip_warmup=${
+          needsScan ? "true" : "false"
+        }`,
         {
           method: "POST",
         }
       );
       if (res.ok) {
         const proj: ProjectConfig = await res.json();
-        set({
+        set((state) => ({
           projectPath: proj.target_path,
+          projects: state.projects.map((p) =>
+            p.id === proj.id ? { ...proj, is_active: true } : { ...p, is_active: false }
+          ),
           selectedFinding: null,
           selectedGraphNodeId: null,
           selectedTreeFile: null,
           activeFilepath: null,
           activeStartLine: null,
           activeEndLine: null,
-        });
-        if (runScan) {
+        }));
+        if (needsScan) {
           if (proj.scm_provider !== "LOCAL" && proj.repo_url) {
             if (proj.is_private_repo && !proj.has_saved_auth) {
               get().openTargetPicker(
@@ -1350,12 +1370,15 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           } else {
             await get().triggerScan(proj.target_path);
           }
+          return;
         }
         await Promise.all([
-          get().fetchProjects(),
           get().fetchFindings(),
           get().fetchMetrics(),
           get().fetchAppTree(),
+          get().fetchProjects(),
+        ]);
+        void Promise.all([
           get().fetchDeepDiveAnalytics(),
           get().fetchRaciGovernance(),
           get().fetchSastPlusSuite(),
@@ -1365,6 +1388,27 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     } catch (err) {
       console.error("Failed to activate project:", err);
     }
+  },
+
+  deleteProject: async (projectId) => {
+    try {
+      const res = await fetch(
+        `${BACKEND_URL}/api/projects/${encodeURIComponent(projectId)}`,
+        {
+          method: "DELETE",
+        }
+      );
+      if (res.ok) {
+        set((state) => ({
+          projects: state.projects.filter((p) => p.id !== projectId),
+        }));
+        await get().fetchProjects();
+        return true;
+      }
+    } catch (err) {
+      console.error("Failed to delete project:", err);
+    }
+    return false;
   },
 
   triggerProjectWebhook: async (projectId, eventType, branch = "main") => {
@@ -2035,17 +2079,17 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         });
         await Promise.all([
           get().fetchFindings(),
+          get().fetchProjects(),
           get().fetchMetrics(),
           get().fetchAppTree(),
-          get().fetchProjects(),
+        ]);
+        set({ isScanning: false, scanStatusMessage: null });
+        void Promise.all([
           get().fetchDeepDiveAnalytics(),
           get().fetchRaciGovernance(),
           get().fetchSastPlusSuite(),
           get().fetchTrackChanges(),
         ]);
-        setTimeout(() => {
-          set({ isScanning: false, scanStatusMessage: null });
-        }, 1500);
         return { ok: true, response: scanData };
       } else {
         const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));

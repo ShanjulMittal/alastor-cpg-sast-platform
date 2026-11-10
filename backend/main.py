@@ -2990,7 +2990,7 @@ def update_project_automation(project_id: str, req: UpdateProjectAutomationReque
 
 
 @app.post("/api/projects/{project_id}/activate", response_model=ProjectConfig)
-def activate_project(project_id: str):
+def activate_project(project_id: str, skip_warmup: bool = Query(False)):
     """
     Marks a project as the active project in the workspace and immediately restores its
     cached last-scan findings, application tree, and Track Changes history so the user
@@ -3013,6 +3013,10 @@ def activate_project(project_id: str):
         _norm_act = os.path.normcase(current_scan_dir)
         _cached_external_findings = []
         _cached_advisories = []
+        if skip_warmup:
+            enterprise_mgr._save_persisted_state()
+            return target
+
         cached = enterprise_mgr.get_cached_scan_for_project(current_scan_dir)
         if cached and cached.get("app_tree"):
             try:
@@ -3021,19 +3025,27 @@ def activate_project(project_id: str):
                 current_app_tree = AppTreeAnalyzer(current_scan_dir).analyze()
         else:
             current_app_tree = AppTreeAnalyzer(current_scan_dir).analyze()
-        if cached and isinstance(cached.get("latest_findings"), list) and _last_neo4j_ingested_dir != _norm_act:
+
+        if cached and isinstance(cached.get("latest_findings"), list):
             try:
                 _cached_findings = [Finding(**f) for f in cached["latest_findings"]]
                 _cached_findings_time = time.time()
             except Exception:
                 _cached_findings = None
             refreshed = get_or_compute_findings(force_refresh=False)
-        else:
+        elif _last_neo4j_ingested_dir == _norm_act:
             refreshed = get_or_compute_findings(force_refresh=True)
+        else:
+            _cached_findings = []
+            _cached_findings_time = time.time()
+            refreshed = []
+
         if current_app_tree:
             target.files_scanned_count = current_app_tree.total_files
-        enterprise_mgr._sync_active_project_metrics(refreshed)
+        if cached or _last_neo4j_ingested_dir == _norm_act:
+            enterprise_mgr._sync_active_project_metrics(refreshed)
 
+    enterprise_mgr._save_persisted_state()
     return target
 
 

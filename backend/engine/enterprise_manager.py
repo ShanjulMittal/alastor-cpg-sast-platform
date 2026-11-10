@@ -1621,7 +1621,25 @@ class EnterpriseManager:
             for r, dirs, files in os.walk(root_dir):
                 dirs[:] = [
                     d for d in dirs
-                    if d not in {".git", "node_modules", ".next", "__pycache__", ".venv", "venv", "uploaded_scans", "scratch"}
+                    if d not in {
+                        ".git",
+                        "node_modules",
+                        ".next",
+                        "__pycache__",
+                        ".venv",
+                        "venv",
+                        "dist",
+                        "build",
+                        "target",
+                        "out",
+                        "coverage",
+                        "vendor",
+                        ".gradle",
+                        "uploaded_scans",
+                        "scratch",
+                        ".alastor_patches",
+                        ".alastor_vault",
+                    }
                     and not d.startswith(".")
                     and (is_synth_root or d != "synthetic_test_target")
                 ]

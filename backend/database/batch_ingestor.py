@@ -10,7 +10,7 @@ from database.neo4j_client import Neo4jClient
 
 logger = logging.getLogger("cpg-sast.ingestor")
 
-BATCH_SIZE = 5000
+BATCH_SIZE = 10000
 
 
 class BatchIngestor:
@@ -19,27 +19,25 @@ class BatchIngestor:
 
     def ingest(self, nodes: List[CPGNode], edges: List[CPGEdge],
                progress_callback: Optional[Callable[[str, int, int], None]] = None) -> Tuple[int, int]:
-        """Chunks and ingests CPG nodes and edges into Neo4j in batches of 5000."""
+        """Chunks and ingests CPG nodes and edges into Neo4j in batches of 10000."""
         nodes_created = self.ingest_nodes(nodes, progress_callback=progress_callback)
         edges_created = self.ingest_edges(edges, progress_callback=progress_callback)
         return nodes_created, edges_created
 
     def ingest_nodes(self, nodes: List[CPGNode],
                      progress_callback: Optional[Callable[[str, int, int], None]] = None) -> int:
-        """Ingests nodes using UNWIND and apoc.create.addLabels."""
+        """Ingests deduplicated nodes using UNWIND and apoc.create.addLabels."""
         if not nodes:
             return 0
 
         query = """
         UNWIND $batch AS row
-        MERGE (n:CPGNode {id: row.id})
-        SET n += row
-        WITH n, row
-        CALL apoc.create.addLabels(n, [row.label]) YIELD node
+        CALL apoc.create.node(['CPGNode', row.label], row) YIELD node
         RETURN count(node) AS created_count
         """
         total = 0
-        node_dicts = [n.model_dump() for n in nodes]
+        unique_nodes = list({n.id: n for n in nodes}.values())
+        node_dicts = [n.model_dump() for n in unique_nodes]
         total_items = len(node_dicts)
 
         with self.client.driver.session() as session:
@@ -57,7 +55,7 @@ class BatchIngestor:
 
     def ingest_edges(self, edges: List[CPGEdge],
                      progress_callback: Optional[Callable[[str, int, int], None]] = None) -> int:
-        """Ingests edges using UNWIND and apoc.merge.relationship."""
+        """Ingests deduplicated edges using UNWIND and apoc.create.relationship in O(1) per edge."""
         if not edges:
             return 0
 
@@ -65,11 +63,12 @@ class BatchIngestor:
         UNWIND $batch AS row
         MATCH (s:CPGNode {id: row.source_id})
         MATCH (t:CPGNode {id: row.target_id})
-        CALL apoc.merge.relationship(s, row.edge_type, {id: row.id}, {var_name: row.var_name}, t) YIELD rel
+        CALL apoc.create.relationship(s, row.edge_type, {id: row.id, var_name: row.var_name}, t) YIELD rel
         RETURN count(rel) AS created_count
         """
         total = 0
-        edge_dicts = [e.model_dump() for e in edges]
+        unique_edges = list({e.id: e for e in edges}.values())
+        edge_dicts = [e.model_dump() for e in unique_edges]
         total_items = len(edge_dicts)
 
         with self.client.driver.session() as session:
