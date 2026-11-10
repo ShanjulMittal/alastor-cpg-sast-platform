@@ -1,6 +1,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from compiler.app_tree import AppTreeAnalyzer, CrossFileEdge
@@ -385,7 +386,12 @@ def test_api_graph_enrichment_and_batch_remediate_endpoint(tmp_path: Path):
                 and e["source"] == "file:api.ts"
                 and e["target"] == "file:utils/Sanitizer.ts"
                 and e.get("flow_label")
+                and isinstance(e.get("step_index"), int)
+                and e["step_index"] >= 1
                 for e in import_edges
+            )
+            assert [e["step_index"] for e in tree_data["edges"]] == list(
+                range(1, len(tree_data["edges"]) + 1)
             )
 
         # 2b. GET /api/graph?view_mode=APP_TREE with Neo4j AppFile nodes and current_app_tree=None still appends IMPORTS edges,
@@ -407,8 +413,9 @@ def test_api_graph_enrichment_and_batch_remediate_endpoint(tmp_path: Path):
             neo_edges = neo_tree_resp.json()["edges"]
             assert any(e["type"] == "IMPORTS" and "cleanInput" in (e.get("flow_label") or "") for e in neo_edges)
             assert any(e["type"] == "CONTAINS" and e.get("flow_label") == "CONTAINS ▶" for e in neo_edges)
+            assert [e["step_index"] for e in neo_edges] == list(range(1, len(neo_edges) + 1))
 
-            # DFG_ONLY edge humanization check
+            # DFG_ONLY edge humanization + step_index check
             mock_session.run.return_value.single.return_value = {
                 "all_nodes": [
                     {"id": "n1", "label": "Parameter", "filepath": "api.ts", "start_line": 1, "end_line": 1},
@@ -423,6 +430,7 @@ def test_api_graph_enrichment_and_batch_remediate_endpoint(tmp_path: Path):
             dfg_edges = dfg_resp.json()["edges"]
             assert len(dfg_edges) == 1
             assert dfg_edges[0]["flow_label"] == "TAINT (x) ▶"
+            assert dfg_edges[0]["step_index"] == 1
 
         app_tree_resp = client.get("/api/app-tree")
         assert app_tree_resp.status_code == 200
@@ -455,6 +463,193 @@ def test_api_graph_enrichment_and_batch_remediate_endpoint(tmp_path: Path):
             assert "sha256" in parsed.unified_diff
             assert "safe_load" in parsed.unified_diff
             assert mock_scan.call_count == 1
+
+        # 4. POST /api/remediate/batch-apply maps FileNotFoundError -> 404 and ValueError -> 409
+        with (
+            patch.object(main, "get_or_compute_findings", return_value=[lone_finding]),
+            patch.object(main, "batch_apply_workspace_patches", side_effect=ValueError("SHA256 mismatch")),
+        ):
+            conflict_resp = client.post(
+                "/api/remediate/batch-apply",
+                json=BatchRemediateRequest(finding_ids=["F-CRYPTO-API"]).model_dump(),
+            )
+            assert conflict_resp.status_code == 409
+
+        with (
+            patch.object(main, "get_or_compute_findings", return_value=[lone_finding]),
+            patch.object(main, "batch_apply_workspace_patches", side_effect=FileNotFoundError("Missing file")),
+        ):
+            missing_resp = client.post(
+                "/api/remediate/batch-apply",
+                json=BatchRemediateRequest(finding_ids=["F-CRYPTO-API"]).model_dump(),
+            )
+            assert missing_resp.status_code == 404
     finally:
         main.current_scan_dir = prev_scan_dir
         main.current_app_tree = prev_app_tree
+
+
+def test_batch_apply_skips_duplicate_same_line_and_handles_large_line_shifts(tmp_path: Path):
+    import engine.remediation_patcher as rp
+
+    # File has TWO identical statements on lines 4 and 5; TWO findings both target line 5!
+    # The duplicate finding on line 5 must be skipped (NOT jump to line 4 via offset probing).
+    dup_py = tmp_path / "dup_service.py"
+    dup_py.write_text(
+        "import hashlib\n\ndef pair(a, b):\n    x = hashlib.md5(a).hexdigest()\n    x = hashlib.md5(a).hexdigest()\n    return x\n",
+        encoding="utf-8",
+    )
+    dup_findings = [
+        Finding(
+            id="F-DUP-1",
+            rule_id="RULE-3",
+            severity="MEDIUM",
+            title="Weak Hash #1",
+            description="MD5 at line 5",
+            cwe_id="CWE-328",
+            path_nodes=[CPGNode(
+                id="n-dup-1", label="Call", ast_type="call", name="hashlib.md5",
+                code="x = hashlib.md5(a).hexdigest()", filepath="dup_service.py",
+                start_line=5, end_line=5, start_col=4, end_col=34, scope_id="pair",
+                is_source=False, is_sink=True, is_sanitizer=False,
+            )],
+            path_edges=[],
+        ),
+        Finding(
+            id="F-DUP-2",
+            rule_id="RULE-13-UNSAFE-DESERIALIZATION-CRYPTO",
+            severity="MEDIUM",
+            title="Weak Hash #2 (same line)",
+            description="Duplicate finding on line 5",
+            cwe_id="CWE-328",
+            path_nodes=[CPGNode(
+                id="n-dup-2", label="Call", ast_type="call", name="hashlib.md5",
+                code="x = hashlib.md5(a).hexdigest()", filepath="dup_service.py",
+                start_line=5, end_line=5, start_col=4, end_col=34, scope_id="pair",
+                is_source=False, is_sink=True, is_sanitizer=False,
+            )],
+            path_edges=[],
+        ),
+    ]
+    vault = tmp_path / ".alastor_patches"
+    dup_res = batch_apply_workspace_patches(dup_findings, [str(tmp_path)], str(vault))
+    assert dup_res["applied_count"] == 1
+    assert dup_res["skipped_count"] == 1
+    dup_lines = dup_py.read_text(encoding="utf-8").splitlines()
+    # Line 4 untouched, line 5 patched once
+    assert "hashlib.md5(a)" in dup_lines[3]
+    assert "sha256" in dup_lines[4]
+
+    # Also verify >10 line shift handling via expected_shift = len(cur_lines) - len(initial_lines)
+    shift_py = tmp_path / "shift_service.py"
+    shift_py.write_text(
+        "import hashlib\nimport yaml\n\ndef top_fn(b):\n    return hashlib.md5(b).hexdigest()\n\ndef bottom_fn(s):\n    return yaml.load(s)\n",
+        encoding="utf-8",
+    )
+    shift_findings = [
+        Finding(
+            id="F-TOP",
+            rule_id="RULE-3",
+            severity="MEDIUM",
+            title="Top MD5",
+            cwe_id="CWE-328",
+            path_nodes=[CPGNode(
+                id="n-top", label="Call", ast_type="call", name="hashlib.md5",
+                code="return hashlib.md5(b).hexdigest()", filepath="shift_service.py",
+                start_line=5, end_line=5, start_col=4, end_col=37, scope_id="top_fn",
+                is_source=False, is_sink=True, is_sanitizer=False,
+            )],
+            path_edges=[],
+        ),
+        Finding(
+            id="F-BOTTOM",
+            rule_id="RULE-10",
+            severity="HIGH",
+            title="Bottom YAML",
+            cwe_id="CWE-502",
+            path_nodes=[CPGNode(
+                id="n-bot", label="Call", ast_type="call", name="yaml.load",
+                code="return yaml.load(s)", filepath="shift_service.py",
+                start_line=8, end_line=8, start_col=4, end_col=23, scope_id="bottom_fn",
+                is_source=False, is_sink=True, is_sanitizer=False,
+            )],
+            path_edges=[],
+        ),
+    ]
+    real_preview = rp.preview_finding_remediation
+
+    def _preview_with_15_header_lines(finding_obj, roots, target_line_override=None):
+        prev = real_preview(finding_obj, roots, target_line_override=target_line_override)
+        if prev and getattr(finding_obj, "id", "") == "F-BOTTOM" and target_line_override is not None:
+            banner = "".join(f"# helper header line {i}\n" for i in range(15))
+            prev = dict(prev)
+            prev["patched_content"] = banner + str(prev["patched_content"])
+        return prev
+
+    with patch.object(rp, "preview_finding_remediation", side_effect=_preview_with_15_header_lines):
+        shift_res = batch_apply_workspace_patches(shift_findings, [str(tmp_path)], str(vault))
+    assert shift_res["applied_count"] == 2
+    shifted_text = shift_py.read_text(encoding="utf-8")
+    assert "sha256" in shifted_text
+    assert "safe_load" in shifted_text
+
+
+def test_batch_apply_rolls_back_atomically_on_mid_batch_failure(tmp_path: Path):
+    import engine.remediation_patcher as rp
+
+    f_one = tmp_path / "first.py"
+    f_two = tmp_path / "second.py"
+    orig_one = "import hashlib\n\ndef h1(b):\n    return hashlib.md5(b).hexdigest()\n"
+    orig_two = "import yaml\n\ndef y2(s):\n    return yaml.load(s)\n"
+    f_one.write_text(orig_one, encoding="utf-8")
+    f_two.write_text(orig_two, encoding="utf-8")
+
+    findings = [
+        Finding(
+            id="F-RB-1",
+            rule_id="RULE-3",
+            severity="MEDIUM",
+            title="Hash in first.py",
+            cwe_id="CWE-328",
+            path_nodes=[CPGNode(
+                id="n-rb-1", label="Call", ast_type="call", name="hashlib.md5",
+                code="return hashlib.md5(b).hexdigest()", filepath="first.py",
+                start_line=4, end_line=4, start_col=4, end_col=37, scope_id="h1",
+                is_source=False, is_sink=True, is_sanitizer=False,
+            )],
+            path_edges=[],
+        ),
+        Finding(
+            id="F-RB-2",
+            rule_id="RULE-10",
+            severity="HIGH",
+            title="YAML in second.py",
+            cwe_id="CWE-502",
+            path_nodes=[CPGNode(
+                id="n-rb-2", label="Call", ast_type="call", name="yaml.load",
+                code="return yaml.load(s)", filepath="second.py",
+                start_line=4, end_line=4, start_col=4, end_col=23, scope_id="y2",
+                is_source=False, is_sink=True, is_sanitizer=False,
+            )],
+            path_edges=[],
+        ),
+    ]
+
+    vault = tmp_path / ".alastor_patches"
+    real_apply = rp.apply_workspace_patch
+    call_counter = {"n": 0}
+
+    def _fail_on_second_apply(**kwargs):
+        call_counter["n"] += 1
+        if call_counter["n"] == 2:
+            raise ValueError("Simulated SHA256 optimistic concurrency conflict on second file")
+        return real_apply(**kwargs)
+
+    with patch.object(rp, "apply_workspace_patch", side_effect=_fail_on_second_apply):
+        with pytest.raises(ValueError, match="Simulated SHA256"):
+            batch_apply_workspace_patches(findings, [str(tmp_path)], str(vault))
+
+    # First file MUST be rolled back to exact original bytes, and second file untouched!
+    assert f_one.read_text(encoding="utf-8") == orig_one
+    assert f_two.read_text(encoding="utf-8") == orig_two
+    assert not vault.exists() or list(vault.glob("*.json")) == []

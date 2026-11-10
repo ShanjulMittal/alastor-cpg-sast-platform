@@ -2582,11 +2582,16 @@ def remediate_batch_apply(req: BatchRemediateRequest):
     else:
         selected_findings = [f for f in pre_open if f.triage_status != "RESOLVED"]
 
-    batch_res = batch_apply_workspace_patches(
-        findings=selected_findings,
-        allowed_roots=_get_authorized_remediation_roots(),
-        patch_vault_root=_get_remediation_vault_root(),
-    )
+    try:
+        batch_res = batch_apply_workspace_patches(
+            findings=selected_findings,
+            allowed_roots=_get_authorized_remediation_roots(),
+            patch_vault_root=_get_remediation_vault_root(),
+        )
+    except FileNotFoundError as fnf_exc:
+        raise HTTPException(status_code=404, detail=_sanitize_log(fnf_exc)) from fnf_exc
+    except ValueError as val_exc:
+        raise HTTPException(status_code=409, detail=_sanitize_log(val_exc)) from val_exc
 
     applied_count = int(batch_res["applied_count"])
     skipped_count = int(batch_res["skipped_count"]) + missing_requested
@@ -2689,12 +2694,16 @@ def get_node_at_location(filepath: str = Query(...), line: int = Query(...)):
 
 
 def _humanize_graph_edges(edges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Ensures every graph edge returned by `/api/graph` carries a clear directional `flow_label`."""
+    """Ensures every graph edge returned by `/api/graph` carries `step_index` and a clear directional `flow_label`."""
     humanized: List[Dict[str, Any]] = []
+    step_idx = 0
     for raw_edge in edges:
         if not isinstance(raw_edge, dict):
             continue
+        step_idx += 1
         ed = dict(raw_edge)
+        if ed.get("step_index") is None:
+            ed["step_index"] = step_idx
         existing_lbl = str(ed.get("flow_label") or "").strip()
         if existing_lbl and existing_lbl != "IMPORTS":
             humanized.append(ed)

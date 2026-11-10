@@ -18,7 +18,7 @@ import os
 import re
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 _PRUNED_WALK_DIRS = {
     ".git",
@@ -1852,53 +1852,81 @@ def batch_apply_workspace_patches(
     patched_files: List[str] = []
     seen_patched_files = set()
 
-    offset_probes = (0, 1, 2, 3, 4, 5, -1, -2, 6, 7, 8, 9, 10, -3)
+    rel_offsets = (0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5, -6, 6, -8, 8, -10, 10)
 
-    for norm_key, items in grouped.items():
-        items.sort(key=lambda item: item[0], reverse=True)
-        latest_text = initial_contents[norm_key]
+    try:
+        for norm_key, items in grouped.items():
+            items.sort(key=lambda item: item[0], reverse=True)
+            initial_lines = initial_contents[norm_key].splitlines()
+            latest_text = initial_contents[norm_key]
+            patched_orig_lines: Set[int] = set()
 
-        for orig_line_no, anchor_text, finding_obj, disp_fp in items:
-            cur_lines = latest_text.splitlines()
-            eff_line = orig_line_no
-            if anchor_text and (eff_line > len(cur_lines) or cur_lines[eff_line - 1] != anchor_text):
-                for delta in offset_probes:
-                    cand_ln = orig_line_no + delta
-                    if 1 <= cand_ln <= len(cur_lines) and cur_lines[cand_ln - 1] == anchor_text:
-                        eff_line = cand_ln
-                        break
+            for orig_line_no, anchor_text, finding_obj, disp_fp in items:
+                if orig_line_no in patched_orig_lines:
+                    skipped_count += 1
+                    continue
 
-            fresh_prev = preview_finding_remediation(
-                finding_obj, allowed_roots, target_line_override=eff_line
-            )
-            if (
-                fresh_prev is None
-                or not fresh_prev.get("can_auto_patch")
-                or fresh_prev.get("patched_content") == fresh_prev.get("original_content")
-            ):
-                skipped_count += 1
-                continue
+                cur_lines = latest_text.splitlines()
+                expected_shift = len(cur_lines) - len(initial_lines)
+                shifted_base = orig_line_no + expected_shift
+                eff_line = shifted_base if 1 <= shifted_base <= len(cur_lines) else orig_line_no
 
-            f_id = str(getattr(finding_obj, "id", "") or "")
-            r_id = str(getattr(finding_obj, "rule_id", "") or "")
-            applied = apply_workspace_patch(
-                raw_filepath=disp_fp,
-                allowed_roots=allowed_roots,
-                patch_vault_root=patch_vault_root,
-                expected_sha256=str(fresh_prev["expected_sha256"]),
-                patched_content=str(fresh_prev["patched_content"]),
-                finding_id=f_id,
-                rule_id=r_id,
-            )
-            latest_text = str(fresh_prev["patched_content"])
-            final_contents[norm_key] = latest_text
-            applied_patch_ids.append(str(applied["patch_id"]))
-            if f_id:
-                applied_finding_ids.append(f_id)
-            clean_disp = str(applied["filepath"])
-            if clean_disp not in seen_patched_files:
-                seen_patched_files.add(clean_disp)
-                patched_files.append(clean_disp)
+                if anchor_text and (
+                    eff_line < 1 or eff_line > len(cur_lines) or cur_lines[eff_line - 1] != anchor_text
+                ):
+                    probe_candidates: List[int] = []
+                    for rel_d in rel_offsets:
+                        probe_candidates.append(shifted_base + rel_d)
+                    for rel_d in rel_offsets:
+                        probe_candidates.append(orig_line_no + rel_d)
+                    seen_cands: Set[int] = set()
+                    for cand_ln in probe_candidates:
+                        if cand_ln in seen_cands:
+                            continue
+                        seen_cands.add(cand_ln)
+                        if 1 <= cand_ln <= len(cur_lines) and cur_lines[cand_ln - 1] == anchor_text:
+                            eff_line = cand_ln
+                            break
+
+                fresh_prev = preview_finding_remediation(
+                    finding_obj, allowed_roots, target_line_override=eff_line
+                )
+                if (
+                    fresh_prev is None
+                    or not fresh_prev.get("can_auto_patch")
+                    or fresh_prev.get("patched_content") == fresh_prev.get("original_content")
+                ):
+                    skipped_count += 1
+                    continue
+
+                f_id = str(getattr(finding_obj, "id", "") or "")
+                r_id = str(getattr(finding_obj, "rule_id", "") or "")
+                applied = apply_workspace_patch(
+                    raw_filepath=disp_fp,
+                    allowed_roots=allowed_roots,
+                    patch_vault_root=patch_vault_root,
+                    expected_sha256=str(fresh_prev["expected_sha256"]),
+                    patched_content=str(fresh_prev["patched_content"]),
+                    finding_id=f_id,
+                    rule_id=r_id,
+                )
+                patched_orig_lines.add(orig_line_no)
+                latest_text = str(fresh_prev["patched_content"])
+                final_contents[norm_key] = latest_text
+                applied_patch_ids.append(str(applied["patch_id"]))
+                if f_id:
+                    applied_finding_ids.append(f_id)
+                clean_disp = str(applied["filepath"])
+                if clean_disp not in seen_patched_files:
+                    seen_patched_files.add(clean_disp)
+                    patched_files.append(clean_disp)
+    except Exception:
+        for pid in reversed(applied_patch_ids):
+            try:
+                undo_workspace_patch(pid, allowed_roots, patch_vault_root)
+            except Exception:
+                pass
+        raise
 
     diff_chunks: List[str] = []
     for norm_key, after_text in final_contents.items():
