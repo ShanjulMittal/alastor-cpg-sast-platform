@@ -106,7 +106,17 @@ const ACADEMY_GLOSSARY = [
   },
 ];
 
-export function SastPlusSuiteView() {
+export interface SastPlusSuiteViewProps {
+  embeddedTab?: "TRANSLATOR" | "SBOM" | "ATTACK_SURFACE" | "ROADMAP" | "ACADEMY";
+  embeddedActiveTab?: "TRANSLATOR" | "SBOM" | "ATTACK_SURFACE" | "ROADMAP" | "ACADEMY";
+  hideHeader?: boolean;
+}
+
+export function SastPlusSuiteView({
+  embeddedTab,
+  embeddedActiveTab,
+  hideHeader = false,
+}: SastPlusSuiteViewProps = {}) {
   const sastPlusSuite = useAuditStore((s) => s.sastPlusSuite);
   const fetchSastPlusSuite = useAuditStore((s) => s.fetchSastPlusSuite);
   const sastPlusActiveTab = useAuditStore((s) => s.sastPlusActiveTab);
@@ -118,6 +128,9 @@ export function SastPlusSuiteView() {
   const openCodeLocationInIde = useAuditStore((s) => s.openCodeLocationInIde);
   const createTicketForFinding = useAuditStore((s) => s.createTicketForFinding);
   const setWorkspaceViewMode = useAuditStore((s) => s.setWorkspaceViewMode);
+
+  const effectiveTab = embeddedTab ?? embeddedActiveTab ?? sastPlusActiveTab;
+  const shouldHideHeader = hideHeader || Boolean(embeddedTab || embeddedActiveTab);
 
   const activeAppPath = appTree?.root_path || projectPath || "cpg-sast-platform";
   const activeAppName =
@@ -168,162 +181,151 @@ export function SastPlusSuiteView() {
   });
 
   return (
-    <div className="flex-1 h-full overflow-y-auto bg-zinc-950/90 p-5 text-zinc-100 space-y-5">
-      {/* Top Hero Banner */}
-      <div className="rounded-2xl bg-gradient-to-r from-rose-950/45 via-zinc-900/90 to-indigo-950/45 border border-rose-700/50 p-5 shadow-xl">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div className="space-y-1.5 max-w-3xl">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="px-2.5 py-0.5 rounded-full bg-rose-950 text-rose-300 border border-rose-700 text-[10px] font-mono font-bold uppercase tracking-wider flex items-center gap-1">
-                <Sparkles className="w-3.5 h-3.5 text-rose-400" />
-                Ultimate SAST ++++++ ASPM &amp; Non-Coder Command Center
-              </span>
-              <span className="px-2.5 py-0.5 rounded-full bg-cyan-950 text-cyan-200 border border-cyan-600 text-[10px] font-mono font-bold">
-                Application: {activeAppName}
-              </span>
-              <span className="px-2.5 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-700 text-[10px] font-mono font-bold">
-                {activeAppPath}
-              </span>
+    <div className="flex-1 h-full overflow-y-auto bg-[var(--surface-void)] p-5 text-[var(--ink-primary)] space-y-5">
+      {!shouldHideHeader && (
+        <>
+          {/* Top Hero Banner */}
+          <div className="rounded-2xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] p-5 shadow-xl">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div className="space-y-1.5 max-w-3xl">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="px-2.5 py-0.5 rounded-full bg-rose-950 text-rose-300 border border-rose-700 text-[10px] font-mono font-bold uppercase tracking-wider flex items-center gap-1">
+                    <Sparkles className="w-3.5 h-3.5 text-rose-400" />
+                    Ultimate SAST ++++++ ASPM &amp; Non-Coder Command Center
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full bg-cyan-950 text-cyan-200 border border-cyan-600 text-[10px] font-mono font-bold">
+                    Application: {activeAppName}
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-700 text-[10px] font-mono font-bold">
+                    {activeAppPath}
+                  </span>
+                </div>
+                <h1 className="text-xl font-bold text-[var(--ink-primary)]">
+                  Plain-English Business Risk, Live CycloneDX SBOM &amp; Attack Surface —{" "}
+                  <span className="text-[var(--sig-cyan)]">{activeAppName}</span>
+                </h1>
+                <p className="text-xs text-[var(--ink-muted)] leading-relaxed">
+                  {sastPlusSuite?.executive_plain_summary ||
+                    "Translating compiler-grade Code Property Graph (CPG) discoveries into plain-English analogies, business impact, live supply-chain SBOM inventories, and phased management roadmaps."}
+                </p>
+              </div>
+
+              {/* Maturity Scorecard */}
+              <div className="flex items-center gap-4 bg-[var(--surface-void)] border border-[var(--border-hairline)] rounded-xl p-3.5 shrink-0">
+                <div>
+                  <div className="text-[10px] font-mono uppercase text-[var(--ink-muted)]">
+                    Security Maturity Grade
+                  </div>
+                  <div className="text-lg font-mono font-extrabold text-[var(--sig-emerald)]">
+                    {sastPlusSuite?.overall_maturity_grade || "B (Managed)"}
+                  </div>
+                  <div className="text-[10px] font-mono text-[var(--ink-muted)]">
+                    Score: {sastPlusSuite?.maturity_score ?? 82}/100
+                  </div>
+                </div>
+                <div className="border-l border-[var(--border-hairline)] pl-4 space-y-1 text-[11px] font-mono">
+                  <div className="text-[var(--sig-cyan)]">
+                    SBOM Components:{" "}
+                    <strong>{sastPlusSuite?.total_sbom_components ?? 0}</strong>
+                  </div>
+                  <div className="text-[var(--sig-gold)]">
+                    Discovered Entrypoints:{" "}
+                    <strong>{sastPlusSuite?.discovered_endpoints_count ?? 0}</strong>
+                  </div>
+                  <div className="text-[var(--ink-primary)]">
+                    Reachable / Dormant:{" "}
+                    <strong>
+                      {sastPlusSuite?.reachable_findings_count ?? findings.length} /{" "}
+                      {sastPlusSuite?.dormant_findings_count ?? 0}
+                    </strong>
+                  </div>
+                </div>
+              </div>
             </div>
-            <h1 className="text-xl font-bold text-white">
-              Plain-English Business Risk, Live CycloneDX SBOM, STRIDE Threat Model &amp; Attack Surface —{" "}
-              <span className="text-cyan-300">{activeAppName}</span>
-            </h1>
-            <p className="text-xs text-zinc-300 leading-relaxed">
-              {sastPlusSuite?.executive_plain_summary ||
-                "Translating compiler-grade Code Property Graph (CPG) discoveries into plain-English analogies, business impact, live supply-chain SBOM inventories, STRIDE threat models, and phased management roadmaps."}
-            </p>
           </div>
 
-          {/* Maturity Scorecard */}
-          <div className="flex items-center gap-4 bg-zinc-950/90 border border-zinc-800 rounded-xl p-3.5 shrink-0">
-            <div>
-              <div className="text-[10px] font-mono uppercase text-zinc-400">
-                Security Maturity Grade
-              </div>
-              <div className="text-lg font-mono font-extrabold text-emerald-400">
-                {sastPlusSuite?.overall_maturity_grade || "B (Managed)"}
-              </div>
-              <div className="text-[10px] font-mono text-zinc-500">
-                Score: {sastPlusSuite?.maturity_score ?? 82}/100
-              </div>
-            </div>
-            <div className="border-l border-zinc-800 pl-4 space-y-1 text-[11px] font-mono">
-              <div className="text-cyan-300">
-                SBOM Components:{" "}
-                <strong>{sastPlusSuite?.total_sbom_components ?? 0}</strong>
-              </div>
-              <div className="text-amber-300">
-                Discovered Entrypoints:{" "}
-                <strong>{sastPlusSuite?.discovered_endpoints_count ?? 0}</strong>
-              </div>
-              <div className="text-indigo-300">
-                Reachable / Dormant:{" "}
-                <strong>
-                  {sastPlusSuite?.reachable_findings_count ?? findings.length} /{" "}
-                  {sastPlusSuite?.dormant_findings_count ?? 0}
-                </strong>
-              </div>
+          {/* 5-Pillar Navigation Bar (STRIDE lives in Threats & Vault Workspace) */}
+          <div className="flex items-center justify-between gap-2 flex-wrap border-b border-[var(--border-hairline)] pb-2.5">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setSastPlusActiveTab("TRANSLATOR")}
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
+                  effectiveTab === "TRANSLATOR"
+                    ? "bg-[var(--surface-elevated)] text-[var(--sig-emerald)] border border-[var(--sig-emerald)]/70 shadow-sm"
+                    : "bg-[var(--surface-panel)] text-[var(--ink-muted)] hover:text-[var(--ink-primary)] border border-[var(--border-hairline)]"
+                }`}
+              >
+                <GraduationCap className="w-4 h-4 text-[var(--sig-emerald)]" />
+                <span>
+                  1. Plain-English Impact Translator ({findings.length})
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSastPlusActiveTab("SBOM")}
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
+                  effectiveTab === "SBOM"
+                    ? "bg-[var(--surface-elevated)] text-[var(--sig-cyan)] border border-[var(--sig-cyan)]/70 shadow-sm"
+                    : "bg-[var(--surface-panel)] text-[var(--ink-muted)] hover:text-[var(--ink-primary)] border border-[var(--border-hairline)]"
+                }`}
+              >
+                <Package className="w-4 h-4 text-[var(--sig-cyan)]" />
+                <span>
+                  2. Live SBOM &amp; Supply Chain ({sbomComponents.length})
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSastPlusActiveTab("ATTACK_SURFACE")}
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
+                  effectiveTab === "ATTACK_SURFACE"
+                    ? "bg-[var(--surface-elevated)] text-[var(--sig-gold)] border border-[var(--sig-gold)]/70 shadow-sm"
+                    : "bg-[var(--surface-panel)] text-[var(--ink-muted)] hover:text-[var(--ink-primary)] border border-[var(--border-hairline)]"
+                }`}
+              >
+                <Compass className="w-4 h-4 text-[var(--sig-gold)]" />
+                <span>
+                  3. API &amp; Entrypoint Attack Surface ({endpoints.length})
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSastPlusActiveTab("ROADMAP")}
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
+                  effectiveTab === "ROADMAP"
+                    ? "bg-[var(--surface-elevated)] text-[var(--sig-gold)] border border-[var(--sig-gold)]/70 shadow-sm"
+                    : "bg-[var(--surface-panel)] text-[var(--ink-muted)] hover:text-[var(--ink-primary)] border border-[var(--border-hairline)]"
+                }`}
+              >
+                <Layers className="w-4 h-4 text-[var(--sig-gold)]" />
+                <span>
+                  4. Management Remediation Roadmap ({roadmapItems.length})
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSastPlusActiveTab("ACADEMY")}
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
+                  effectiveTab === "ACADEMY"
+                    ? "bg-[var(--surface-elevated)] text-[var(--sig-crimson)] border border-[var(--sig-crimson)]/70 shadow-sm"
+                    : "bg-[var(--surface-panel)] text-[var(--ink-muted)] hover:text-[var(--ink-primary)] border border-[var(--border-hairline)]"
+                }`}
+              >
+                <BookOpen className="w-4 h-4 text-[var(--sig-crimson)]" />
+                <span>5. Non-Coder Security Academy &amp; Glossary</span>
+              </button>
             </div>
           </div>
-        </div>
-      </div>
-
-      {/* 6-Pillar Navigation Bar */}
-      <div className="flex items-center justify-between gap-2 flex-wrap border-b border-zinc-800 pb-2.5">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <button
-            type="button"
-            onClick={() => setSastPlusActiveTab("TRANSLATOR")}
-            className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
-              sastPlusActiveTab === "TRANSLATOR"
-                ? "bg-emerald-950 text-emerald-300 border border-emerald-700 shadow-sm"
-                : "bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-zinc-800"
-            }`}
-          >
-            <GraduationCap className="w-4 h-4 text-emerald-400" />
-            <span>
-              1. Plain-English Impact Translator ({findings.length})
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setSastPlusActiveTab("SBOM")}
-            className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
-              sastPlusActiveTab === "SBOM"
-                ? "bg-cyan-950 text-cyan-300 border border-cyan-700 shadow-sm"
-                : "bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-zinc-800"
-            }`}
-          >
-            <Package className="w-4 h-4 text-cyan-400" />
-            <span>
-              2. Live SBOM &amp; Supply Chain ({sbomComponents.length})
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setSastPlusActiveTab("ATTACK_SURFACE")}
-            className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
-              sastPlusActiveTab === "ATTACK_SURFACE"
-                ? "bg-amber-950 text-amber-300 border border-amber-700 shadow-sm"
-                : "bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-zinc-800"
-            }`}
-          >
-            <Compass className="w-4 h-4 text-amber-400" />
-            <span>
-              3. API &amp; Entrypoint Attack Surface ({endpoints.length})
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setSastPlusActiveTab("ROADMAP")}
-            className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
-              sastPlusActiveTab === "ROADMAP"
-                ? "bg-indigo-950 text-indigo-300 border border-indigo-700 shadow-sm"
-                : "bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-zinc-800"
-            }`}
-          >
-            <Layers className="w-4 h-4 text-indigo-400" />
-            <span>
-              4. Management Remediation Roadmap ({roadmapItems.length})
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setSastPlusActiveTab("THREAT_MODEL")}
-            className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
-              sastPlusActiveTab === "THREAT_MODEL"
-                ? "bg-purple-950 text-purple-200 border border-purple-600 shadow-sm"
-                : "bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-zinc-800"
-            }`}
-          >
-            <ShieldAlert className="w-4 h-4 text-purple-400" />
-            <span>
-              5. STRIDE Threat Model &amp; CI/CD PBOM ({strideThreats.length + pipelineChecks.length})
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setSastPlusActiveTab("ACADEMY")}
-            className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
-              sastPlusActiveTab === "ACADEMY"
-                ? "bg-rose-950 text-rose-300 border border-rose-700 shadow-sm"
-                : "bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-zinc-800"
-            }`}
-          >
-            <BookOpen className="w-4 h-4 text-rose-400" />
-            <span>6. Non-Coder Security Academy &amp; Glossary</span>
-          </button>
-        </div>
-      </div>
+        </>
+      )}
 
       {/* PILLAR 1: PLAIN-ENGLISH BUSINESS IMPACT TRANSLATOR FOR NON-CODERS */}
-      {sastPlusActiveTab === "TRANSLATOR" && (
+      {effectiveTab === "TRANSLATOR" && (
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-3 flex-wrap bg-zinc-900/70 border border-zinc-800 p-3.5 rounded-xl">
             <div className="text-xs text-zinc-300 flex items-center gap-2">
@@ -565,7 +567,7 @@ export function SastPlusSuiteView() {
       )}
 
       {/* PILLAR 2: LIVE SBOM & SUPPLY-CHAIN INSPECTOR */}
-      {sastPlusActiveTab === "SBOM" && (
+      {effectiveTab === "SBOM" && (
         <div className="space-y-4">
           <div className="p-4 rounded-2xl bg-zinc-900/80 border border-zinc-800 flex items-center justify-between flex-wrap gap-3">
             <div className="space-y-1">
@@ -664,7 +666,7 @@ export function SastPlusSuiteView() {
       )}
 
       {/* PILLAR 3: API & CALLABLE ENTRYPOINT ATTACK SURFACE */}
-      {sastPlusActiveTab === "ATTACK_SURFACE" && (
+      {effectiveTab === "ATTACK_SURFACE" && (
         <div className="space-y-4">
           <div className="p-4 rounded-2xl bg-zinc-900/80 border border-zinc-800">
             <div className="text-sm font-bold text-white flex items-center gap-2 mb-1">
@@ -743,7 +745,7 @@ export function SastPlusSuiteView() {
       )}
 
       {/* PILLAR 4: PRIORITIZED MANAGEMENT REMEDIATION ROADMAP */}
-      {sastPlusActiveTab === "ROADMAP" && (
+      {effectiveTab === "ROADMAP" && (
         <div className="space-y-4">
           {(
             [
@@ -852,7 +854,7 @@ export function SastPlusSuiteView() {
       )}
 
       {/* PILLAR 5: LIVE STRIDE THREAT MODEL & CI/CD PIPELINE PBOM SCORECARD */}
-      {sastPlusActiveTab === "THREAT_MODEL" && (
+      {effectiveTab === "THREAT_MODEL" && (
         <div className="space-y-5">
           {/* Section A: Automated STRIDE Threat Model Mapped to Active Application */}
           <div className="rounded-2xl bg-zinc-900/75 border border-purple-700/50 p-4 space-y-4">
@@ -1228,7 +1230,7 @@ export function SastPlusSuiteView() {
       )}
 
       {/* PILLAR 6: NON-CODER SECURITY ACADEMY & GLOSSARY */}
-      {sastPlusActiveTab === "ACADEMY" && (
+      {effectiveTab === "ACADEMY" && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {ACADEMY_GLOSSARY.map((item, idx) => (
             <div
