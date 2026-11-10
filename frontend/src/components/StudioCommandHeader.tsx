@@ -1352,7 +1352,7 @@ export function StudioCommandHeader() {
                 }}
                 disabled={isScanning}
                 title="Switch active repository using cached scan snapshot (no re-scan required)"
-                className="hidden lg:block h-7 bg-[var(--surface-elevated)] border border-[var(--border-hairline)] hover:border-[var(--sig-cyan)] rounded-md px-1.5 text-[10px] font-mono text-[var(--ink-muted)] hover:text-[var(--ink-primary)] focus:outline-none cursor-pointer max-w-[130px]"
+                className="hidden 2xl:block h-7 bg-[var(--surface-elevated)] border border-[var(--border-hairline)] hover:border-[var(--sig-cyan)] rounded-md px-1.5 text-[10px] font-mono text-[var(--ink-muted)] hover:text-[var(--ink-primary)] focus:outline-none cursor-pointer max-w-[130px]"
               >
                 {projects.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -1376,7 +1376,7 @@ export function StudioCommandHeader() {
         </div>
 
         {/* CENTER CLUSTER: Ctrl+K Omnibar Search Trigger */}
-        <div className="flex-1 max-w-md mx-2 hidden md:flex justify-center">
+        <div className="flex-1 max-w-[200px] xl:max-w-[240px] 2xl:max-w-md mx-1.5 hidden lg:flex justify-center min-w-[140px]">
           <button
             type="button"
             onClick={() => setQuickCommandOpen(true)}
@@ -1437,7 +1437,7 @@ export function StudioCommandHeader() {
               type="button"
               onClick={() => setDiffEditorOpen(!isDiffEditorOpen)}
               title="Toggle live Monaco Chokepoint BFL DiffEditor (Shortcut: d)"
-              className={`hidden xl:flex items-center gap-1 h-7 px-2 rounded-md border text-[10px] font-mono font-bold transition-colors ${
+              className={`hidden 2xl:flex items-center gap-1 h-7 px-2 rounded-md border text-[10px] font-mono font-bold transition-colors ${
                 isDiffEditorOpen
                   ? "bg-[var(--surface-elevated)] border-[var(--sig-gold)] text-[var(--sig-gold)]"
                   : "bg-[var(--surface-elevated)] hover:bg-[var(--surface-void)] border-[var(--border-hairline)] text-[var(--ink-primary)]"

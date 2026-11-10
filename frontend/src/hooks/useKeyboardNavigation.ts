@@ -13,6 +13,9 @@ const SEVERITY_RANK: Record<string, number> = {
 
 function isEditableElement(el: EventTarget | Element | null): boolean {
   if (!el || !(el instanceof HTMLElement)) return false;
+  if (el.closest(".monaco-editor")) {
+    return useAuditStore.getState().isDiffEditorOpen;
+  }
   const tag = el.tagName.toUpperCase();
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
     return true;
@@ -20,7 +23,7 @@ function isEditableElement(el: EventTarget | Element | null): boolean {
   if (el.isContentEditable || el.getAttribute("contenteditable") === "true") {
     return true;
   }
-  if (el.closest(".monaco-editor") || el.closest("[contenteditable='true']")) {
+  if (el.closest("[contenteditable='true']")) {
     return true;
   }
   return false;

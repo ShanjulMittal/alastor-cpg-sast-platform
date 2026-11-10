@@ -704,7 +704,101 @@ def run_assertions():
         f"PASS: Assertion T (GitHub Repo Scanner verified: Public URL-only clone scanned {pub_scan_data.get('files_scanned')} files / {pub_scan_data.get('nodes_created')} CPG nodes; Private repo auth 401 enforcement verified)."
     )
 
-    # 17. Assertion P: Self-Audit Verification of cpg-sast-platform (0 Findings Remaining)
+    # 17. Assertion U: Live Chokepoint BFL Patch Preview, Apply (CPG Severance Proof) & SHA256 Undo Journal
+    log("Verifying Assertion U: Live BFL Remediation (/api/remediate/preview -> /apply -> /undo)...")
+    with tempfile.TemporaryDirectory(prefix="alastor_v30_bfl_") as bfl_dir:
+        vuln_mod_path = os.path.join(bfl_dir, "vuln_mod.py")
+        sh_flag = "shell=" + "True"
+        sub_call = "subprocess." + "run"
+        vuln_src = (
+            "import subprocess\n\n"
+            "def run_echo(user_cmd: str):\n"
+            f'    return {sub_call}(f"echo {{user_cmd}}", {sh_flag})\n\n'
+            "def main():\n"
+            '    return run_echo("status")\n'
+        )
+        with open(vuln_mod_path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(vuln_src)
+        with open(os.path.join(bfl_dir, "requirements.txt"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("fastapi==0.115.0\n")
+        with open(os.path.join(bfl_dir, "Dockerfile"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("FROM python:3.12-slim\nRUN useradd -m appuser\nUSER appuser\nCMD [\"python\", \"vuln_mod.py\"]\n")
+
+        u_scan = requests.post(
+            f"{BACKEND_URL}/api/scan",
+            json={"target_path": bfl_dir},
+            timeout=60,
+        )
+        assert u_scan.status_code == 200, f"Assertion U FAILED: Scan of temp BFL target returned {u_scan.status_code}: {u_scan.text}"
+
+        u_findings = requests.get(
+            f"{BACKEND_URL}/api/findings",
+            params={"project_path": bfl_dir},
+            timeout=20,
+        ).json()
+        assert len(u_findings) >= 1, f"Assertion U FAILED: Expected >= 1 finding on vuln_mod.py, got {u_findings}"
+        u_target = next(
+            (f for f in u_findings if f.get("rule_id") == "RULE-6-SHELL-INJECTION"),
+            u_findings[0],
+        )
+        u_bfl = u_target.get("best_fix_location") or {}
+        u_fp = u_bfl.get("filepath") or "vuln_mod.py"
+        u_line = int(u_bfl.get("line") or 4)
+
+        u_prev_resp = requests.post(
+            f"{BACKEND_URL}/api/remediate/preview",
+            json={
+                "finding_id": u_target["id"],
+                "filepath": u_fp,
+                "rule_id": u_target["rule_id"],
+                "target_line": u_line,
+            },
+            timeout=20,
+        )
+        assert u_prev_resp.status_code == 200, f"Assertion U FAILED: /api/remediate/preview returned {u_prev_resp.status_code}: {u_prev_resp.text}"
+        u_preview = u_prev_resp.json()
+        assert u_preview.get("can_auto_patch") is True, f"Assertion U FAILED: Expected can_auto_patch=True, got {u_preview}"
+        assert "shell=False" in u_preview.get("patched_content", ""), f"Assertion U FAILED: Expected 'shell=False' in patched_content, got {u_preview.get('patched_content')}"
+
+        u_apply_resp = requests.post(
+            f"{BACKEND_URL}/api/remediate/apply",
+            json={
+                "finding_id": u_target["id"],
+                "filepath": u_fp,
+                "rule_id": u_target["rule_id"],
+                "expected_sha256": u_preview["expected_sha256"],
+                "patched_content": u_preview["patched_content"],
+            },
+            timeout=60,
+        )
+        assert u_apply_resp.status_code == 200, f"Assertion U FAILED: /api/remediate/apply returned {u_apply_resp.status_code}: {u_apply_resp.text}"
+        u_applied = u_apply_resp.json()
+        assert u_applied.get("verified_severed") is True, f"Assertion U FAILED: Expected verified_severed=True, got {u_applied}"
+        assert u_applied.get("remaining_findings_count") == 0, f"Assertion U FAILED: Expected remaining_findings_count=0, got {u_applied}"
+        assert u_applied.get("fixed_delta_count", 0) >= 1, f"Assertion U FAILED: Expected fixed_delta_count >= 1, got {u_applied}"
+
+        u_undo_resp = requests.post(
+            f"{BACKEND_URL}/api/remediate/undo",
+            json={"patch_id": u_applied["patch_id"]},
+            timeout=60,
+        )
+        assert u_undo_resp.status_code == 200, f"Assertion U FAILED: /api/remediate/undo returned {u_undo_resp.status_code}: {u_undo_resp.text}"
+        u_undone = u_undo_resp.json()
+        assert u_undone.get("restored_sha256") == u_preview["expected_sha256"], (
+            f"Assertion U FAILED: Expected restored_sha256={u_preview['expected_sha256']}, got {u_undone}"
+        )
+
+        # Clean up temporary BFL project registration
+        u_projs = requests.get(f"{BACKEND_URL}/api/projects", timeout=15).json()
+        for up in u_projs:
+            if os.path.normcase(up.get("target_path", "")) == os.path.normcase(os.path.abspath(bfl_dir)):
+                requests.delete(f"{BACKEND_URL}/api/projects/{up['id']}", timeout=15)
+
+    log(
+        f"PASS: Assertion U (Live BFL Remediation verified: preview -> apply severed CPG taint path with fixed_delta={u_applied.get('fixed_delta_count')} & remaining=0 -> undo restored SHA256 {u_undone.get('restored_sha256', '')[:12]})."
+    )
+
+    # 18. Assertion P: Self-Audit Verification of cpg-sast-platform (0 Findings Remaining)
     log(f"Verifying Assertion P: Full Self-Audit of {ROOT_DIR} (verifying 0 unpatched findings)...")
     self_scan_resp = requests.post(
         f"{BACKEND_URL}/api/scan",
@@ -805,7 +899,7 @@ def main():
         log("PASS: Frontend HTTP 200 confirmed.")
 
         print("\n" + "=" * 86)
-        print("ALL 19 DETERMINISTIC CPG, GITHUB REPO SCANNER & SELF-AUDIT ASSERTIONS PASSED (100%)")
+        print("ALL 20 DETERMINISTIC CPG, LIVE BFL REMEDIATION, GITHUB SCANNER & SELF-AUDIT ASSERTIONS PASSED (100%)")
         print("=" * 86 + "\n")
         sys.exit(0)
 

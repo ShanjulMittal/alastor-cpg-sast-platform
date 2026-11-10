@@ -513,10 +513,10 @@ export function StudioStatusBar() {
       {/* 26px Precision Bottom Studio Status Bar */}
       <footer
         aria-label="ALASTOR Studio Telemetry Status Bar"
-        className="h-[26px] px-3 bg-[var(--surface-panel)] border-t border-[var(--border-hairline)] text-[var(--ink-primary)] flex items-center justify-between gap-2 text-[10px] font-mono select-none relative z-40 shrink-0"
+        className="h-[26px] px-3 bg-[var(--surface-panel)] border-t border-[var(--border-hairline)] text-[var(--ink-primary)] flex items-center justify-between gap-2 text-[10px] font-mono select-none relative z-40 shrink-0 whitespace-nowrap overflow-hidden"
       >
         {/* LEFT CLUSTER: Neo4j CPG Telemetry + Δ Track Changes + Active Rule Profile */}
-        <div className="flex items-center gap-2.5 min-w-0">
+        <div className="flex items-center gap-2 min-w-0 shrink-0 whitespace-nowrap">
           {/* Live Neo4j CPG Status + Node/Edge Counter */}
           <div
             title={`Neo4j CPG Graph Store — ${
@@ -550,7 +550,7 @@ export function StudioStatusBar() {
             type="button"
             onClick={() => setTrackChangesPanelOpen(!isTrackChangesPanelOpen)}
             title="Click to toggle Saved Scan Snapshot & Continuous Track Changes Delta Inspector"
-            className={`px-1.5 py-0.5 rounded flex items-center gap-1.5 transition-colors border ${
+            className={`px-1.5 py-0.5 rounded flex items-center gap-1.5 transition-colors border shrink-0 whitespace-nowrap ${
               isTrackChangesPanelOpen
                 ? "bg-[var(--surface-elevated)] border-[var(--sig-gold)] text-[var(--sig-gold)] font-bold"
                 : "hover:bg-[var(--surface-elevated)] border-transparent text-[var(--ink-primary)]"
@@ -567,7 +567,7 @@ export function StudioStatusBar() {
             <span className="text-[var(--sig-gold)] font-semibold">
               +{newCount} New
             </span>
-            <span className="text-[var(--ink-muted)] hidden lg:inline">
+            <span className="text-[var(--ink-muted)] hidden xl:inline">
               · {unchangedCount} Unchanged
             </span>
           </button>
@@ -581,9 +581,9 @@ export function StudioStatusBar() {
             type="button"
             onClick={() => setWorkspaceViewMode("RULE_ENGINE_PROFILES")}
             title="Active Rule Profile — Click to open Engine & 18-Rule Matrix"
-            className="hidden sm:flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-[var(--surface-elevated)] text-[var(--ink-muted)] hover:text-[var(--ink-primary)] transition-colors"
+            className="hidden sm:flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-[var(--surface-elevated)] text-[var(--ink-muted)] hover:text-[var(--ink-primary)] transition-colors shrink-0 whitespace-nowrap"
           >
-            <Sliders className="w-3 h-3 text-[var(--sig-cyan)]" />
+            <Sliders className="w-3 h-3 text-[var(--sig-cyan)] shrink-0" />
             <span>Profile:</span>
             <strong className="text-[var(--sig-gold)]">
               {activePreset?.badge || "OPTIMIZED"}
@@ -592,24 +592,24 @@ export function StudioStatusBar() {
         </div>
 
         {/* RIGHT CLUSTER: Keyboard Hint + Polyglot Engine Readiness + Tenant Account + SARIF v2.1.0 Export */}
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 whitespace-nowrap">
           {/* Keyboard Triage Legend */}
           <div
             title="Keyboard-First Triage Shortcuts inside Workbench"
-            className="hidden xl:flex items-center gap-1 text-[var(--ink-muted)]"
+            className="hidden 2xl:flex items-center gap-1 text-[var(--ink-muted)] shrink-0 whitespace-nowrap"
           >
             <Keyboard className="w-3 h-3 text-[var(--sig-gold)]" />
             <span>j/k Flaws · d BFL Diff · [/] Hops</span>
           </div>
 
-          <span className="text-[var(--border-hairline)] hidden xl:inline">
+          <span className="text-[var(--border-hairline)] hidden 2xl:inline">
             |
           </span>
 
           {/* Active Tech Stack & Phase 2 Polyglot Readiness Pill */}
           <div
             title={`Detected Stack: ${techStackList} • Phase 2 Polyglot CPG Hooks Ready`}
-            className="hidden lg:flex items-center gap-1 text-[var(--ink-muted)]"
+            className="hidden xl:flex items-center gap-1 text-[var(--ink-muted)] shrink-0 whitespace-nowrap"
           >
             <Cpu className="w-3 h-3 text-[var(--sig-cyan)]" />
             <span>Py · TS/JS · Go/Rust/C++ Ready</span>

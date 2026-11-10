@@ -337,6 +337,19 @@ def _synthesize_line_fix(
                 True,
                 "Sanitized tainted command interpolations via `shlex.quote` and enforced `shell=False`.",
             )
+        choke_assign_m = re.match(
+            r"^(\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*)(.+?)(\s*(?:#.*)?)$",
+            orig_line,
+        )
+        if choke_assign_m and is_py and "shlex.quote(" not in orig_line:
+            lhs_head, rhs_expr, comment_tail = choke_assign_m.groups()
+            updated_lines[idx] = f"{lhs_head}shlex.quote(str({rhs_expr.strip()})){comment_tail}"
+            updated_lines = _ensure_python_import(updated_lines, "shlex")
+            return (
+                updated_lines,
+                True,
+                "Sanitized tainted chokepoint variable assignment via `shlex.quote(str(...))`.",
+            )
 
     # 2. RULE-6-SHELL-INJECTION: shell=True -> shlex.split(first_arg) + shell=False preserving kwargs; cp.exec -> cp.execFile
     if "RULE-6-SHELL-INJECTION" in rule_upper or has_shell_true:

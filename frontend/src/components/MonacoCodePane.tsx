@@ -427,6 +427,11 @@ export function MonacoCodePane() {
     }
   }, [remediationPreview]);
 
+  // Sync storyboard activeStepIdx with keyboard path stepping ([ / ])
+  useEffect(() => {
+    setActiveStepIdx(activePathStepIndex);
+  }, [activePathStepIndex]);
+
   // Reset step index and fetch verification artifacts when selected finding changes
   useEffect(() => {
     setActiveStepIdx(0);
@@ -562,9 +567,18 @@ export function MonacoCodePane() {
   const handleDiffEditorDidMount: DiffOnMount = (editor) => {
     diffEditorRef.current = editor;
     const modifiedEditor = editor.getModifiedEditor();
-    if (remediationPreview?.target_line && remediationPreview.target_line >= 1) {
-      modifiedEditor.revealLineInCenter(remediationPreview.target_line);
-    }
+    const originalEditor = editor.getOriginalEditor();
+    const targetLn = remediationPreview?.target_line || activeStartLine || 1;
+    const centerOnTarget = () => {
+      if (targetLn >= 1) {
+        originalEditor.revealLineInCenter(targetLn);
+        modifiedEditor.revealLineInCenter(targetLn);
+      }
+    };
+    centerOnTarget();
+    editor.onDidUpdateDiff(() => {
+      centerOnTarget();
+    });
     modifiedEditor.onDidChangeModelContent(() => {
       setDraftPatchedContent(modifiedEditor.getValue());
     });
@@ -785,7 +799,7 @@ export function MonacoCodePane() {
               className={`px-2.5 py-1 rounded-md font-mono text-[10px] font-bold flex items-center gap-1.5 border transition-all ${
                 isDiffEditorOpen
                   ? "bg-amber-500 text-zinc-950 border-amber-400 shadow-sm"
-                  : "bg-amber-950/90 hover:bg-amber-900 text-amber-300 border-amber-600/80 shadow-sm"
+                  : "bg-[var(--surface-elevated)] hover:bg-[var(--surface-void)] text-[var(--sig-gold)] border-[var(--sig-gold)]/70 shadow-sm"
               }`}
             >
               <GitCompare className="w-3.5 h-3.5" />
@@ -1115,6 +1129,7 @@ export function MonacoCodePane() {
           <div className="flex-1 w-full relative">
             {remediationPreview ? (
               <DiffEditor
+                key={`${remediationPreview.filepath}:${remediationPreview.target_line}`}
                 height="100%"
                 language={getLanguage(remediationPreview.filepath || activeFilepath)}
                 original={remediationPreview.original_content}
@@ -1192,9 +1207,9 @@ export function MonacoCodePane() {
                   type="button"
                   onClick={() => jumpToBestFixLocation(selectedFinding)}
                   title={selectedFinding.best_fix_location.rationale}
-                  className="px-2 py-0.5 rounded bg-amber-950/90 hover:bg-amber-900 border border-amber-700 text-amber-300 text-[10px] font-mono font-bold flex items-center gap-1 shrink-0 shadow-sm"
+                  className="px-2 py-0.5 rounded bg-[var(--surface-elevated)] hover:bg-[var(--surface-void)] border border-[var(--sig-gold)]/70 text-[var(--sig-gold)] text-[10px] font-mono font-bold flex items-center gap-1 shrink-0 shadow-sm"
                 >
-                  <Crosshair className="w-3 h-3 text-amber-400" />
+                  <Crosshair className="w-3 h-3 text-[var(--sig-gold)]" />
                   <span>
                     Best Fix Chokepoint (BFL): L{selectedFinding.best_fix_location.line}
                   </span>
@@ -1215,7 +1230,7 @@ export function MonacoCodePane() {
                         : "Validated by security reviewer"
                     )
                   }
-                  className="bg-transparent text-cyan-300 font-bold focus:outline-none cursor-pointer"
+                  className="bg-transparent text-[var(--sig-cyan)] font-bold focus:outline-none cursor-pointer"
                 >
                   <option value="TO_VERIFY" className="bg-zinc-950 text-zinc-200">
                     To Verify
@@ -1369,7 +1384,7 @@ export function MonacoCodePane() {
                 <div className="space-y-3">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                     <div className="p-2.5 rounded-lg bg-[var(--surface-void)] border border-[var(--border-hairline)]">
-                      <div className="text-[10px] font-mono uppercase text-cyan-400 font-bold mb-1 flex items-center gap-1">
+                      <div className="text-[10px] font-mono uppercase text-[var(--sig-cyan)] font-bold mb-1 flex items-center gap-1">
                         <Sparkles className="w-3 h-3" />
                         What Is Happening in the Code
                       </div>
@@ -1378,12 +1393,12 @@ export function MonacoCodePane() {
                       </p>
                     </div>
 
-                    <div className="p-2.5 rounded-lg bg-red-950/20 border border-red-900/50">
-                      <div className="text-[10px] font-mono uppercase text-red-400 font-bold mb-1 flex items-center gap-1">
+                    <div className="p-2.5 rounded-lg bg-[var(--surface-void)] border border-[var(--sig-crimson)]/40">
+                      <div className="text-[10px] font-mono uppercase text-[var(--sig-crimson)] font-bold mb-1 flex items-center gap-1">
                         <AlertOctagon className="w-3 h-3" />
                         Why This Matters (Security Impact)
                       </div>
-                      <p className="text-red-200/90 text-[11px] leading-relaxed">
+                      <p className="text-[var(--ink-primary)] text-[11px] leading-relaxed">
                         {story.securityImpact}
                       </p>
                     </div>
