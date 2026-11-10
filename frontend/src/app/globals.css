@@ -20,12 +20,20 @@ html[data-theme="olympian-light"] {
   --surface-panel: #ffffff;
   --surface-elevated: #f8fafc;
   --border-hairline: rgba(15, 23, 42, 0.12);
+  --border-subtle: #cbd5e1;
+  --border-strong: #94a3b8;
   --ink-primary: #0f172a;
+  --ink-secondary: #334155;
   --ink-muted: #475569;
   --sig-crimson: #be123c;
   --sig-gold: #b45309;
   --sig-emerald: #047857;
   --sig-cyan: #0e7490;
+  --sev-critical: #be123c;
+  --sev-high: #92400e;
+  --sev-medium: #854d0e;
+  --sev-low: #1d4ed8;
+  --sev-safe: #065f46;
   --alastor-glow-primary: rgba(225, 29, 72, 0.07);
   --alastor-glow-secondary: rgba(14, 116, 144, 0.07);
   --alastor-sigil-stroke: rgba(180, 83, 9, 0.20);
@@ -53,12 +61,20 @@ html[data-theme="athena-parchment"] {
   --surface-panel: #fefbf5;
   --surface-elevated: #f9f4ea;
   --border-hairline: rgba(28, 21, 16, 0.12);
+  --border-subtle: #ded2be;
+  --border-strong: #b8a58b;
   --ink-primary: #1c1510;
+  --ink-secondary: #44362a;
   --ink-muted: #574838;
   --sig-crimson: #be123c;
   --sig-gold: #b45309;
   --sig-emerald: #047857;
   --sig-cyan: #0e7490;
+  --sev-critical: #be123c;
+  --sev-high: #92400e;
+  --sev-medium: #854d0e;
+  --sev-low: #1d4ed8;
+  --sev-safe: #065f46;
   --alastor-glow-primary: rgba(180, 83, 9, 0.09);
   --alastor-glow-secondary: rgba(190, 18, 60, 0.07);
   --alastor-sigil-stroke: rgba(146, 64, 14, 0.22);
@@ -86,12 +102,20 @@ html[data-theme="hyperborean-light"] {
   --surface-panel: #fafdff;
   --surface-elevated: #f2f8fe;
   --border-hairline: rgba(9, 25, 46, 0.12);
+  --border-subtle: #cbe0f5;
+  --border-strong: #93b8dc;
   --ink-primary: #09192e;
+  --ink-secondary: #263e5c;
   --ink-muted: #3b5573;
   --sig-crimson: #be123c;
   --sig-gold: #b45309;
   --sig-emerald: #047857;
   --sig-cyan: #0284c7;
+  --sev-critical: #be123c;
+  --sev-high: #92400e;
+  --sev-medium: #854d0e;
+  --sev-low: #1d4ed8;
+  --sev-safe: #065f46;
   --alastor-glow-primary: rgba(2, 132, 199, 0.09);
   --alastor-glow-secondary: rgba(99, 102, 241, 0.08);
   --alastor-sigil-stroke: rgba(3, 105, 161, 0.22);
@@ -160,18 +184,23 @@ html :is(.bg-slate-700, [class^="bg-slate-700/"], [class*=" bg-slate-700/"]) {
 
 html .hover\:bg-slate-900:hover,
 html .hover\:bg-slate-800:hover,
+html .hover\:bg-slate-700:hover,
 html .hover\:bg-zinc-900:hover,
-html .hover\:bg-zinc-800:hover {
+html .hover\:bg-zinc-800:hover,
+html .hover\:bg-zinc-700:hover {
   background-color: #e2e8f0 !important;
 }
 
 html .text-slate-50,
 html .text-slate-100,
-html .text-slate-200 {
+html .text-slate-200,
+html .hover\:text-slate-100:hover,
+html .hover\:text-slate-200:hover {
   color: #0f172a !important;
 }
 
-html .text-slate-300 {
+html .text-slate-300,
+html .hover\:text-slate-300:hover {
   color: #1e293b !important;
 }
 
@@ -218,7 +247,9 @@ html .fixed.inset-0.bg-black\/70,
 html .fixed.inset-0.bg-black\/60,
 html .fixed.inset-0.bg-black\/50,
 html .fixed.inset-0.bg-black\/40,
-html .fixed.inset-0[class*="bg-black/"] {
+html .fixed.inset-0[class*="bg-black/"],
+html .fixed.inset-0[class*="bg-slate-900"],
+html .fixed.inset-0[class*="bg-slate-950"] {
   background-color: rgba(15, 23, 42, 0.45) !important;
 }
 
@@ -792,7 +823,7 @@ html .hover\:bg-violet-500:hover.text-white {
   background-color: #6d28d9 !important;
 }
 
-/* Disabled light-gray buttons must never keep white text on palezinc/slate surfaces */
+/* Disabled light-gray buttons must never keep white text on pale zinc/slate surfaces (including :hover) */
 html :disabled:is(
   [class*="disabled:bg-zinc-800"],
   [class*="disabled:bg-zinc-900"],
@@ -800,7 +831,15 @@ html :disabled:is(
   [class*="disabled:bg-slate-800"],
   [class*="disabled:bg-slate-900"],
   [class*="disabled:bg-slate-700"]
-) {
+),
+html :disabled:hover:is(
+  [class*="disabled:bg-zinc-800"],
+  [class*="disabled:bg-zinc-900"],
+  [class*="disabled:bg-zinc-700"],
+  [class*="disabled:bg-slate-800"],
+  [class*="disabled:bg-slate-900"],
+  [class*="disabled:bg-slate-700"]
+).text-white {
   background-color: #e2e8f0 !important;
   border-color: #cbd5e1 !important;
 }
@@ -821,7 +860,125 @@ html :disabled:is(
   [class*="disabled:bg-slate-900"],
   [class*="disabled:bg-slate-700"]
 ) .text-white {
-  color: #475569 !important;
+  color: #334155 !important;
+}
+
+/* 9. Alpha-Suffixed Pale Text, Hover Tints & Dark Gradient Harmonization */
+html :is(
+  [class^="text-cyan-200/"],
+  [class*=" text-cyan-200/"],
+  [class^="text-cyan-300/"],
+  [class*=" text-cyan-300/"],
+  .group:hover .group-hover\:text-cyan-300
+) {
+  color: #0e7490 !important;
+}
+
+html :is(
+  [class^="text-indigo-200/"],
+  [class*=" text-indigo-200/"],
+  [class^="text-indigo-300/"],
+  [class*=" text-indigo-300/"],
+  .hover\:text-indigo-300:hover
+) {
+  color: #3730a3 !important;
+}
+
+html :is(
+  [class^="text-violet-200/"],
+  [class*=" text-violet-200/"],
+  [class^="text-violet-300/"],
+  [class*=" text-violet-300/"]
+) {
+  color: #5b21b6 !important;
+}
+
+html :is(
+  [class^="text-emerald-200/"],
+  [class*=" text-emerald-200/"],
+  .hover\:text-emerald-200:hover
+) {
+  color: #065f46 !important;
+}
+
+html :is(
+  [class^="text-amber-100/"],
+  [class*=" text-amber-100/"],
+  [class^="text-amber-300/"],
+  [class*=" text-amber-300/"],
+  [class^="text-yellow-300/"],
+  [class*=" text-yellow-300/"]
+) {
+  color: #92400e !important;
+}
+
+html :is(
+  [class^="text-red-300/"],
+  [class*=" text-red-300/"],
+  .hover\:text-red-300:hover
+) {
+  color: #991b1b !important;
+}
+
+html :is(
+  [class^="text-rose-200/"],
+  [class*=" text-rose-200/"],
+  [class^="text-rose-300/"],
+  [class*=" text-rose-300/"]
+) {
+  color: #9f1239 !important;
+}
+
+html :is(
+  [class*="hover:bg-cyan-950"]:hover,
+  [class*="hover:bg-cyan-900"]:hover
+) {
+  background-color: #a5f3fc !important;
+}
+
+html :is(
+  [class*="hover:bg-blue-900"]:hover,
+  [class*="hover:bg-blue-950"]:hover
+) {
+  background-color: #bfdbfe !important;
+}
+
+html :is(
+  [class*="hover:bg-indigo-950"]:hover,
+  [class*="hover:bg-indigo-900"]:hover
+) {
+  background-color: #c7d2fe !important;
+}
+
+html :is(
+  [class*="hover:bg-violet-950"]:hover,
+  [class*="hover:bg-violet-900"]:hover,
+  [class*="hover:bg-purple-900"]:hover
+) {
+  background-color: #ddd6fe !important;
+}
+
+html :is(
+  [class*="hover:bg-emerald-950"]:hover,
+  [class*="hover:bg-emerald-900"]:hover
+) {
+  background-color: #a7f3d0 !important;
+}
+
+html :is(
+  [class*="hover:bg-amber-950"]:hover,
+  [class*="hover:bg-amber-900"]:hover
+) {
+  background-color: #fde68a !important;
+}
+
+html :is(
+  [class*="hover:bg-red-950"]:hover,
+  [class*="hover:bg-red-900"]:hover,
+  [class*="hover:bg-rose-950"]:hover,
+  [class*="hover:bg-rose-900"]:hover
+) {
+  background-color: #fecdd3 !important;
 }
 
 /* Slow mythic rotation for Alastor arcane sigil rings */

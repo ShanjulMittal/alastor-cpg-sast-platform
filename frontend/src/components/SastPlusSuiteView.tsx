@@ -488,7 +488,7 @@ export function SastPlusSuiteView({
                           <Lightbulb className="w-3.5 h-3.5" />
                           Real-World Analogy
                         </div>
-                        <p className="text-xs text-amber-100/90 italic leading-relaxed">
+                        <p className="text-xs text-amber-900 italic leading-relaxed">
                           &ldquo;{f.non_coder_analogy}&rdquo;
                         </p>
                       </div>

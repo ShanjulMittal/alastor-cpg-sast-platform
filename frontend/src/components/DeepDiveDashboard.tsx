@@ -127,7 +127,7 @@ export function DeepDiveDashboard() {
     <div className="flex-1 h-full overflow-y-auto bg-zinc-950/70 p-6 text-zinc-100 select-none">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Top Executive Header */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-gradient-to-r from-zinc-900/95 via-zinc-900/75 to-indigo-950/30 border border-zinc-800 rounded-2xl p-5 shadow-xl">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-gradient-to-r from-white via-slate-50 to-indigo-50/80 border border-zinc-800 rounded-2xl p-5 shadow-xl">
           <div className="flex items-center gap-4">
             <img
               src="/alastor-demon-logo.png"
@@ -185,7 +185,7 @@ export function DeepDiveDashboard() {
         </div>
 
         {/* Saved Scan Snapshot & Continuous Track Changes Delta Banner */}
-        <div className="rounded-2xl bg-gradient-to-r from-amber-950/30 via-zinc-900/90 to-indigo-950/30 border border-amber-500/40 p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="rounded-2xl bg-gradient-to-r from-amber-50/80 via-white to-indigo-50/80 border border-amber-500/40 p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="flex items-center gap-3 flex-wrap">
             <span className="px-2.5 py-1 rounded-lg bg-amber-950/90 border border-amber-600/70 text-amber-200 font-mono text-xs font-bold flex items-center gap-1.5">
               <Clock className="w-3.5 h-3.5 text-amber-400" />
@@ -268,7 +268,7 @@ export function DeepDiveDashboard() {
                         cy="21"
                         r="15.91549431"
                         fill="transparent"
-                        stroke="#27272a"
+                        stroke="#e2e8f0"
                         strokeWidth="5"
                       />
                       {donutSegments.map((seg) =>
@@ -659,15 +659,15 @@ export function DeepDiveDashboard() {
                     </div>
                     <div className="p-1.5 rounded bg-red-950/40 border border-red-900/50">
                       <div className="text-xs font-bold text-red-400">{eng.critical_count}</div>
-                      <div className="text-[9px] text-red-300/80">Crit</div>
+                      <div className="text-[9px] text-red-800">Crit</div>
                     </div>
                     <div className="p-1.5 rounded bg-amber-950/40 border border-amber-900/50">
                       <div className="text-xs font-bold text-amber-400">{eng.high_count}</div>
-                      <div className="text-[9px] text-amber-300/80">High</div>
+                      <div className="text-[9px] text-amber-800">High</div>
                     </div>
                     <div className="p-1.5 rounded bg-yellow-950/40 border border-yellow-900/50">
                       <div className="text-xs font-bold text-yellow-400">{eng.medium_count}</div>
-                      <div className="text-[9px] text-yellow-300/80">Med</div>
+                      <div className="text-[9px] text-amber-900">Med</div>
                     </div>
                   </div>
                 </div>
@@ -770,7 +770,7 @@ export function DeepDiveDashboard() {
                           </div>
                         )}
                         {f.reachability_reason && (
-                          <p className="text-[11px] text-indigo-200/95 leading-relaxed">
+                          <p className="text-[11px] text-indigo-900 leading-relaxed">
                             <strong className="text-indigo-300">Reachability Analysis: </strong>
                             {f.reachability_reason}
                           </p>
@@ -780,7 +780,7 @@ export function DeepDiveDashboard() {
                           {f.description || f.plain_english_summary}
                         </p>
                         {f.remediation && (
-                          <p className="text-[11px] text-cyan-200/90 leading-relaxed">
+                          <p className="text-[11px] text-cyan-900 leading-relaxed">
                             <strong className="text-cyan-300">How to Fix: </strong>
                             {f.remediation}
                           </p>

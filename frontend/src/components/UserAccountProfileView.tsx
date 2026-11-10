@@ -276,7 +276,7 @@ export const UserAccountProfileView: React.FC = () => {
 
       {/* Active Session Identity Banner */}
       {activeUser && (
-        <div className="bg-gradient-to-r from-violet-950/40 via-slate-900 to-amber-950/30 border border-violet-500/40 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
+        <div className="bg-gradient-to-r from-violet-50/90 via-white to-amber-50/80 border border-violet-500/40 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3.5">
             <div className="w-10 h-10 rounded-full bg-violet-500/25 border border-violet-400/60 flex items-center justify-center font-mono text-sm font-extrabold text-violet-200 shrink-0">
               {getInitials(activeUser.name, activeUser.avatar_badge)}

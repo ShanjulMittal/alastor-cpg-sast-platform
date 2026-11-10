@@ -559,11 +559,11 @@ export function TopMetricsBar() {
                 <Flame className="w-3.5 h-3.5 text-red-500" />
                 {metrics?.critical_count ?? 0} Crit
               </span>
-              <span className="text-zinc-600">•</span>
+              <span className="text-slate-600">•</span>
               <span className="text-amber-300 font-bold">
                 {metrics?.high_count ?? 0} High
               </span>
-              <span className="text-zinc-600">•</span>
+              <span className="text-slate-600">•</span>
               <span className="text-zinc-200 font-bold">
                 {metrics?.total_findings ?? 0} Total
               </span>
@@ -723,7 +723,7 @@ export function TopMetricsBar() {
                     onClick={() =>
                       handleNativeOsDialog(pickerTab === "FILE" ? "file" : "folder", true)
                     }
-                    className="w-full py-2 px-2.5 rounded-lg bg-gradient-to-r from-cyan-950 to-blue-950 hover:from-cyan-900 hover:to-blue-900 border border-cyan-700/80 text-cyan-200 text-xs font-medium flex items-center justify-center gap-1.5 shadow-sm transition-all"
+                    className="w-full py-2 px-2.5 rounded-lg bg-gradient-to-r from-cyan-50 to-sky-100 hover:from-cyan-100 hover:to-sky-200 border border-cyan-700/80 text-cyan-200 text-xs font-medium flex items-center justify-center gap-1.5 shadow-sm transition-all"
                   >
                     {isNativeDialogOpen ? (
                       <>

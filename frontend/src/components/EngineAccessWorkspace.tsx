@@ -213,7 +213,7 @@ export const EngineAccessWorkspace: React.FC<EngineAccessWorkspaceProps> = ({
                     <span
                       className={`px-1.5 py-0 rounded text-[9.5px] font-mono font-bold border ${
                         isActive
-                          ? "bg-sky-900 text-white border-sky-950"
+                          ? "bg-sky-800 text-white border-sky-900"
                           : "bg-[var(--surface-void)] text-[var(--ink-muted)] border-[var(--border-hairline)]"
                       }`}
                     >

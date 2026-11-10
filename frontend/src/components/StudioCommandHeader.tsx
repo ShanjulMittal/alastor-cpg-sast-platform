@@ -628,7 +628,7 @@ export function StudioCommandHeader() {
                   <span
                     className={`px-1.5 py-0.1 rounded text-[9px] font-mono font-extrabold ${
                       active
-                        ? "bg-sky-900 text-white"
+                        ? "bg-sky-800 text-white"
                         : st.id === "TRIAGE_FIX" && Number(st.badge) > 0
                         ? "bg-rose-100 text-rose-800 border border-rose-300"
                         : "bg-slate-200 text-slate-800"
@@ -746,7 +746,7 @@ export function StudioCommandHeader() {
               <Sparkles className="w-3.5 h-3.5" />
             )}
             <span>Frontier AI</span>
-            <span className="hidden sm:inline px-1.5 py-0.1 rounded bg-indigo-950/60 text-white font-mono text-[9px] font-extrabold">
+            <span className="hidden sm:inline px-1.5 py-0.1 rounded bg-indigo-800 text-white font-mono text-[9px] font-extrabold">
               {aiRequests > 0
                 ? `${Math.round(aiSavingsPct)}% Saved`
                 : isAiReady

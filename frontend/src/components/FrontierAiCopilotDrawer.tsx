@@ -473,7 +473,7 @@ export function FrontierAiCopilotDrawer() {
                 <span
                   className={`px-1 rounded text-[9px] font-mono font-bold ${
                     active
-                      ? "bg-indigo-900 text-white"
+                      ? "bg-indigo-800 text-white"
                       : "bg-slate-100 text-slate-800"
                   }`}
                 >

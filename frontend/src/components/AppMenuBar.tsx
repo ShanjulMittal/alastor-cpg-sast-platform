@@ -184,7 +184,7 @@ export function AppMenuBar() {
     <nav
       ref={menuContainerRef}
       aria-label="Top Application Menu Bar"
-      className="h-9 px-3 bg-[#070a10] border-b border-slate-800/90 flex items-center justify-between text-xs select-none relative z-50 shadow-md"
+      className="h-9 px-3 bg-[var(--surface-panel)] border-b border-slate-800/90 flex items-center justify-between text-xs select-none relative z-50 shadow-sm"
     >
       {/* Left: Structured Desktop Menus with Dropdown Options */}
       <div className="flex items-center gap-1">

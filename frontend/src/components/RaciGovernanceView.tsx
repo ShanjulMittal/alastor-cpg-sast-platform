@@ -135,7 +135,7 @@ export function RaciGovernanceView() {
   return (
     <div className="flex-1 h-full overflow-y-auto bg-zinc-950/90 p-5 text-zinc-100 space-y-5">
       {/* Top Executive & Non-Coder Header Banner */}
-      <div className="rounded-2xl bg-gradient-to-r from-amber-950/40 via-zinc-900/90 to-rose-950/40 border border-amber-700/50 p-5 shadow-xl">
+      <div className="rounded-2xl bg-gradient-to-r from-amber-50/80 via-white to-rose-50/80 border border-amber-700/50 p-5 shadow-xl">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="space-y-1.5 max-w-3xl">
             <div className="flex items-center gap-2 flex-wrap">

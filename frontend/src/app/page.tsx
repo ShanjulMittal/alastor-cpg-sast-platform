@@ -782,7 +782,7 @@ export default function AuditPage() {
                         <span
                           className={`px-1.5 py-0.1 rounded text-[9px] font-mono font-extrabold ${
                             active
-                              ? "bg-sky-900 text-white"
+                              ? "bg-sky-800 text-white"
                               : "bg-white text-slate-800 border border-slate-300"
                           }`}
                         >
