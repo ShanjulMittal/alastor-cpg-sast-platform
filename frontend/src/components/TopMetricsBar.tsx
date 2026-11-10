@@ -50,8 +50,7 @@ import {
   AlastorBrandHeader,
   AlastorThemeSwitcher,
 } from "./AlastorBranding";
-
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+import { BACKEND_URL } from "@/lib/api";
 
 interface FsEntry {
   name: string;

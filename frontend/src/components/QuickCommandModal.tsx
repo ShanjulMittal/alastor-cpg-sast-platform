@@ -29,16 +29,23 @@ import {
   Compass,
   GitPullRequest,
   KeyRound,
+  Zap,
+  Bot,
+  Wand2,
+  CheckCircle2,
+  FileSpreadsheet,
 } from "lucide-react";
+
+type CommandCategory =
+  | "4-Stage Guided Workflow"
+  | "Frontier AI & Batch Auto-Fix"
+  | "ASPM & Engine Sub-Tabs"
+  | "Scan & Track Changes"
+  | "Layout, Themes & Exports";
 
 interface QuickCommandItem {
   id: string;
-  category:
-    | "5 Studio Workspaces"
-    | "ASPM & Engine Sub-Tabs"
-    | "Scan & Remediation Actions"
-    | "Layout & Lens"
-    | "Exports & Integrations";
+  category: CommandCategory;
   title: string;
   subtitle: string;
   icon: React.ReactNode;
@@ -50,9 +57,18 @@ export function QuickCommandModal() {
   const {
     isQuickCommandOpen,
     setQuickCommandOpen,
-    setWorkspaceViewMode,
+    primaryStage,
+    setPrimaryStage,
+    setMapSubTab,
+    setAspmSubSection,
     setExecutiveAspmTab,
     setEngineAccessTab,
+    setAiDrawerOpen,
+    batchApplyAllSafeFixes,
+    explainCurrentGraphWithAi,
+    validateFindingsAi,
+    selectedFinding,
+    synthesizeFindingPatchAi,
     triggerScan,
     projectPath,
     openTargetPicker,
@@ -74,6 +90,7 @@ export function QuickCommandModal() {
     selectTreeFile,
     setShowPortalGate,
     setFilterSecretsOnly,
+    setActiveSidebarTab,
   } = useAuditStore();
 
   const [query, setQuery] = useState("");
@@ -91,70 +108,189 @@ export function QuickCommandModal() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isQuickCommandOpen, setQuickCommandOpen]);
 
+  const activeOpenCount = useMemo(
+    () =>
+      findings.filter(
+        (f) =>
+          f.triage_status !== "NOT_EXPLOITABLE" &&
+          f.triage_status !== "PROPOSED_NOT_EXPLOITABLE" &&
+          f.triage_status !== "RESOLVED"
+      ).length,
+    [findings]
+  );
+
   const commands: QuickCommandItem[] = useMemo(
     () => [
-      // 1. 5 Primary Studio Workspaces
+      // 1. 4-Stage Guided Workflow
       {
-        id: "ws-workbench",
-        category: "5 Studio Workspaces",
-        title: "1. Workbench (Code, BFL DiffEditor & 7 CPG Graphs)",
+        id: "stage-1-scan-repos",
+        category: "4-Stage Guided Workflow",
+        title: "Stage 1: Scan & Repos (Target Picker, GitHub Clone & Projects)",
         subtitle:
-          "Inspect findings, preview surgical BFL patches, and explore AST/CFG/DFG/Call graphs",
-        icon: <Code2 className="w-4 h-4 text-[var(--sig-emerald)]" />,
-        badge: "Workspace 1",
-        action: () => setWorkspaceViewMode("REMEDIATION_IDE"),
+          "Scan local folders, single files, public/private GitHub URLs, or ZIP uploads and manage repositories",
+        icon: <FolderGit2 className="w-4 h-4 text-sky-700" />,
+        badge: primaryStage === "SCAN_REPOS" ? "Active • Stage 1" : "Stage 1",
+        action: () => setPrimaryStage("SCAN_REPOS"),
       },
       {
-        id: "ws-threats",
-        category: "5 Studio Workspaces",
-        title: "2. Threats & Vault (STRIDE Matrix & Secret Vault)",
+        id: "stage-2-triage-fix",
+        category: "4-Stage Guided Workflow",
+        title: "Stage 2: Triage & Fix (Code, BFL DiffEditor & CPG Paths)",
         subtitle:
-          "STRIDE Verdict Matrix (OK vs Issue), Trust Boundary Zones, and Cryptographic Secret Vault",
-        icon: <ShieldAlert className="w-4 h-4 text-[var(--sig-crimson)]" />,
-        badge: "Workspace 2",
-        action: () => setWorkspaceViewMode("THREAT_MODELING"),
+          "Inspect vulnerabilities, preview surgical BFL patches, batch auto-fix issues, and step through CPG hops",
+        icon: <Code2 className="w-4 h-4 text-emerald-700" />,
+        badge: primaryStage === "TRIAGE_FIX" ? "Active • Stage 2" : "Stage 2",
+        action: () => setPrimaryStage("TRIAGE_FIX"),
       },
       {
-        id: "ws-aspm",
-        category: "5 Studio Workspaces",
-        title: "3. Executive ASPM (Impact, SBOM, Compliance & RACI)",
+        id: "stage-3-map-360",
+        category: "4-Stage Guided Workflow",
+        title: "Stage 3: 360° Map & Threats — Architecture & Call Flows",
         subtitle:
-          "Unified 7-tab ASPM command center: Impact Translator, CycloneDX v1.5 SBOM, Analytics & RACI",
-        icon: <Layers className="w-4 h-4 text-[var(--sig-gold)]" />,
-        badge: "Workspace 3",
-        action: () => setWorkspaceViewMode("EXECUTIVE_ASPM"),
+          "Interactive 360° Application Spider Map, AST/CFG/DFG, Attack Surface & Inter-Procedural Call Graphs",
+        icon: <Network className="w-4 h-4 text-sky-700" />,
+        badge:
+          primaryStage === "MAP_360_THREATS" ? "Active • Stage 3" : "Stage 3A",
+        action: () => {
+          setPrimaryStage("MAP_360_THREATS");
+          setMapSubTab("SPIDER_360");
+        },
       },
       {
-        id: "ws-repos",
-        category: "5 Studio Workspaces",
-        title: "4. Repositories (Local Discovery & GitHub Import)",
+        id: "stage-3-stride-threats",
+        category: "4-Stage Guided Workflow",
+        title: "Stage 3: 360° Map & Threats — Trust Boundaries, STRIDE & PBOM",
         subtitle:
-          "Switch applications, clone public/private GitHub repos, or inspect saved scan snapshots",
-        icon: <FolderGit2 className="w-4 h-4 text-[var(--sig-cyan)]" />,
-        badge: "Workspace 4",
-        action: () => setWorkspaceViewMode("PROJECTS_HUB"),
+          "STRIDE Verdict Matrix (OK vs Issue), Trust Boundary Zones, CI/CD PBOM & Cryptographic Secret Vault",
+        icon: <ShieldAlert className="w-4 h-4 text-rose-700" />,
+        badge: "Stage 3B",
+        action: () => {
+          setPrimaryStage("MAP_360_THREATS");
+          setMapSubTab("THREAT_BOUNDARIES");
+        },
       },
       {
-        id: "ws-engine",
-        category: "5 Studio Workspaces",
-        title: "5. Engine & Access (Rule Profiles, Cypher, RBAC & Jira)",
+        id: "stage-4-aspm-governance",
+        category: "4-Stage Guided Workflow",
+        title: "Stage 4: ASPM, Rules & Reports (Posture, SBOM, Rules & Exports)",
         subtitle:
-          "21-Rule Matrix, Neo4j Cypher & AST Sanitizers, Multi-Tenant RBAC, and Jira/GitHub Sync",
-        icon: <Sliders className="w-4 h-4 text-[var(--sig-gold)]" />,
-        badge: "Workspace 5",
-        action: () => setWorkspaceViewMode("ENGINE_ACCESS"),
+          "Executive posture analytics, CycloneDX SBOM, 21-Rule Matrix, RACI/RBAC governance, and Export Center",
+        icon: <BarChart3 className="w-4 h-4 text-amber-700" />,
+        badge:
+          primaryStage === "ASPM_GOVERNANCE" ? "Active • Stage 4" : "Stage 4",
+        action: () => setPrimaryStage("ASPM_GOVERNANCE"),
       },
 
-      // 2. All ExecutiveAspmTab & EngineAccessTab Sub-Tabs
+      // 2. Frontier AI Copilot & Batch Auto-Fix
+      {
+        id: "ai-batch-autofix",
+        category: "Frontier AI & Batch Auto-Fix",
+        title: `⚡ Fix All Safe Issues (${activeOpenCount} Open Candidates)`,
+        subtitle:
+          "Run atomic bottom-up BFL auto-remediation across open findings with unified .patch rollback & CPG re-scan",
+        icon: <Zap className="w-4 h-4 text-emerald-700" />,
+        badge: "1-Click Batch Fix",
+        action: () => {
+          setPrimaryStage("TRIAGE_FIX");
+          void batchApplyAllSafeFixes();
+        },
+      },
+      {
+        id: "ai-settings-byok",
+        category: "Frontier AI & Batch Auto-Fix",
+        title: "Frontier AI Copilot — BYOK Vault & Provider Settings",
+        subtitle:
+          "Connect Gemini, OpenAI, Anthropic, or OpenAI-compatible endpoints with CPG micro-slicing token telemetry",
+        icon: <Bot className="w-4 h-4 text-indigo-700" />,
+        badge: "BYOK AI",
+        action: () => setAiDrawerOpen(true, "SETTINGS"),
+      },
+      {
+        id: "ai-validate-tpfp",
+        category: "Frontier AI & Batch Auto-Fix",
+        title: "Validate Findings (TP / FP) with Frontier AI",
+        subtitle:
+          "Evaluate CPG micro-slices to classify True Positives vs False Positives with confidence scores",
+        icon: <CheckCircle2 className="w-4 h-4 text-indigo-700" />,
+        badge: "AI Triage",
+        action: () => {
+          setAiDrawerOpen(true, "VALIDATE");
+          if (findings.length > 0) {
+            void validateFindingsAi(
+              selectedFinding
+                ? [selectedFinding.id]
+                : findings.slice(0, 8).map((f) => f.id)
+            );
+          }
+        },
+      },
+      {
+        id: "ai-code-audit",
+        category: "Frontier AI & Batch Auto-Fix",
+        title: "Deep Code Selection Audit with Frontier AI",
+        subtitle:
+          "Audit a targeted line range with CPG taint context and receive secure code recommendations",
+        icon: <Sparkles className="w-4 h-4 text-indigo-700" />,
+        badge: "AI Audit",
+        action: () => setAiDrawerOpen(true, "CODE_AUDIT"),
+      },
+      {
+        id: "ai-patch-synthesis",
+        category: "Frontier AI & Batch Auto-Fix",
+        title: "Synthesize Context-Aware AI Patch for Selected Finding",
+        subtitle:
+          "Generate surgical remediation code and load directly into the Monaco Side-by-Side DiffEditor",
+        icon: <Wand2 className="w-4 h-4 text-indigo-700" />,
+        badge: "AI Patch",
+        action: () => {
+          setAiDrawerOpen(true, "PATCH");
+          if (selectedFinding) {
+            void synthesizeFindingPatchAi(selectedFinding.id);
+          }
+        },
+      },
+      {
+        id: "ai-explain-graph",
+        category: "Frontier AI & Batch Auto-Fix",
+        title: "Explain Current CPG / 360° Architecture Graph with AI",
+        subtitle:
+          "Translate the active graph topology into a plain-English security walkthrough",
+        icon: <Network className="w-4 h-4 text-indigo-700" />,
+        badge: "Graph Story",
+        action: () => {
+          setAiDrawerOpen(true, "GRAPH");
+          void explainCurrentGraphWithAi();
+        },
+      },
+
+      // 3. ASPM & Engine Sub-Tabs
+      {
+        id: "sub-aspm-posture",
+        category: "ASPM & Engine Sub-Tabs",
+        title: "Compliance & Posture Analytics (OWASP / PCI-DSS / SOC2)",
+        subtitle:
+          "Executive posture score, SLA aging buckets, CWE heatmaps, and regulatory scorecards",
+        icon: <BarChart3 className="w-4 h-4 text-sky-700" />,
+        badge: "ASPM • Posture",
+        action: () => {
+          setPrimaryStage("ASPM_GOVERNANCE");
+          setAspmSubSection("POSTURE");
+          setExecutiveAspmTab("ANALYTICS");
+        },
+      },
       {
         id: "sub-aspm-translator",
         category: "ASPM & Engine Sub-Tabs",
         title: "Plain-English Impact Translator",
         subtitle:
           "Business impact stories, non-coder analogies, and 3-step management action plans",
-        icon: <GraduationCap className="w-4 h-4 text-[var(--sig-emerald)]" />,
-        badge: "ASPM • Tab 1",
-        action: () => setExecutiveAspmTab("TRANSLATOR"),
+        icon: <GraduationCap className="w-4 h-4 text-emerald-700" />,
+        badge: "SAST+ • Translator",
+        action: () => {
+          setPrimaryStage("ASPM_GOVERNANCE");
+          setAspmSubSection("SAST_PLUS");
+          setExecutiveAspmTab("TRANSLATOR");
+        },
       },
       {
         id: "sub-aspm-sbom",
@@ -162,9 +298,13 @@ export function QuickCommandModal() {
         title: "CycloneDX SBOM & Supply-Chain Inspector",
         subtitle:
           "Inspect live package manifests (requirements.txt, package.json) and export .cdx.json",
-        icon: <Layers className="w-4 h-4 text-[var(--sig-cyan)]" />,
-        badge: "ASPM • Tab 2",
-        action: () => setExecutiveAspmTab("SBOM"),
+        icon: <Layers className="w-4 h-4 text-sky-700" />,
+        badge: "SAST+ • SBOM",
+        action: () => {
+          setPrimaryStage("ASPM_GOVERNANCE");
+          setAspmSubSection("SAST_PLUS");
+          setExecutiveAspmTab("SBOM");
+        },
       },
       {
         id: "sub-aspm-attack-surface",
@@ -172,29 +312,13 @@ export function QuickCommandModal() {
         title: "API Attack Surface & Entrypoints",
         subtitle:
           "Inspect discovered HTTP routes, callable entrypoints, and adjacent vulnerabilities",
-        icon: <Compass className="w-4 h-4 text-[var(--sig-gold)]" />,
-        badge: "ASPM • Tab 3",
-        action: () => setExecutiveAspmTab("ATTACK_SURFACE"),
-      },
-      {
-        id: "sub-aspm-analytics",
-        category: "ASPM & Engine Sub-Tabs",
-        title: "Compliance & Analytics (OWASP / PCI-DSS / SOC2)",
-        subtitle:
-          "Executive posture score, SLA aging buckets, and regulatory compliance scorecards",
-        icon: <BarChart3 className="w-4 h-4 text-[var(--sig-cyan)]" />,
-        badge: "ASPM • Tab 4",
-        action: () => setExecutiveAspmTab("ANALYTICS"),
-      },
-      {
-        id: "sub-aspm-raci",
-        category: "ASPM & Engine Sub-Tabs",
-        title: "RACI Matrix & Governance Accountability",
-        subtitle:
-          "Assign Responsible, Accountable, Consulted, and Informed owners with PMI/COBIT validation",
-        icon: <Users className="w-4 h-4 text-[var(--sig-gold)]" />,
-        badge: "ASPM • Tab 5",
-        action: () => setExecutiveAspmTab("RACI"),
+        icon: <Compass className="w-4 h-4 text-amber-700" />,
+        badge: "SAST+ • Surface",
+        action: () => {
+          setPrimaryStage("ASPM_GOVERNANCE");
+          setAspmSubSection("SAST_PLUS");
+          setExecutiveAspmTab("ATTACK_SURFACE");
+        },
       },
       {
         id: "sub-aspm-roadmap",
@@ -202,9 +326,13 @@ export function QuickCommandModal() {
         title: "Remediation Roadmap (Phased Sprint Plan)",
         subtitle:
           "Prioritized Phase 1 (24-72h), Phase 2 (Sprint), and Phase 3 (Hardening) fix plan",
-        icon: <Sparkles className="w-4 h-4 text-[var(--sig-emerald)]" />,
-        badge: "ASPM • Tab 6",
-        action: () => setExecutiveAspmTab("ROADMAP"),
+        icon: <Sparkles className="w-4 h-4 text-emerald-700" />,
+        badge: "SAST+ • Roadmap",
+        action: () => {
+          setPrimaryStage("ASPM_GOVERNANCE");
+          setAspmSubSection("SAST_PLUS");
+          setExecutiveAspmTab("ROADMAP");
+        },
       },
       {
         id: "sub-aspm-academy",
@@ -212,9 +340,13 @@ export function QuickCommandModal() {
         title: "Security Academy & Non-Coder Glossary",
         subtitle:
           "Learn CPG, AST/CFG/DFG, BFL Chokepoints, CWE/CVE/CVSS, and SBOM fundamentals",
-        icon: <BookOpen className="w-4 h-4 text-[var(--sig-crimson)]" />,
-        badge: "ASPM • Tab 7",
-        action: () => setExecutiveAspmTab("ACADEMY"),
+        icon: <BookOpen className="w-4 h-4 text-rose-700" />,
+        badge: "SAST+ • Academy",
+        action: () => {
+          setPrimaryStage("ASPM_GOVERNANCE");
+          setAspmSubSection("SAST_PLUS");
+          setExecutiveAspmTab("ACADEMY");
+        },
       },
       {
         id: "sub-engine-rules",
@@ -222,9 +354,13 @@ export function QuickCommandModal() {
         title: "Rule Profiles & 21-Rule Security Matrix",
         subtitle:
           "Toggle SAST, SCA, IaC, and Secret rules or switch between Optimized and Zero-Trust profiles",
-        icon: <Sliders className="w-4 h-4 text-[var(--sig-gold)]" />,
-        badge: "Engine • Tab 1",
-        action: () => setEngineAccessTab("RULE_PROFILES"),
+        icon: <Sliders className="w-4 h-4 text-amber-700" />,
+        badge: "Rules Engine",
+        action: () => {
+          setPrimaryStage("ASPM_GOVERNANCE");
+          setAspmSubSection("RULES_ENGINE");
+          setEngineAccessTab("RULE_PROFILES");
+        },
       },
       {
         id: "sub-engine-cypher",
@@ -232,9 +368,27 @@ export function QuickCommandModal() {
         title: "Cypher & Sanitizer Studio",
         subtitle:
           "Inspect Neo4j Cypher taint queries, tune DFG hop depth, and register custom AST sanitizers",
-        icon: <Code2 className="w-4 h-4 text-[var(--sig-cyan)]" />,
-        badge: "Engine • Tab 2",
-        action: () => setEngineAccessTab("CYPHER_SANITIZERS"),
+        icon: <Code2 className="w-4 h-4 text-sky-700" />,
+        badge: "Rules • Cypher",
+        action: () => {
+          setPrimaryStage("ASPM_GOVERNANCE");
+          setAspmSubSection("RULES_ENGINE");
+          setEngineAccessTab("CYPHER_SANITIZERS");
+        },
+      },
+      {
+        id: "sub-aspm-raci",
+        category: "ASPM & Engine Sub-Tabs",
+        title: "RACI Matrix & Governance Accountability",
+        subtitle:
+          "Assign Responsible, Accountable, Consulted, and Informed owners with PMI/COBIT validation",
+        icon: <Users className="w-4 h-4 text-amber-700" />,
+        badge: "Governance • RACI",
+        action: () => {
+          setPrimaryStage("ASPM_GOVERNANCE");
+          setAspmSubSection("GOVERNANCE");
+          setExecutiveAspmTab("RACI");
+        },
       },
       {
         id: "sub-engine-accounts",
@@ -242,9 +396,13 @@ export function QuickCommandModal() {
         title: "Multi-Tenant Accounts & RBAC",
         subtitle:
           "Manage isolated tenant accounts, operator roles, and granular RBAC permissions",
-        icon: <Users className="w-4 h-4 text-[var(--sig-emerald)]" />,
-        badge: "Engine • Tab 3",
-        action: () => setEngineAccessTab("ACCOUNTS_RBAC"),
+        icon: <Users className="w-4 h-4 text-emerald-700" />,
+        badge: "Governance • RBAC",
+        action: () => {
+          setPrimaryStage("ASPM_GOVERNANCE");
+          setAspmSubSection("GOVERNANCE");
+          setEngineAccessTab("ACCOUNTS_RBAC");
+        },
       },
       {
         id: "sub-engine-connectors",
@@ -252,130 +410,151 @@ export function QuickCommandModal() {
         title: "Jira & GitHub Sync (Issue Connectors)",
         subtitle:
           "Manage remediation tickets, bi-directional triage sync, and Jira/GitHub connectors",
-        icon: <Ticket className="w-4 h-4 text-[var(--sig-gold)]" />,
-        badge: "Engine • Tab 4",
-        action: () => setEngineAccessTab("ISSUE_CONNECTORS"),
+        icon: <Ticket className="w-4 h-4 text-amber-700" />,
+        badge: "Governance • Sync",
+        action: () => {
+          setPrimaryStage("ASPM_GOVERNANCE");
+          setAspmSubSection("GOVERNANCE");
+          setEngineAccessTab("ISSUE_CONNECTORS");
+        },
+      },
+      {
+        id: "sub-cve-extractor",
+        category: "ASPM & Engine Sub-Tabs",
+        title: "Live Web CVE & Advisory Extractor (NVD / CISA KEV / GitHub)",
+        subtitle:
+          "Extract live CVE advisories from web feeds and correlate against your codebase",
+        icon: <Shield className="w-4 h-4 text-sky-700" />,
+        badge: "Threat Intel",
+        action: () => {
+          setPrimaryStage("TRIAGE_FIX");
+          setActiveSidebarTab("SITE_EXTRACTOR");
+        },
       },
 
-      // 3. Scan & Remediation Actions
+      // 4. Scan & Track Changes
       {
         id: "act-toggle-bfl-diff",
-        category: "Scan & Remediation Actions",
+        category: "Scan & Track Changes",
         title: "Toggle BFL Patch Diff Preview (d)",
         subtitle:
           "Switch Monaco between source inspection and side-by-side Best Fix Location (BFL) DiffEditor",
-        icon: <GitPullRequest className="w-4 h-4 text-[var(--sig-gold)]" />,
+        icon: <GitPullRequest className="w-4 h-4 text-amber-700" />,
         badge: isDiffEditorOpen ? "Diff Active" : "Shortcut: d",
         action: () => {
-          setWorkspaceViewMode("REMEDIATION_IDE");
+          setPrimaryStage("TRIAGE_FIX");
           setDiffEditorOpen(!isDiffEditorOpen);
         },
       },
       {
         id: "act-scan-github-repo",
-        category: "Scan & Remediation Actions",
+        category: "Scan & Track Changes",
         title: "Scan GitHub Repository (Public URL / Private Token)",
         subtitle:
           "Open the GitHub Repository Scanner modal for public zero-token or private PAT clones",
-        icon: <FolderGit2 className="w-4 h-4 text-[var(--sig-cyan)]" />,
+        icon: <FolderGit2 className="w-4 h-4 text-sky-700" />,
         badge: "GitHub Clone",
         action: () => openTargetPicker("URL"),
       },
       {
         id: "act-filter-secrets",
-        category: "Scan & Remediation Actions",
+        category: "Scan & Track Changes",
         title: "Secret Vault & Hardcoded Key Filter",
         subtitle:
-          "Filter Workbench Flaw Explorer to show detected API keys, tokens, and credentials",
-        icon: <KeyRound className="w-4 h-4 text-[var(--sig-gold)]" />,
+          "Filter Triage Flaw Explorer to show detected API keys, tokens, and credentials",
+        icon: <KeyRound className="w-4 h-4 text-amber-700" />,
         badge: "Secrets",
         action: () => {
           setFilterSecretsOnly(true);
-          setWorkspaceViewMode("REMEDIATION_IDE");
+          setPrimaryStage("TRIAGE_FIX");
         },
       },
       {
         id: "scan-rescan",
-        category: "Scan & Remediation Actions",
+        category: "Scan & Track Changes",
         title: "Re-Scan Active Application Now",
         subtitle: projectPath
           ? `Run fresh 7-pass CPG SAST + SCA + Secrets scan on ${projectPath}`
           : "Run fresh 7-pass CPG scan on the active target application",
-        icon: <RefreshCw className="w-4 h-4 text-[var(--sig-emerald)]" />,
+        icon: <RefreshCw className="w-4 h-4 text-emerald-700" />,
         badge: "7-Pass Scan",
-        action: () => triggerScan(projectPath || undefined),
+        action: () => {
+          void triggerScan(projectPath || undefined);
+        },
       },
       {
         id: "scan-track-changes-panel",
-        category: "Scan & Remediation Actions",
+        category: "Scan & Track Changes",
         title: "Open Saved Scan Details & Track Changes Comparison",
         subtitle:
           "Compare current scan vs previous scan (Fixed, New, and Unchanged delta)",
-        icon: <GitCompare className="w-4 h-4 text-[var(--sig-cyan)]" />,
+        icon: <GitCompare className="w-4 h-4 text-sky-700" />,
         badge: "Delta Tracker",
         action: () => setTrackChangesPanelOpen(true),
       },
       {
         id: "scan-toggle-track-mode",
-        category: "Scan & Remediation Actions",
+        category: "Scan & Track Changes",
         title: isTrackChangesMode
           ? "Disable Continuous Track Changes Badges"
           : "Enable Continuous Track Changes Badges",
-        subtitle: "Toggle Fixed / New / Unchanged badges across all review views",
-        icon: <GitCompare className="w-4 h-4 text-[var(--sig-gold)]" />,
+        subtitle:
+          "Toggle Fixed / New / Unchanged badges across all review views",
+        icon: <GitCompare className="w-4 h-4 text-amber-700" />,
         badge: isTrackChangesMode ? "Currently ON" : "Currently OFF",
         action: () => setTrackChangesMode(!isTrackChangesMode),
       },
       {
         id: "scan-portal-gate",
-        category: "Scan & Remediation Actions",
+        category: "Scan & Track Changes",
         title: "Open Launch Hub (Ἀλάστωρ Portal Gate)",
         subtitle:
           "Return to the Launch Hub with Instant GitHub Quick-Scan and Saved Scan overview",
-        icon: <Shield className="w-4 h-4 text-[var(--sig-gold)]" />,
+        icon: <Shield className="w-4 h-4 text-rose-700" />,
         action: () => setShowPortalGate(true),
       },
 
-      // 4. Layout & Lens
+      // 5. Layout, Themes & Exports
       {
         id: "layout-code-focus",
-        category: "Layout & Lens",
+        category: "Layout, Themes & Exports",
         title: "Code & Fix Focus Layout (1)",
         subtitle: "Maximize the Monaco Code & BFL DiffEditor pane",
-        icon: <Code2 className="w-4 h-4 text-[var(--sig-emerald)]" />,
+        icon: <Code2 className="w-4 h-4 text-emerald-700" />,
         badge: ideLayoutMode === "CODE_FOCUS" ? "Active" : "Key: 1",
         action: () => {
-          setWorkspaceViewMode("REMEDIATION_IDE");
+          setPrimaryStage("TRIAGE_FIX");
           setIdeLayoutMode("CODE_FOCUS");
         },
       },
       {
         id: "layout-split-both",
-        category: "Layout & Lens",
+        category: "Layout, Themes & Exports",
         title: "Split Code + Graph Layout (2)",
         subtitle: "Show Monaco Editor and Interactive CPG Graph side-by-side",
-        icon: <Columns className="w-4 h-4 text-[var(--sig-gold)]" />,
+        icon: <Columns className="w-4 h-4 text-amber-700" />,
         badge: ideLayoutMode === "SPLIT_BOTH" ? "Active" : "Key: 2",
         action: () => {
-          setWorkspaceViewMode("REMEDIATION_IDE");
+          setPrimaryStage("TRIAGE_FIX");
           setIdeLayoutMode("SPLIT_BOTH");
         },
       },
       {
         id: "layout-graph-focus",
-        category: "Layout & Lens",
+        category: "Layout, Themes & Exports",
         title: "Visual Graph Focus Layout (3)",
-        subtitle: "Maximize the interactive ReactFlow CPG & 360° Architecture Canvas",
-        icon: <Network className="w-4 h-4 text-[var(--sig-cyan)]" />,
+        subtitle:
+          "Maximize the interactive ReactFlow CPG & 360° Architecture Canvas",
+        icon: <Network className="w-4 h-4 text-sky-700" />,
         badge: ideLayoutMode === "GRAPH_FOCUS" ? "Active" : "Key: 3",
         action: () => {
-          setWorkspaceViewMode("REMEDIATION_IDE");
+          setPrimaryStage("TRIAGE_FIX");
           setIdeLayoutMode("GRAPH_FOCUS");
         },
       },
       {
         id: "layout-audience-toggle",
-        category: "Layout & Lens",
+        category: "Layout, Themes & Exports",
         title:
           audienceMode === "NON_CODER_MANAGEMENT"
             ? "Switch to Technical Engineer Lens"
@@ -384,9 +563,9 @@ export function QuickCommandModal() {
           "Tailor terminology and explanations for security engineers or executive leaders",
         icon:
           audienceMode === "NON_CODER_MANAGEMENT" ? (
-            <Cpu className="w-4 h-4 text-[var(--sig-cyan)]" />
+            <Cpu className="w-4 h-4 text-sky-700" />
           ) : (
-            <GraduationCap className="w-4 h-4 text-[var(--sig-gold)]" />
+            <GraduationCap className="w-4 h-4 text-amber-700" />
           ),
         badge:
           audienceMode === "NON_CODER_MANAGEMENT" ? "Executive" : "Engineer",
@@ -397,68 +576,98 @@ export function QuickCommandModal() {
               : "NON_CODER_MANAGEMENT"
           ),
       },
-
-      // 5. Exports & Integrations
       {
         id: "settings-presets",
-        category: "Exports & Integrations",
-        title: "Open Full Query & Sanitizer Customization Modal",
+        category: "Layout, Themes & Exports",
+        title: "Open Settings, Cypher Queries & Daylight Palettes",
         subtitle:
-          "Author custom Neo4j Cypher rules, tune SLA gates, and configure global overrides",
-        icon: <Settings className="w-4 h-4 text-[var(--sig-cyan)]" />,
+          "Configure Scan Presets, Neo4j Cypher rules, Custom Sanitizers, and the 3 Daylight Themes",
+        icon: <Settings className="w-4 h-4 text-sky-700" />,
         action: () => setSettingsModalOpen(true, "PRESETS"),
       },
       {
         id: "settings-integrations",
-        category: "Exports & Integrations",
+        category: "Layout, Themes & Exports",
         title: "Open Jira & GitHub Issues Connector Modal",
         subtitle:
           "Configure live REST connectors, test connection, and manage issue tickets",
-        icon: <Ticket className="w-4 h-4 text-[var(--sig-gold)]" />,
+        icon: <Ticket className="w-4 h-4 text-amber-700" />,
         action: () => setIntegrationModalOpen(true),
       },
       {
+        id: "export-center-hub",
+        category: "Layout, Themes & Exports",
+        title: "Open Unified Export Center (SARIF, HTML Dossier, CSV, SBOM, .patch)",
+        subtitle:
+          "One-click downloads for SARIF v2.1.0, Executive HTML, Markdown, CSV, CycloneDX SBOM, and Git Patches",
+        icon: <FileSpreadsheet className="w-4 h-4 text-emerald-700" />,
+        badge: "8 Formats",
+        action: () => {
+          setPrimaryStage("ASPM_GOVERNANCE");
+          setAspmSubSection("EXPORTS");
+        },
+      },
+      {
         id: "export-md",
-        category: "Exports & Integrations",
+        category: "Layout, Themes & Exports",
         title: "Export Executive & Technical Audit Report (.md)",
         subtitle:
           "Download full Markdown security audit report for the active application",
-        icon: <Download className="w-4 h-4 text-[var(--sig-emerald)]" />,
+        icon: <Download className="w-4 h-4 text-emerald-700" />,
         badge: "Markdown",
-        action: () => exportAuditReport("markdown"),
+        action: () => {
+          void exportAuditReport("markdown");
+        },
       },
       {
         id: "export-json",
-        category: "Exports & Integrations",
+        category: "Layout, Themes & Exports",
         title: "Export Machine-Readable Audit Data (.json)",
-        subtitle: "Download structured JSON payload with all findings and metrics",
-        icon: <Download className="w-4 h-4 text-[var(--sig-cyan)]" />,
+        subtitle:
+          "Download structured JSON payload with all findings and metrics",
+        icon: <Download className="w-4 h-4 text-sky-700" />,
         badge: "JSON",
-        action: () => exportAuditReport("json"),
+        action: () => {
+          void exportAuditReport("json");
+        },
       },
       {
         id: "export-sarif",
-        category: "Exports & Integrations",
+        category: "Layout, Themes & Exports",
         title: "Export OASIS SARIF v2.1.0 Report (.sarif.json)",
         subtitle:
           "Download GitHub Advanced Security / IDE compatible SARIF v2.1.0 report",
-        icon: <Download className="w-4 h-4 text-[var(--sig-gold)]" />,
+        icon: <Download className="w-4 h-4 text-amber-700" />,
         badge: "SARIF",
-        action: () => exportAuditReport("sarif"),
+        action: () => {
+          void exportAuditReport("sarif");
+        },
       },
     ],
     [
+      primaryStage,
+      activeOpenCount,
+      findings,
+      selectedFinding,
       projectPath,
       isDiffEditorOpen,
       isTrackChangesMode,
       ideLayoutMode,
       audienceMode,
-      setWorkspaceViewMode,
+      setPrimaryStage,
+      setMapSubTab,
+      setAspmSubSection,
       setExecutiveAspmTab,
       setEngineAccessTab,
+      setAiDrawerOpen,
+      batchApplyAllSafeFixes,
+      explainCurrentGraphWithAi,
+      validateFindingsAi,
+      synthesizeFindingPatchAi,
       openTargetPicker,
       setDiffEditorOpen,
       setFilterSecretsOnly,
+      setActiveSidebarTab,
       triggerScan,
       setTrackChangesPanelOpen,
       setTrackChangesMode,
@@ -516,29 +725,29 @@ export function QuickCommandModal() {
 
   return (
     <div
-      className="fixed inset-0 z-[180] bg-black/70 backdrop-blur-sm flex items-start justify-center pt-16 p-4"
+      className="fixed inset-0 z-[180] bg-slate-900/50 backdrop-blur-sm flex items-start justify-center pt-14 p-4"
       onClick={() => setQuickCommandOpen(false)}
     >
       <div
-        className="w-full max-w-2xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] text-[var(--ink-primary)] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh]"
+        className="w-full max-w-2xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] text-[var(--ink-primary)] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[82vh]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Search Input Header */}
         <div className="px-4 py-3 border-b border-[var(--border-hairline)] flex items-center gap-3 bg-[var(--surface-void)]">
-          <Search className="w-4 h-4 text-[var(--sig-gold)] shrink-0" />
+          <Search className="w-4 h-4 text-sky-700 shrink-0" />
           <input
             type="text"
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Jump to any workspace, sub-tab (SBOM, RACI, Rule Profiles), BFL diff (d), finding, or file..."
+            placeholder="Jump to Stage 1–4, Frontier AI Copilot, Fix All Safe Issues, SBOM, RACI, finding, or file..."
             className="w-full bg-transparent text-xs font-sans text-[var(--ink-primary)] placeholder:text-[var(--ink-muted)] focus:outline-none"
           />
           {query && (
             <button
               type="button"
               onClick={() => setQuery("")}
-              className="text-[11px] font-mono text-[var(--ink-muted)] hover:text-[var(--ink-primary)] px-2 py-0.5 rounded bg-[var(--surface-elevated)] border border-[var(--border-hairline)]"
+              className="text-[11px] font-mono text-[var(--ink-secondary)] hover:text-[var(--ink-primary)] px-2 py-0.5 rounded bg-[var(--surface-panel)] border border-[var(--border-hairline)]"
             >
               Clear
             </button>
@@ -558,10 +767,10 @@ export function QuickCommandModal() {
           {/* Matching Findings */}
           {matchingFindings.length > 0 && (
             <div>
-              <div className="px-2 pb-1.5 text-[10px] font-mono font-bold uppercase tracking-wider text-[var(--sig-gold)] flex items-center justify-between">
+              <div className="px-2 pb-1.5 text-[10px] font-mono font-bold uppercase tracking-wider text-rose-800 flex items-center justify-between">
                 <span>Active Application Findings ({findings.length} total)</span>
                 <span className="font-normal text-[var(--ink-muted)]">
-                  Click to inspect in Workbench
+                  Click to inspect in Stage 2: Triage &amp; Fix
                 </span>
               </div>
               <div className="space-y-1">
@@ -572,14 +781,14 @@ export function QuickCommandModal() {
                       key={f.id}
                       type="button"
                       onClick={() => {
-                        setWorkspaceViewMode("REMEDIATION_IDE");
+                        setPrimaryStage("TRIAGE_FIX");
                         selectFinding(f);
                         setQuickCommandOpen(false);
                       }}
                       className="w-full text-left px-3 py-2 rounded-xl hover:bg-[var(--surface-elevated)] border border-transparent hover:border-[var(--border-hairline)] flex items-center justify-between gap-3 transition-colors"
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
-                        <AlertTriangle className="w-4 h-4 text-[var(--sig-crimson)] shrink-0" />
+                        <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0" />
                         <div className="min-w-0">
                           <div className="text-xs font-bold text-[var(--ink-primary)] truncate">
                             {f.title}
@@ -590,7 +799,7 @@ export function QuickCommandModal() {
                           </div>
                         </div>
                       </div>
-                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-[var(--surface-void)] text-[var(--sig-crimson)] border border-[var(--sig-crimson)]/50 shrink-0">
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-50 text-rose-800 border border-rose-300 shrink-0">
                         {f.severity}
                       </span>
                     </button>
@@ -603,7 +812,7 @@ export function QuickCommandModal() {
           {/* Matching Files */}
           {matchingFiles.length > 0 && (
             <div>
-              <div className="px-2 pb-1.5 text-[10px] font-mono font-bold uppercase tracking-wider text-[var(--sig-cyan)]">
+              <div className="px-2 pb-1.5 text-[10px] font-mono font-bold uppercase tracking-wider text-sky-800">
                 Matching Source Files
               </div>
               <div className="space-y-1">
@@ -612,14 +821,14 @@ export function QuickCommandModal() {
                     key={file.filepath}
                     type="button"
                     onClick={() => {
-                      setWorkspaceViewMode("REMEDIATION_IDE");
+                      setPrimaryStage("TRIAGE_FIX");
                       selectTreeFile(file);
                       setQuickCommandOpen(false);
                     }}
                     className="w-full text-left px-3 py-2 rounded-xl hover:bg-[var(--surface-elevated)] border border-transparent hover:border-[var(--border-hairline)] flex items-center justify-between gap-3 transition-colors"
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
-                      <FileCode2 className="w-4 h-4 text-[var(--sig-cyan)] shrink-0" />
+                      <FileCode2 className="w-4 h-4 text-sky-700 shrink-0" />
                       <div className="min-w-0">
                         <div className="text-xs font-mono font-bold text-[var(--ink-primary)] truncate">
                           {file.filepath}
@@ -629,7 +838,7 @@ export function QuickCommandModal() {
                         </div>
                       </div>
                     </div>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-[var(--surface-void)] text-[var(--ink-muted)] border border-[var(--border-hairline)] shrink-0">
+                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-[var(--surface-void)] text-[var(--ink-secondary)] border border-[var(--border-hairline)] shrink-0">
                       {file.language}
                     </span>
                   </button>
@@ -641,11 +850,11 @@ export function QuickCommandModal() {
           {/* Grouped Platform Commands */}
           {(
             [
-              "5 Studio Workspaces",
+              "4-Stage Guided Workflow",
+              "Frontier AI & Batch Auto-Fix",
               "ASPM & Engine Sub-Tabs",
-              "Scan & Remediation Actions",
-              "Layout & Lens",
-              "Exports & Integrations",
+              "Scan & Track Changes",
+              "Layout, Themes & Exports",
             ] as const
           ).map((category) => {
             const catItems = filteredCommands.filter(
@@ -673,7 +882,7 @@ export function QuickCommandModal() {
                           {item.icon}
                         </div>
                         <div className="min-w-0">
-                          <div className="text-xs font-bold text-[var(--ink-primary)] group-hover:text-[var(--sig-gold)] transition-colors truncate">
+                          <div className="text-xs font-bold text-[var(--ink-primary)] group-hover:text-sky-800 transition-colors truncate">
                             {item.title}
                           </div>
                           <div className="text-[11px] text-[var(--ink-muted)] truncate">
@@ -682,7 +891,7 @@ export function QuickCommandModal() {
                         </div>
                       </div>
                       {item.badge && (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-[var(--surface-void)] text-[var(--sig-gold)] border border-[var(--border-hairline)] shrink-0">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-[var(--surface-void)] text-slate-800 border border-[var(--border-hairline)] shrink-0">
                           {item.badge}
                         </span>
                       )}
@@ -707,16 +916,18 @@ export function QuickCommandModal() {
         <div className="px-4 py-2 bg-[var(--surface-void)] border-t border-[var(--border-hairline)] flex items-center justify-between text-[10px] font-mono text-[var(--ink-muted)]">
           <span>
             Press{" "}
-            <kbd className="px-1.5 py-0.5 rounded bg-[var(--surface-elevated)] text-[var(--ink-primary)] border border-[var(--border-hairline)]">
+            <kbd className="px-1.5 py-0.5 rounded bg-[var(--surface-panel)] text-[var(--ink-primary)] border border-[var(--border-hairline)] font-semibold">
               Ctrl+K
             </kbd>{" "}
             anytime •{" "}
-            <kbd className="px-1.5 py-0.5 rounded bg-[var(--surface-elevated)] text-[var(--ink-primary)] border border-[var(--border-hairline)]">
+            <kbd className="px-1.5 py-0.5 rounded bg-[var(--surface-panel)] text-[var(--ink-primary)] border border-[var(--border-hairline)] font-semibold">
               d
             </kbd>{" "}
             BFL Diff
           </span>
-          <span>ALASTOR Studio Command Omnibar</span>
+          <span className="font-semibold text-[var(--ink-secondary)]">
+            ALASTOR v4 Command Omnibar
+          </span>
         </div>
       </div>
     </div>

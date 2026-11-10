@@ -37,7 +37,14 @@ import {
   Eye,
   EyeOff,
   RotateCcw,
+  Zap,
+  Download,
 } from "lucide-react";
+
+function formatAiPct(confidence: number): number {
+  if (typeof confidence !== "number" || Number.isNaN(confidence)) return 0;
+  return confidence <= 1 ? Math.round(confidence * 100) : Math.round(confidence);
+}
 
 function getHumanStoryBadge(f: Finding): { label: string; summary: string; color: string } {
   const rule = (f.rule_id || "").toUpperCase();
@@ -47,76 +54,76 @@ function getHumanStoryBadge(f: Finding): { label: string; summary: string; color
     return {
       label: "Command Injection",
       summary: "Untrusted input reaches an OS shell command without sanitization.",
-      color: "bg-red-950/80 text-red-300 border-red-700/80",
+      color: "bg-rose-50 text-rose-800 border-rose-300",
     };
   }
   if (rule.includes("SQLI") || cwe === "CWE-89") {
     return {
       label: "SQL Injection",
       summary: "Database query built with unescaped string formatting.",
-      color: "bg-red-950/80 text-red-300 border-red-700/80",
+      color: "bg-rose-50 text-rose-800 border-rose-300",
     };
   }
   if (rule.includes("GADGET") || cwe === "CWE-489") {
     return {
       label: "Dormant Exploit Gadget",
       summary: "Unreferenced function contains a dangerous execution sink.",
-      color: "bg-amber-950/80 text-amber-300 border-amber-700/80",
+      color: "bg-amber-50 text-amber-900 border-amber-300",
     };
   }
   if (rule.includes("INFINITE-LOOP") || cwe === "CWE-835") {
     return {
       label: "Infinite Loop (DoS)",
       summary: "Loop has no reachable exit condition; can hang CPU.",
-      color: "bg-amber-950/80 text-amber-300 border-amber-700/80",
+      color: "bg-amber-50 text-amber-900 border-amber-300",
     };
   }
   if (rule.includes("DEAD-STORE") || cwe === "CWE-563") {
     return {
       label: "Unused Variable (Dead Store)",
       summary: "Assigned value is never read or used downstream.",
-      color: "bg-amber-950/80 text-amber-300 border-amber-700/80",
+      color: "bg-amber-50 text-amber-900 border-amber-300",
     };
   }
   if (rule.includes("UNREACHABLE") || cwe === "CWE-561") {
     return {
       label: "Unreachable Code",
       summary: "Code placed after return/break will never execute.",
-      color: "bg-zinc-900 text-zinc-300 border-zinc-700",
+      color: "bg-slate-100 text-slate-800 border-slate-300",
     };
   }
   if (rule.includes("SECRET") || cwe === "CWE-798") {
     return {
       label: "Hardcoded Secret",
       summary: "Sensitive key or password embedded directly in source code.",
-      color: "bg-rose-950/80 text-rose-300 border-rose-700/80",
+      color: "bg-rose-50 text-rose-800 border-rose-300",
     };
   }
   if (rule.includes("DOM-XSS") || cwe === "CWE-79") {
     return {
       label: "DOM XSS / Script Sink",
       summary: "Dynamic data flows into a browser DOM HTML or script sink without sanitization.",
-      color: "bg-amber-950/80 text-amber-300 border-amber-700/80",
+      color: "bg-amber-50 text-amber-900 border-amber-300",
     };
   }
   if (f.scan_engine === "SCA" || rule.includes("SCA") || cwe === "CWE-1395") {
     return {
       label: "Third-Party Dependency (SCA)",
       summary: f.description || "Third-party software packages use floating or unpinned version specifiers.",
-      color: "bg-emerald-950/80 text-emerald-300 border-emerald-700/80",
+      color: "bg-emerald-50 text-emerald-800 border-emerald-300",
     };
   }
   if (f.scan_engine === "IaC" || rule.includes("IAC") || cwe === "CWE-250") {
     return {
       label: "Runtime / IaC Config",
       summary: f.description || "Deployment or web runtime configuration is missing security hardening.",
-      color: "bg-amber-950/80 text-amber-300 border-amber-700/80",
+      color: "bg-amber-50 text-amber-900 border-amber-300",
     };
   }
   return {
     label: f.cwe_id || "Security Risk",
     summary: f.description || f.title,
-    color: "bg-cyan-950/80 text-cyan-300 border-cyan-700/80",
+    color: "bg-sky-50 text-sky-800 border-sky-300",
   };
 }
 
@@ -129,6 +136,16 @@ export function FlawExplorerSidebar() {
   const lastAppliedPatch = useAuditStore((s) => s.lastAppliedPatch);
   const isApplyingPatch = useAuditStore((s) => s.isApplyingPatch);
   const undoLastRemediationPatch = useAuditStore((s) => s.undoLastRemediationPatch);
+
+  // Batch Auto-Fix & Frontier AI Store Slices
+  const isBatchFixing = useAuditStore((s) => s.isBatchFixing);
+  const lastBatchFixResult = useAuditStore((s) => s.lastBatchFixResult);
+  const batchApplyAllSafeFixes = useAuditStore((s) => s.batchApplyAllSafeFixes);
+  const aiVerdictsByFinding = useAuditStore((s) => s.aiVerdictsByFinding);
+  const aiIsBusy = useAuditStore((s) => s.aiIsBusy);
+  const setAiDrawerOpen = useAuditStore((s) => s.setAiDrawerOpen);
+  const validateFindingsAi = useAuditStore((s) => s.validateFindingsAi);
+  const setAspmSubSection = useAuditStore((s) => s.setAspmSubSection);
 
   const primaryGrouping = useAuditStore((s) => s.primaryGrouping);
   const setPrimaryGrouping = useAuditStore((s) => s.setPrimaryGrouping);
@@ -150,7 +167,6 @@ export function FlawExplorerSidebar() {
   const isExtractingIntel = useAuditStore((s) => s.isExtractingIntel);
   const intelStatusMessage = useAuditStore((s) => s.intelStatusMessage);
   const extractAndScanFromSites = useAuditStore((s) => s.extractAndScanFromSites);
-  const setWorkspaceViewMode = useAuditStore((s) => s.setWorkspaceViewMode);
   const setSastPlusActiveTab = useAuditStore((s) => s.setSastPlusActiveTab);
   const projectPath = useAuditStore((s) => s.projectPath);
   const trackChanges = useAuditStore((s) => s.trackChanges);
@@ -185,6 +201,30 @@ export function FlawExplorerSidebar() {
       el.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
   }, [selectedFinding?.id]);
+
+  const safeFixableFindings = useMemo(() => {
+    return findings.filter(
+      (f) =>
+        f.change_status !== "FIXED" &&
+        f.triage_status !== "RESOLVED" &&
+        f.triage_status !== "NOT_EXPLOITABLE"
+    );
+  }, [findings]);
+
+  const handleDownloadBatchPatch = () => {
+    if (!lastBatchFixResult?.unified_diff) return;
+    const blob = new Blob([lastBatchFixResult.unified_diff], {
+      type: "text/x-patch;charset=utf-8",
+    });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "alastor-batch-remediation.patch";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  };
 
   const toggleSource = (src: string) => {
     setSelectedSources((prev) =>
@@ -325,35 +365,35 @@ export function FlawExplorerSidebar() {
   const getSeverityBadge = (severity: string, isResolved = false) => {
     if (isResolved) {
       return {
-        icon: <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />,
-        color: "bg-emerald-950/70 text-emerald-300 border-emerald-700",
-        hairline: "border-l-[3px] border-l-emerald-500",
+        icon: <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />,
+        color: "bg-emerald-50 text-emerald-800 border-emerald-300",
+        hairline: "border-l-[3px] border-l-emerald-600",
       };
     }
     switch (severity) {
       case "CRITICAL":
         return {
-          icon: <Flame className="w-3.5 h-3.5 text-rose-500" />,
-          color: "bg-red-950/70 text-red-300 border-red-800",
-          hairline: "border-l-[3px] border-l-rose-500",
+          icon: <Flame className="w-3.5 h-3.5 text-rose-700" />,
+          color: "bg-rose-50 text-rose-800 border-rose-300",
+          hairline: "border-l-[3px] border-l-rose-600",
         };
       case "HIGH":
         return {
-          icon: <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />,
-          color: "bg-red-950/70 text-red-300 border-red-800",
+          icon: <ShieldAlert className="w-3.5 h-3.5 text-rose-700" />,
+          color: "bg-rose-50 text-rose-800 border-rose-300",
           hairline: "border-l-[3px] border-l-rose-500",
         };
       case "MEDIUM":
         return {
-          icon: <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />,
-          color: "bg-amber-950/70 text-amber-300 border-amber-800",
+          icon: <AlertTriangle className="w-3.5 h-3.5 text-amber-700" />,
+          color: "bg-amber-50 text-amber-900 border-amber-300",
           hairline: "border-l-[3px] border-l-amber-500",
         };
       default:
         return {
-          icon: <Bug className="w-3.5 h-3.5 text-slate-400" />,
-          color: "bg-zinc-900 text-zinc-300 border-zinc-700",
-          hairline: "border-l-[3px] border-l-slate-500",
+          icon: <Bug className="w-3.5 h-3.5 text-slate-600" />,
+          color: "bg-slate-100 text-slate-800 border-slate-300",
+          hairline: "border-l-[3px] border-l-slate-400",
         };
     }
   };
@@ -363,57 +403,57 @@ export function FlawExplorerSidebar() {
       case "API_ROUTER":
         return {
           label: "API Route",
-          icon: <Server className="w-3 h-3 text-emerald-400" />,
-          color: "bg-emerald-950/70 text-emerald-300 border-emerald-800",
+          icon: <Server className="w-3 h-3 text-emerald-700" />,
+          color: "bg-emerald-50 text-emerald-800 border-emerald-300",
         };
       case "FRONTEND_VIEW":
         return {
           label: "UI View",
-          icon: <Layout className="w-3 h-3 text-cyan-400" />,
-          color: "bg-cyan-950/70 text-cyan-300 border-cyan-800",
+          icon: <Layout className="w-3 h-3 text-sky-700" />,
+          color: "bg-sky-50 text-sky-800 border-sky-300",
         };
       case "BUSINESS_LOGIC":
         return {
           label: "Core Logic",
-          icon: <Code2 className="w-3 h-3 text-cyan-400" />,
-          color: "bg-cyan-950/70 text-cyan-300 border-cyan-800",
+          icon: <Code2 className="w-3 h-3 text-sky-700" />,
+          color: "bg-sky-50 text-sky-800 border-sky-300",
         };
       case "INFRASTRUCTURE":
         return {
           label: "Infra",
-          icon: <Terminal className="w-3 h-3 text-amber-400" />,
-          color: "bg-amber-950/70 text-amber-300 border-amber-800",
+          icon: <Terminal className="w-3 h-3 text-amber-700" />,
+          color: "bg-amber-50 text-amber-900 border-amber-300",
         };
       case "DEPENDENCY_MANIFEST":
         return {
           label: "Dependencies",
-          icon: <Package className="w-3 h-3 text-rose-400" />,
-          color: "bg-rose-950/70 text-rose-300 border-rose-800",
+          icon: <Package className="w-3 h-3 text-rose-700" />,
+          color: "bg-rose-50 text-rose-800 border-rose-300",
         };
       case "CONFIGURATION":
       case "BUILD_TOOLING":
         return {
           label: "Config",
-          icon: <Settings className="w-3 h-3 text-amber-400" />,
-          color: "bg-amber-950/70 text-amber-300 border-amber-800",
+          icon: <Settings className="w-3 h-3 text-amber-700" />,
+          color: "bg-amber-50 text-amber-900 border-amber-300",
         };
       case "STYLING_THEME":
         return {
           label: "Styles",
-          icon: <Palette className="w-3 h-3 text-cyan-400" />,
-          color: "bg-cyan-950/70 text-cyan-300 border-cyan-800",
+          icon: <Palette className="w-3 h-3 text-indigo-700" />,
+          color: "bg-indigo-50 text-indigo-800 border-indigo-300",
         };
       case "DOCUMENTATION":
         return {
           label: "Docs",
-          icon: <FileText className="w-3 h-3 text-zinc-400" />,
-          color: "bg-zinc-800 text-zinc-300 border-zinc-700",
+          icon: <FileText className="w-3 h-3 text-slate-600" />,
+          color: "bg-slate-100 text-slate-800 border-slate-300",
         };
       default:
         return {
           label: "Asset",
-          icon: <FileCode className="w-3 h-3 text-zinc-400" />,
-          color: "bg-zinc-900 text-zinc-400 border-zinc-800",
+          icon: <FileCode className="w-3 h-3 text-slate-600" />,
+          color: "bg-slate-100 text-slate-700 border-slate-300",
         };
     }
   };
@@ -460,11 +500,11 @@ export function FlawExplorerSidebar() {
                 <ChevronDown className="w-3 h-3 text-[var(--ink-muted)]" />
               )}
               {isCollapsed ? (
-                <Folder className="w-3.5 h-3.5 text-cyan-600" />
+                <Folder className="w-3.5 h-3.5 text-sky-700" />
               ) : (
-                <FolderOpen className="w-3.5 h-3.5 text-cyan-500" />
+                <FolderOpen className="w-3.5 h-3.5 text-sky-600" />
               )}
-              <span className="font-mono text-[var(--ink-primary)] font-medium truncate">
+              <span className="font-mono text-[var(--ink-primary)] font-semibold truncate">
                 {dir.name}
               </span>
             </div>
@@ -490,7 +530,7 @@ export function FlawExplorerSidebar() {
                   style={{ paddingLeft: `${(depth + (dir.path ? 1 : 0)) * 12 + 10}px` }}
                   className={`group flex items-center justify-between py-1 px-2 rounded cursor-pointer text-xs transition-all ${
                     isSelected
-                      ? "bg-[var(--surface-elevated)] text-cyan-300 border border-cyan-500/50 shadow-sm"
+                      ? "bg-sky-50 text-sky-900 border border-sky-400 shadow-sm font-semibold"
                       : "text-[var(--ink-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--ink-primary)] border border-transparent"
                   }`}
                   title={`${file.filepath}\nRole: ${file.purpose}`}
@@ -504,9 +544,9 @@ export function FlawExplorerSidebar() {
                     {fileFindings > 0 && (
                       <span
                         title={`${fileFindings} security findings in this file`}
-                        className="flex items-center gap-0.5 px-1 py-0.2 rounded bg-red-950/80 text-red-400 border border-red-800 text-[9px] font-mono font-bold"
+                        className="flex items-center gap-0.5 px-1 py-0.2 rounded bg-rose-50 text-rose-800 border border-rose-300 text-[9px] font-mono font-bold"
                       >
-                        <Flame className="w-2.5 h-2.5" />
+                        <Flame className="w-2.5 h-2.5 text-rose-700" />
                         {fileFindings}
                       </span>
                     )}
@@ -528,19 +568,20 @@ export function FlawExplorerSidebar() {
       {/* Self-Explanatory 3-Tab Navigation Header */}
       <div className="p-1.5 bg-[var(--surface-elevated)] border-b border-[var(--border-hairline)] grid grid-cols-3 gap-1">
         <button
+          type="button"
           onClick={() => {
             setActiveSidebarTab("FLAWS");
             setGraphViewMode("FINDING_PATH");
           }}
-          title="View all detected code vulnerabilities and their step-by-step attack stories"
+          title="View all detected code vulnerabilities, run Batch Auto-Fix, and inspect step-by-step attack stories"
           className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-md transition-all ${
             activeSidebarTab === "FLAWS"
-              ? "bg-[var(--surface-panel)] text-cyan-300 shadow-sm border border-cyan-700/70"
+              ? "bg-white text-sky-800 shadow-sm border border-sky-400"
               : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)] border border-transparent"
           }`}
         >
           <div className="flex items-center gap-1 text-[11px] font-bold">
-            <Bug className="w-3.5 h-3.5 text-rose-400" />
+            <Bug className="w-3.5 h-3.5 text-rose-700" />
             <span>1. Findings</span>
             <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-[var(--surface-void)] text-[var(--ink-primary)] border border-[var(--border-hairline)]">
               {findings.length}
@@ -550,21 +591,22 @@ export function FlawExplorerSidebar() {
         </button>
 
         <button
+          type="button"
           onClick={() => {
             setActiveSidebarTab("SITE_EXTRACTOR");
           }}
           title="Extract live CVEs & CWEs from external security sites and check your code"
           className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-md transition-all ${
             activeSidebarTab === "SITE_EXTRACTOR"
-              ? "bg-[var(--surface-panel)] text-cyan-300 shadow-sm border border-cyan-700/70"
+              ? "bg-white text-sky-800 shadow-sm border border-sky-400"
               : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)] border border-transparent"
           }`}
         >
           <div className="flex items-center gap-1 text-[11px] font-bold">
-            <Globe className="w-3.5 h-3.5 text-cyan-400" />
+            <Globe className="w-3.5 h-3.5 text-sky-700" />
             <span>2. Web Intel</span>
             {extractedAdvisories.length > 0 && (
-              <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-cyan-950 text-cyan-300">
+              <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-sky-700 text-white font-bold">
                 {extractedAdvisories.length}
               </span>
             )}
@@ -573,6 +615,7 @@ export function FlawExplorerSidebar() {
         </button>
 
         <button
+          type="button"
           onClick={() => {
             setActiveSidebarTab("APP_TREE");
             setGraphViewMode("APP_TREE");
@@ -580,12 +623,12 @@ export function FlawExplorerSidebar() {
           title="Browse project files, architectural purposes, and the 360° Spider App Map"
           className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-md transition-all ${
             activeSidebarTab === "APP_TREE"
-              ? "bg-[var(--surface-panel)] text-cyan-300 shadow-sm border border-cyan-700/70"
+              ? "bg-white text-sky-800 shadow-sm border border-sky-400"
               : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)] border border-transparent"
           }`}
         >
           <div className="flex items-center gap-1 text-[11px] font-bold">
-            <Layers className="w-3.5 h-3.5 text-emerald-400" />
+            <Layers className="w-3.5 h-3.5 text-emerald-700" />
             <span>3. App Map</span>
             <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-[var(--surface-void)] text-[var(--ink-primary)] border border-[var(--border-hairline)]">
               {appTree?.total_files ?? 0}
@@ -601,7 +644,7 @@ export function FlawExplorerSidebar() {
           {/* Self-Explanatory Helper Strip */}
           <div className="px-2.5 py-1.5 bg-[var(--surface-void)] border-b border-[var(--border-hairline)] text-[10px] text-[var(--ink-muted)] flex items-center justify-between gap-1.5">
             <div className="flex items-center gap-1.5 truncate">
-              <BookOpen className="w-3.5 h-3.5 text-[var(--sig-cyan)] shrink-0" />
+              <BookOpen className="w-3.5 h-3.5 text-sky-700 shrink-0" />
               <span className="truncate">
                 Target:{" "}
                 <b className="text-[var(--ink-primary)] font-mono">
@@ -617,6 +660,89 @@ export function FlawExplorerSidebar() {
             </span>
           </div>
 
+          {/* v4 Prominent Batch Auto-Fix & Batch AI Validation Action Bar */}
+          <div className="p-2 bg-white border-b border-[var(--border-hairline)] space-y-1.5">
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                disabled={isBatchFixing || safeFixableFindings.length === 0}
+                onClick={() => void batchApplyAllSafeFixes()}
+                title="Automatically apply syntax-verified AST Chokepoint fixes across all safe findings and re-scan CPG"
+                className="py-1.5 px-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-45 text-white font-bold text-[11px] flex items-center justify-center gap-1 shadow-sm transition-colors"
+              >
+                {isBatchFixing ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                    <span className="truncate">Fixing All...</span>
+                  </>
+                ) : (
+                  <>
+                    <Zap className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">
+                      Fix All Safe Issues ({safeFixableFindings.length})
+                    </span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                disabled={aiIsBusy || filteredFindings.length === 0}
+                onClick={() => {
+                  const topIds = filteredFindings.slice(0, 10).map((f) => f.id);
+                  setAiDrawerOpen(true, "VALIDATE");
+                  void validateFindingsAi(topIds);
+                }}
+                title="Validate top findings with Frontier AI Micro-Slices (TP vs FP + confidence)"
+                className="py-1.5 px-2 rounded-lg bg-indigo-700 hover:bg-indigo-800 disabled:opacity-45 text-white font-bold text-[11px] flex items-center justify-center gap-1 shadow-sm transition-colors"
+              >
+                {aiIsBusy ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                    <span className="truncate">Validating...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">Batch AI Validate</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Batch Fix Verification Summary Banner */}
+            {lastBatchFixResult && (
+              <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-950 text-[10px] font-mono space-y-1">
+                <div className="flex items-center justify-between gap-1.5 flex-wrap">
+                  <span className="font-bold flex items-center gap-1 text-emerald-900">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                    <span>
+                      Batch Auto-Fix: {lastBatchFixResult.applied_count} patched •{" "}
+                      {lastBatchFixResult.verified_severed_count} severed •{" "}
+                      {lastBatchFixResult.remaining_findings_count} remaining
+                    </span>
+                  </span>
+                  {lastBatchFixResult.unified_diff && (
+                    <button
+                      type="button"
+                      onClick={handleDownloadBatchPatch}
+                      title="Download unified remediation diff (.patch)"
+                      className="px-1.5 py-0.5 rounded bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-[9px] flex items-center gap-1 shrink-0"
+                    >
+                      <Download className="w-2.5 h-2.5" />
+                      <span>.patch</span>
+                    </button>
+                  )}
+                </div>
+                {lastBatchFixResult.message && (
+                  <div className="text-emerald-800 leading-snug">
+                    {lastBatchFixResult.message}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Search, Engine Filter, Primary Grouping & Severity Filter */}
           <div className="p-2 border-b border-[var(--border-hairline)] space-y-2 bg-[var(--surface-elevated)]">
             <div className="relative">
@@ -629,7 +755,7 @@ export function FlawExplorerSidebar() {
                   setVisibleCount(40);
                 }}
                 placeholder="Search by flaw, language, CWE, or file..."
-                className="w-full bg-[var(--surface-void)] border border-[var(--border-hairline)] rounded-md pl-8 pr-2.5 py-1 text-xs text-[var(--ink-primary)] placeholder-[var(--ink-muted)] focus:outline-none focus:border-cyan-500 font-mono"
+                className="w-full bg-[var(--surface-void)] border border-[var(--border-hairline)] rounded-md pl-8 pr-2.5 py-1 text-xs text-[var(--ink-primary)] placeholder-[var(--ink-muted)] focus:outline-none focus:border-sky-600 font-mono"
               />
             </div>
 
@@ -640,6 +766,7 @@ export function FlawExplorerSidebar() {
                   eng === "ALL"
                     ? findings.length
                     : findings.filter((f) => (f.scan_engine || "SAST") === eng).length;
+                const active = activeEngineFilter === eng && !filterSecretsOnly;
                 return (
                   <button
                     key={eng}
@@ -649,8 +776,8 @@ export function FlawExplorerSidebar() {
                       if (eng !== "ALL" && filterSecretsOnly) setFilterSecretsOnly(false);
                     }}
                     className={`py-0.5 px-1 rounded border text-center transition-colors ${
-                      activeEngineFilter === eng && !filterSecretsOnly
-                        ? "bg-cyan-950/90 text-cyan-200 border-cyan-700 font-bold"
+                      active
+                        ? "bg-sky-700 text-white border-sky-800 font-bold"
                         : "bg-[var(--surface-void)] text-[var(--ink-muted)] border-[var(--border-hairline)] hover:text-[var(--ink-primary)]"
                     }`}
                   >
@@ -664,8 +791,8 @@ export function FlawExplorerSidebar() {
                 title="Filter to show only Hardcoded Secret Keys, API Tokens & Credentials"
                 className={`py-0.5 px-1 rounded border text-center transition-colors flex items-center justify-center gap-0.5 ${
                   filterSecretsOnly
-                    ? "bg-amber-500/25 text-amber-200 border-amber-400 font-bold"
-                    : "bg-amber-950/30 text-amber-300 border-amber-700/60 hover:bg-amber-900/40"
+                    ? "bg-amber-700 text-white border-amber-800 font-bold"
+                    : "bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100"
                 }`}
               >
                 <KeyRound className="w-2.5 h-2.5" />
@@ -696,7 +823,7 @@ export function FlawExplorerSidebar() {
                     onClick={() => setPrimaryGrouping(grp)}
                     className={`px-1.5 py-0.5 rounded border transition-colors ${
                       primaryGrouping === grp
-                        ? "bg-cyan-950 text-cyan-300 border-cyan-700 font-bold"
+                        ? "bg-sky-700 text-white border-sky-800 font-bold"
                         : "bg-[var(--surface-void)] text-[var(--ink-muted)] border-[var(--border-hairline)] hover:text-[var(--ink-primary)]"
                     }`}
                   >
@@ -715,7 +842,7 @@ export function FlawExplorerSidebar() {
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as any)}
                 title="Sort findings by Severity, CVSS Score, or Persistence Age"
-                className="bg-[var(--surface-void)] border border-[var(--border-hairline)] rounded px-1.5 py-0.5 text-[10px] font-mono text-[var(--ink-primary)] focus:outline-none focus:border-cyan-500"
+                className="bg-[var(--surface-void)] border border-[var(--border-hairline)] rounded px-1.5 py-0.5 text-[10px] font-mono text-[var(--ink-primary)] focus:outline-none focus:border-sky-600"
               >
                 <option value="SEVERITY">Sort: Severity</option>
                 <option value="CVSS">Sort: CVSS</option>
@@ -730,21 +857,23 @@ export function FlawExplorerSidebar() {
                   sev === "ALL"
                     ? findings.length
                     : findings.filter((f) => f.severity === sev).length;
+                const active = selectedSeverity === sev;
                 return (
                   <button
                     key={sev}
+                    type="button"
                     onClick={() => {
                       setSelectedSeverity(sev);
                       setVisibleCount(40);
                     }}
                     className={`px-1.5 py-0.5 rounded whitespace-nowrap border transition-colors flex items-center gap-1 ${
-                      selectedSeverity === sev
-                        ? "bg-cyan-950 text-cyan-300 border-cyan-800 font-bold"
+                      active
+                        ? "bg-sky-700 text-white border-sky-800 font-bold"
                         : "bg-[var(--surface-void)] text-[var(--ink-muted)] border-[var(--border-hairline)] hover:text-[var(--ink-primary)]"
                     }`}
                   >
                     <span>{sev}</span>
-                    <span className="text-[9px] opacity-75">({count})</span>
+                    <span className="text-[9px] opacity-85">({count})</span>
                   </button>
                 );
               })}
@@ -753,13 +882,13 @@ export function FlawExplorerSidebar() {
             {/* Continuous Track Changes Mode Filter Row */}
             {isTrackChangesMode && (
               <div className="flex items-center gap-1 overflow-x-auto pt-1 border-t border-[var(--border-hairline)] text-[9px] font-mono">
-                <span className="text-cyan-400 font-bold shrink-0">Delta:</span>
+                <span className="text-sky-800 font-bold shrink-0">Delta:</span>
                 <button
                   type="button"
                   onClick={() => setTrackChangeFilter("ALL")}
                   className={`px-1.5 py-0.5 rounded border whitespace-nowrap transition-colors ${
                     trackChangeFilter === "ALL"
-                      ? "bg-cyan-950 text-cyan-200 border-cyan-600 font-bold"
+                      ? "bg-sky-700 text-white border-sky-800 font-bold"
                       : "bg-[var(--surface-void)] text-[var(--ink-muted)] border-[var(--border-hairline)] hover:text-[var(--ink-primary)]"
                   }`}
                 >
@@ -770,8 +899,8 @@ export function FlawExplorerSidebar() {
                   onClick={() => setTrackChangeFilter("NEW")}
                   className={`px-1.5 py-0.5 rounded border whitespace-nowrap transition-colors ${
                     trackChangeFilter === "NEW"
-                      ? "bg-amber-950 text-amber-200 border-amber-500 font-bold"
-                      : "bg-[var(--surface-void)] text-amber-300/80 border-[var(--border-hairline)] hover:text-amber-200"
+                      ? "bg-amber-700 text-white border-amber-800 font-bold"
+                      : "bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100"
                   }`}
                 >
                   New (
@@ -788,8 +917,8 @@ export function FlawExplorerSidebar() {
                   onClick={() => setTrackChangeFilter("FIXED")}
                   className={`px-1.5 py-0.5 rounded border whitespace-nowrap transition-colors ${
                     trackChangeFilter === "FIXED"
-                      ? "bg-emerald-950 text-emerald-200 border-emerald-500 font-bold"
-                      : "bg-[var(--surface-void)] text-emerald-300/80 border-[var(--border-hairline)] hover:text-emerald-200"
+                      ? "bg-emerald-700 text-white border-emerald-800 font-bold"
+                      : "bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100"
                   }`}
                 >
                   Fixed ({trackChanges?.fixed_count ?? 0})
@@ -799,7 +928,7 @@ export function FlawExplorerSidebar() {
                   onClick={() => setTrackChangeFilter("UNCHANGED")}
                   className={`px-1.5 py-0.5 rounded border whitespace-nowrap transition-colors ${
                     trackChangeFilter === "UNCHANGED"
-                      ? "bg-zinc-800 text-zinc-100 border-zinc-600 font-bold"
+                      ? "bg-slate-700 text-white border-slate-800 font-bold"
                       : "bg-[var(--surface-void)] text-[var(--ink-muted)] border-[var(--border-hairline)] hover:text-[var(--ink-primary)]"
                   }`}
                 >
@@ -817,35 +946,37 @@ export function FlawExplorerSidebar() {
           <div className="flex-1 overflow-y-auto p-2 space-y-2">
             {filteredFindings.length === 0 ? (
               findings.length === 0 && trackChangeFilter !== "FIXED" ? (
-                <div className="p-4 rounded-xl bg-emerald-950/30 border border-emerald-700/70 space-y-3 text-left">
+                <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-300 space-y-3 text-left">
                   <div className="flex items-center gap-2">
-                    <CheckCircle2 className="w-6 h-6 text-emerald-400 shrink-0" />
+                    <CheckCircle2 className="w-6 h-6 text-emerald-700 shrink-0" />
                     <div>
-                      <div className="text-xs font-extrabold text-emerald-300 uppercase tracking-wide">
+                      <div className="text-xs font-extrabold text-emerald-900 uppercase tracking-wide">
                         100% Clean Security Posture Verified
                       </div>
-                      <div className="text-[10px] font-mono text-emerald-400/90">
+                      <div className="text-[10px] font-mono text-emerald-800 font-semibold">
                         0 Critical • 0 High • 0 Medium • 0 Low
                       </div>
                     </div>
                   </div>
-                  <p className="text-[11px] text-[var(--ink-primary)] leading-relaxed">
+                  <p className="text-[11px] text-slate-800 leading-relaxed">
                     All active engines (<strong>SAST</strong>, <strong>SCA</strong>, and{" "}
                     <strong>IaC</strong>) completed deep Code Property Graph analysis on{" "}
-                    <code className="text-cyan-300 font-mono">{projectPath}</code> with{" "}
-                    <strong>zero vulnerabilities detected</strong>.
+                    <code className="text-sky-800 font-mono font-semibold">{projectPath}</code>{" "}
+                    with <strong>zero vulnerabilities detected</strong>.
                   </p>
                   {lastAppliedPatch && (
-                    <div className="p-2.5 rounded-lg bg-zinc-950/80 border border-emerald-600/70 flex items-center justify-between gap-2">
-                      <div className="text-[10px] font-mono text-emerald-300 truncate">
+                    <div className="p-2.5 rounded-lg bg-white border border-emerald-300 flex items-center justify-between gap-2">
+                      <div className="text-[10px] font-mono text-emerald-900 truncate">
                         ✓ Severed:{" "}
-                        <strong className="text-white">{lastAppliedPatch.filepath}</strong>
+                        <strong className="text-slate-900">
+                          {lastAppliedPatch.filepath}
+                        </strong>
                       </div>
                       <button
                         type="button"
                         disabled={isApplyingPatch}
                         onClick={() => undoLastRemediationPatch()}
-                        className="px-2 py-0.5 rounded bg-emerald-950 hover:bg-emerald-900 text-emerald-200 border border-emerald-500/80 text-[10px] font-mono font-bold flex items-center gap-1 shrink-0"
+                        className="px-2 py-0.5 rounded bg-emerald-700 hover:bg-emerald-800 text-white text-[10px] font-mono font-bold flex items-center gap-1 shrink-0"
                       >
                         <RotateCcw className="w-2.5 h-2.5" />
                         <span>Undo Patch</span>
@@ -859,31 +990,31 @@ export function FlawExplorerSidebar() {
                         setActiveSidebarTab("APP_TREE");
                         setGraphViewMode("APP_TREE");
                       }}
-                      className="px-2 py-1.5 rounded-lg bg-[var(--surface-panel)] border border-[var(--border-hairline)] text-[10px] font-semibold text-cyan-300 text-center"
+                      className="px-2 py-1.5 rounded-lg bg-white hover:bg-slate-50 border border-slate-300 text-[10px] font-bold text-sky-800 text-center"
                     >
                       Inspect App Tree
                     </button>
                     <button
                       type="button"
-                      onClick={() => setWorkspaceViewMode("RACI_GOVERNANCE")}
-                      className="px-2 py-1.5 rounded-lg bg-[var(--surface-panel)] border border-[var(--border-hairline)] text-[10px] font-semibold text-amber-300 text-center"
+                      onClick={() => setAspmSubSection("GOVERNANCE")}
+                      className="px-2 py-1.5 rounded-lg bg-white hover:bg-slate-50 border border-slate-300 text-[10px] font-bold text-amber-900 text-center"
                     >
                       RACI Matrix
                     </button>
                     <button
                       type="button"
                       onClick={() => {
-                        setWorkspaceViewMode("SAST_PLUS_SUITE");
+                        setAspmSubSection("SAST_PLUS");
                         setSastPlusActiveTab("SBOM");
                       }}
-                      className="px-2 py-1.5 rounded-lg bg-[var(--surface-panel)] border border-[var(--border-hairline)] text-[10px] font-semibold text-rose-300 text-center"
+                      className="px-2 py-1.5 rounded-lg bg-white hover:bg-slate-50 border border-slate-300 text-[10px] font-bold text-rose-800 text-center"
                     >
                       Live SBOM Inventory
                     </button>
                     <button
                       type="button"
-                      onClick={() => setWorkspaceViewMode("DEEP_DIVE")}
-                      className="px-2 py-1.5 rounded-lg bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-700 text-[10px] font-bold text-cyan-200 text-center"
+                      onClick={() => setAspmSubSection("POSTURE")}
+                      className="px-2 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-800 text-[10px] font-bold text-white text-center"
                     >
                       Deep Dive &amp; Compliance
                     </button>
@@ -903,9 +1034,9 @@ export function FlawExplorerSidebar() {
                 {groupedDisplayedFindings.map((group) => (
                   <div key={group.groupTitle || "default"} className="space-y-2">
                     {group.groupTitle && (
-                      <div className="px-2 py-1 rounded-md bg-[var(--surface-elevated)] border border-[var(--border-hairline)] flex items-center justify-between text-[10px] font-mono font-bold text-cyan-300 uppercase tracking-wider">
+                      <div className="px-2 py-1 rounded-md bg-[var(--surface-elevated)] border border-[var(--border-hairline)] flex items-center justify-between text-[10px] font-mono font-bold text-sky-800 uppercase tracking-wider">
                         <span>{group.groupTitle}</span>
-                        <span className="px-1.5 py-0.2 rounded bg-[var(--surface-void)] text-[var(--ink-primary)]">
+                        <span className="px-1.5 py-0.2 rounded bg-white border border-slate-300 text-slate-900">
                           {group.items.length}
                         </span>
                       </div>
@@ -934,6 +1065,9 @@ export function FlawExplorerSidebar() {
                         firstNode?.start_line ||
                         1;
 
+                      const aiVerdict = aiVerdictsByFinding[f.id];
+                      const aiPct = aiVerdict ? formatAiPct(aiVerdict.confidence) : 0;
+
                       return (
                         <div
                           key={f.id}
@@ -942,14 +1076,14 @@ export function FlawExplorerSidebar() {
                           }}
                           onClick={() => selectFinding(f)}
                           className={`group p-2.5 rounded-lg border transition-all cursor-pointer text-left ${badge.hairline} ${
-                            isSuppressed ? "opacity-60" : ""
+                            isSuppressed ? "opacity-65" : ""
                           } ${
                             isSelected
-                              ? "bg-[var(--surface-elevated)] border-cyan-500 shadow-sm"
-                              : "bg-[var(--surface-void)] border-[var(--border-hairline)] hover:bg-[var(--surface-elevated)]"
+                              ? "bg-sky-50/70 border-sky-500 shadow-sm"
+                              : "bg-white border-[var(--border-hairline)] hover:bg-[var(--surface-elevated)]"
                           }`}
                         >
-                          {/* Top Row: Severity + Engine + File:Line + CWE */}
+                          {/* Top Row: Severity + Engine + File:Line + AI Verdict Badge + CWE */}
                           <div className="flex items-center justify-between gap-1 mb-1.5">
                             <div className="flex items-center gap-1 flex-wrap">
                               {badge.icon}
@@ -958,26 +1092,63 @@ export function FlawExplorerSidebar() {
                               >
                                 {isResolved ? "SEVERED" : f.severity}
                               </span>
-                              <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-[var(--surface-panel)] text-cyan-300 border border-[var(--border-hairline)]">
+                              <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-sky-50 text-sky-800 border border-sky-300">
                                 {f.scan_engine || "SAST"}
                               </span>
                               <span
-                                className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-[var(--surface-panel)] text-[var(--ink-primary)] border border-[var(--border-hairline)]"
+                                className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-slate-100 text-slate-800 border border-slate-300"
                                 title={`${targetFilepath}:L${targetLine}`}
                               >
                                 {targetFilepath.split(/[\\/]/).pop()}:L{targetLine}
                               </span>
+
+                              {/* Per-Finding AI Verdict Badge */}
+                              {aiVerdict && (
+                                <span
+                                  title={`Frontier AI Verdict: ${aiVerdict.verdict} (${aiPct}%) — ${aiVerdict.exploitability_summary}`}
+                                  className={`text-[9px] font-mono font-bold px-1.5 py-0.2 rounded border ${
+                                    aiVerdict.verdict === "TRUE_POSITIVE"
+                                      ? "bg-rose-50 text-rose-800 border-rose-300"
+                                      : aiVerdict.verdict === "FALSE_POSITIVE"
+                                      ? "bg-emerald-50 text-emerald-800 border-emerald-300"
+                                      : "bg-amber-50 text-amber-900 border-amber-300"
+                                  }`}
+                                >
+                                  {aiVerdict.verdict === "TRUE_POSITIVE"
+                                    ? `AI: TP ${aiPct}%`
+                                    : aiVerdict.verdict === "FALSE_POSITIVE"
+                                    ? `AI: FP ${aiPct}%`
+                                    : `AI: Review ${aiPct}%`}
+                                </span>
+                              )}
                             </div>
-                            {f.cwe_id && (
-                              <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-[var(--surface-panel)] text-[var(--ink-muted)] border border-[var(--border-hairline)] shrink-0">
-                                {f.cwe_id}
-                              </span>
-                            )}
+
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  selectFinding(f);
+                                  setAiDrawerOpen(true, "VALIDATE");
+                                  void validateFindingsAi([f.id]);
+                                }}
+                                title="Validate this finding with Frontier AI Micro-Slice"
+                                className="px-1.5 py-0.2 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-300 text-[9px] font-mono font-bold flex items-center gap-0.5"
+                              >
+                                <Sparkles className="w-2.5 h-2.5 text-indigo-700" />
+                                <span>AI</span>
+                              </button>
+                              {f.cwe_id && (
+                                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-slate-100 text-slate-700 border border-slate-300 shrink-0">
+                                  {f.cwe_id}
+                                </span>
+                              )}
+                            </div>
                           </div>
 
                           {/* Headline */}
                           <h2
-                            className={`text-xs font-bold leading-snug group-hover:text-cyan-300 transition-colors ${
+                            className={`text-xs font-bold leading-snug group-hover:text-sky-800 transition-colors ${
                               isSuppressed
                                 ? "line-through text-[var(--ink-muted)]"
                                 : "text-[var(--ink-primary)]"
@@ -987,20 +1158,20 @@ export function FlawExplorerSidebar() {
                           </h2>
 
                           {/* Always-Visible Written Explanation & Secret Key / Target Code Box */}
-                          <div className="mt-1.5 p-2 rounded-md bg-[var(--surface-panel)] border border-[var(--border-hairline)] text-[10px] text-[var(--ink-primary)] space-y-1">
+                          <div className="mt-1.5 p-2 rounded-md bg-slate-50 border border-slate-200 text-[10px] text-[var(--ink-primary)] space-y-1">
                             {/* Secret Key Inspector OR Target Symbol & EPSS Priority Row */}
                             {f.is_secret_finding ||
                             Boolean(f.secret_key_name) ||
                             (f.rule_id || "").toUpperCase().includes("SECRET") ||
                             f.cwe_id === "CWE-798" ? (
-                              <div className="p-1.5 rounded bg-amber-950/40 border border-amber-500/50 space-y-1">
+                              <div className="p-1.5 rounded bg-amber-50 border border-amber-300 space-y-1">
                                 <div className="flex items-center justify-between gap-1 font-mono text-[9px]">
-                                  <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-200 border border-amber-400/60 font-extrabold flex items-center gap-1">
-                                    <KeyRound className="w-3 h-3 text-amber-400" />
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 font-extrabold flex items-center gap-1">
+                                    <KeyRound className="w-3 h-3 text-amber-800" />
                                     {f.secret_type || "SECRET KEY DETECTED"}
                                   </span>
                                   {f.secret_entropy && (
-                                    <span className="text-[9px] text-cyan-300">
+                                    <span className="text-[9px] text-sky-800 font-bold">
                                       Entropy: {f.secret_entropy}
                                     </span>
                                   )}
@@ -1013,7 +1184,7 @@ export function FlawExplorerSidebar() {
                                         [f.id]: !prev[f.id],
                                       }));
                                     }}
-                                    className="px-1.5 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 text-amber-300 border border-amber-500/40 flex items-center gap-0.5 font-sans font-bold"
+                                    className="px-1.5 py-0.5 rounded bg-white hover:bg-amber-100 text-amber-900 border border-amber-400 flex items-center gap-0.5 font-sans font-bold"
                                   >
                                     {revealedSecrets[f.id] ? (
                                       <>
@@ -1026,12 +1197,12 @@ export function FlawExplorerSidebar() {
                                     )}
                                   </button>
                                 </div>
-                                <div className="px-1.5 py-1 rounded bg-zinc-950 border border-amber-500/30 font-mono text-[10px] text-amber-200 break-all">
-                                  <span className="text-amber-400 font-bold">
+                                <div className="px-1.5 py-1 rounded bg-white border border-amber-300 font-mono text-[10px] text-slate-900 break-all">
+                                  <span className="text-amber-800 font-bold">
                                     {f.secret_key_name || firstNode?.name || "SECRET_KEY"}
                                   </span>
-                                  <span className="text-zinc-500"> = </span>
-                                  <span className="text-rose-200 font-semibold">
+                                  <span className="text-slate-500"> = </span>
+                                  <span className="text-rose-800 font-semibold">
                                     {revealedSecrets[f.id]
                                       ? f.secret_value_raw ||
                                         f.secret_value_masked ||
@@ -1048,16 +1219,16 @@ export function FlawExplorerSidebar() {
                                 >
                                   {storyBadge.label}
                                 </span>
-                                <span className="px-1.5 py-0.5 rounded border font-bold bg-cyan-950/70 text-cyan-200 border-cyan-700/70">
+                                <span className="px-1.5 py-0.5 rounded border font-bold bg-sky-50 text-sky-800 border-sky-300">
                                   Target: {lastNode?.name || firstNode?.name || f.rule_id}
                                 </span>
                                 {typeof f.epss_score === "number" && (
-                                  <span className="px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-200 border border-amber-700/70 font-semibold">
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-900 border border-amber-300 font-semibold">
                                     EPSS: {(f.epss_score * 100).toFixed(1)}%
                                   </span>
                                 )}
                                 {f.cisa_kev_listed && (
-                                  <span className="px-1.5 py-0.5 rounded bg-red-950 text-red-200 border border-red-600 font-bold">
+                                  <span className="px-1.5 py-0.5 rounded bg-rose-700 text-white border-rose-800 font-bold">
                                     CISA KEV
                                   </span>
                                 )}
@@ -1065,8 +1236,8 @@ export function FlawExplorerSidebar() {
                             )}
 
                             {(f.best_fix_location?.code_snippet || firstNode?.code || firstNode?.name) && (
-                              <div className="px-1.5 py-1 rounded bg-[var(--surface-void)] border border-[var(--border-hairline)] font-mono text-[10px] text-amber-200 break-all">
-                                <span className="text-amber-400 font-bold uppercase text-[9px] mr-1">
+                              <div className="px-1.5 py-1 rounded bg-white border border-slate-200 font-mono text-[10px] text-slate-900 break-all">
+                                <span className="text-amber-800 font-bold uppercase text-[9px] mr-1">
                                   {f.scan_engine === "SCA" ? "Affected Software:" : "Flagged Code:"}
                                 </span>
                                 {((f.best_fix_location?.code_snippet || firstNode?.code || firstNode?.name || "") as string)
@@ -1074,8 +1245,8 @@ export function FlawExplorerSidebar() {
                                   .slice(0, 120)}
                               </div>
                             )}
-                            <p className="leading-snug text-[var(--ink-primary)] line-clamp-2">
-                              <strong className="text-emerald-300">Issue:</strong>{" "}
+                            <p className="leading-snug text-slate-800 line-clamp-2">
+                              <strong className="text-emerald-800">Issue:</strong>{" "}
                               {f.description || f.plain_english_summary || storyBadge.summary}
                             </p>
                           </div>
@@ -1084,7 +1255,7 @@ export function FlawExplorerSidebar() {
                           <div className="flex items-center justify-between gap-1 mt-1.5 text-[9px] font-mono">
                             <div className="flex items-center gap-1 flex-wrap">
                               {f.language && (
-                                <span className="px-1.5 py-0.2 rounded bg-[var(--surface-panel)] text-[var(--ink-muted)] border border-[var(--border-hairline)]">
+                                <span className="px-1.5 py-0.2 rounded bg-slate-100 text-slate-700 border border-slate-300">
                                   {f.language}
                                 </span>
                               )}
@@ -1092,10 +1263,10 @@ export function FlawExplorerSidebar() {
                                 <span
                                   className={`px-1.5 py-0.2 rounded border font-bold ${
                                     f.triage_status === "NOT_EXPLOITABLE"
-                                      ? "bg-zinc-900 text-zinc-400 border-zinc-700"
+                                      ? "bg-slate-100 text-slate-700 border-slate-300"
                                       : f.triage_status === "CONFIRMED"
-                                      ? "bg-red-950 text-red-300 border-red-700"
-                                      : "bg-emerald-950 text-emerald-300 border-emerald-700"
+                                      ? "bg-rose-50 text-rose-800 border-rose-300"
+                                      : "bg-emerald-50 text-emerald-800 border-emerald-300"
                                   }`}
                                 >
                                   {f.triage_status.replace("_", " ")}
@@ -1109,7 +1280,7 @@ export function FlawExplorerSidebar() {
                                     setIntegrationModalOpen(true);
                                   }}
                                   title="Click to view & manage ticket in Integration Hub"
-                                  className="px-1.5 py-0.2 rounded bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-800 flex items-center gap-0.5 cursor-pointer"
+                                  className="px-1.5 py-0.2 rounded bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-300 flex items-center gap-0.5 cursor-pointer font-bold"
                                 >
                                   <Ticket className="w-2.5 h-2.5" />
                                   {f.linked_ticket_id}
@@ -1125,9 +1296,9 @@ export function FlawExplorerSidebar() {
                                   jumpToBestFixLocation(f);
                                 }}
                                 title={`Best Fix Chokepoint (BFL): ${f.best_fix_location.rationale}`}
-                                className="px-1.5 py-0.2 rounded bg-amber-950/90 hover:bg-amber-900 text-amber-300 border border-amber-700 font-bold flex items-center gap-0.5 shrink-0"
+                                className="px-1.5 py-0.2 rounded bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-400 font-bold flex items-center gap-0.5 shrink-0"
                               >
-                                <Crosshair className="w-2.5 h-2.5 text-amber-400" />
+                                <Crosshair className="w-2.5 h-2.5 text-amber-700" />
                                 <span>BFL: L{f.best_fix_location.line}</span>
                               </button>
                             )}
@@ -1136,19 +1307,19 @@ export function FlawExplorerSidebar() {
                           {/* Visual Story Flow Bar (Source -> Sink) */}
                           {firstNode && nodes.length > 1 && lastNode && (
                             <div className="mt-1.5 pt-1.5 border-t border-[var(--border-hairline)]">
-                              <div className="flex items-center justify-between text-[10px] font-mono bg-[var(--surface-panel)] px-2 py-1 rounded border border-[var(--border-hairline)]">
+                              <div className="flex items-center justify-between text-[10px] font-mono bg-slate-50 px-2 py-1 rounded border border-slate-200">
                                 <span
-                                  className="text-cyan-300 truncate max-w-[95px]"
+                                  className="text-sky-800 font-semibold truncate max-w-[95px]"
                                   title={`Source: ${firstNode.name}`}
                                 >
                                   SRC: L{firstNode.start_line}
                                 </span>
-                                <span className="text-[var(--ink-muted)] flex items-center gap-0.5 text-[9px]">
+                                <span className="text-slate-600 flex items-center gap-0.5 text-[9px] font-semibold">
                                   <span>{nodes.length} hops</span>
-                                  <ArrowRight className="w-3 h-3 text-amber-400" />
+                                  <ArrowRight className="w-3 h-3 text-amber-700" />
                                 </span>
                                 <span
-                                  className="text-rose-300 font-semibold truncate max-w-[95px]"
+                                  className="text-rose-800 font-bold truncate max-w-[95px]"
                                   title={`Sink: ${lastNode.name}`}
                                 >
                                   SINK: L{lastNode.start_line}
@@ -1165,8 +1336,9 @@ export function FlawExplorerSidebar() {
                 {filteredFindings.length > displayedFindings.length && (
                   <div className="pt-2 pb-1 text-center">
                     <button
+                      type="button"
                       onClick={() => setVisibleCount((prev) => prev + 50)}
-                      className="w-full py-1.5 text-xs font-medium text-cyan-400 bg-[var(--surface-elevated)] hover:bg-[var(--surface-void)] border border-[var(--border-hairline)] rounded-md transition-colors"
+                      className="w-full py-1.5 text-xs font-bold text-sky-800 bg-sky-50 hover:bg-sky-100 border border-sky-300 rounded-md transition-colors"
                     >
                       Show More (+50) — Viewing {displayedFindings.length} of{" "}
                       {filteredFindings.length}
@@ -1183,7 +1355,7 @@ export function FlawExplorerSidebar() {
       {activeSidebarTab === "SITE_EXTRACTOR" && (
         <div className="flex-1 flex flex-col overflow-hidden">
           <div className="px-2.5 py-1.5 bg-[var(--surface-void)] border-b border-[var(--border-hairline)] text-[10px] text-[var(--ink-muted)] flex items-center gap-1.5">
-            <Info className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+            <Info className="w-3.5 h-3.5 text-sky-700 shrink-0" />
             <span>
               Extract live advisories from security sites and automatically scan your code for matching vulnerabilities.
             </span>
@@ -1208,13 +1380,13 @@ export function FlawExplorerSidebar() {
                       onClick={() => toggleSource(src.id)}
                       className={`flex items-center justify-between px-2.5 py-1.5 rounded-md border text-left font-mono text-[10px] transition-all ${
                         active
-                          ? "bg-cyan-950/70 border-cyan-700 text-cyan-200 font-semibold"
+                          ? "bg-sky-50 border-sky-400 text-sky-900 font-bold"
                           : "bg-[var(--surface-void)] border-[var(--border-hairline)] text-[var(--ink-muted)] hover:text-[var(--ink-primary)]"
                       }`}
                     >
                       <span className="truncate">{src.label}</span>
                       <CheckCircle2
-                        className={`w-3.5 h-3.5 shrink-0 ${active ? "text-cyan-400" : "text-zinc-700"}`}
+                        className={`w-3.5 h-3.5 shrink-0 ${active ? "text-sky-700" : "text-slate-400"}`}
                       />
                     </button>
                   );
@@ -1232,7 +1404,7 @@ export function FlawExplorerSidebar() {
                 value={customSiteUrl}
                 onChange={(e) => setCustomSiteUrl(e.target.value)}
                 placeholder="https://cwe.mitre.org/data/definitions/78.html..."
-                className="w-full bg-[var(--surface-void)] border border-[var(--border-hairline)] rounded px-2 py-1 text-[11px] text-[var(--ink-primary)] placeholder-[var(--ink-muted)] font-mono focus:outline-none focus:border-cyan-500"
+                className="w-full bg-[var(--surface-void)] border border-[var(--border-hairline)] rounded px-2 py-1 text-[11px] text-[var(--ink-primary)] placeholder-[var(--ink-muted)] font-mono focus:outline-none focus:border-sky-600"
               />
               <datalist id="preset-security-sites">
                 <option value="https://cwe.mitre.org/data/definitions/78.html" />
@@ -1251,14 +1423,14 @@ export function FlawExplorerSidebar() {
                 value={intelSearchQuery}
                 onChange={(e) => setIntelSearchQuery(e.target.value)}
                 placeholder="e.g., command injection, SQL, CWE-78..."
-                className="w-full bg-[var(--surface-void)] border border-[var(--border-hairline)] rounded px-2 py-1 text-[11px] text-[var(--ink-primary)] placeholder-[var(--ink-muted)] font-mono focus:outline-none focus:border-cyan-500"
+                className="w-full bg-[var(--surface-void)] border border-[var(--border-hairline)] rounded px-2 py-1 text-[11px] text-[var(--ink-primary)] placeholder-[var(--ink-muted)] font-mono focus:outline-none focus:border-sky-600"
               />
             </div>
 
             <button
               type="submit"
               disabled={isExtractingIntel}
-              className="w-full py-1.5 px-3 rounded-md bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-semibold text-xs flex items-center justify-center gap-1.5 shadow-sm"
+              className="w-full py-1.5 px-3 rounded-md bg-sky-700 hover:bg-sky-800 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm"
             >
               {isExtractingIntel ? (
                 <>
@@ -1274,7 +1446,7 @@ export function FlawExplorerSidebar() {
             </button>
 
             {intelStatusMessage && (
-              <div className="text-[10px] font-mono text-cyan-300 bg-cyan-950/40 border border-cyan-900/60 rounded p-1.5 leading-snug">
+              <div className="text-[10px] font-mono text-sky-900 bg-sky-50 border border-sky-300 rounded p-1.5 leading-snug">
                 {intelStatusMessage}
               </div>
             )}
@@ -1284,10 +1456,10 @@ export function FlawExplorerSidebar() {
           <div className="flex-1 overflow-y-auto p-2 space-y-2">
             {extractedAdvisories.length === 0 ? (
               <div className="text-center py-8 px-3 text-[var(--ink-muted)] text-xs space-y-1.5">
-                <Globe className="w-8 h-8 mx-auto opacity-30 text-cyan-400" />
-                <p className="font-medium text-[var(--ink-primary)]">Ready to Extract Web Threat Intel</p>
+                <Globe className="w-8 h-8 mx-auto opacity-40 text-sky-700" />
+                <p className="font-semibold text-[var(--ink-primary)]">Ready to Extract Web Threat Intel</p>
                 <p className="text-[11px] text-[var(--ink-muted)] leading-relaxed">
-                  Click <span className="text-cyan-400 font-mono">Extract Advisories &amp; Find in Code</span> above to pull live vulnerability signatures and check every file in your project.
+                  Click <span className="text-sky-800 font-mono font-semibold">Extract Advisories &amp; Find in Code</span> above to pull live vulnerability signatures and check every file in your project.
                 </p>
               </div>
             ) : (
@@ -1313,8 +1485,8 @@ export function FlawExplorerSidebar() {
                     }}
                     className={`p-2.5 rounded-lg border transition-all text-left ${badge.hairline} ${
                       adv.matched_in_code
-                        ? "bg-[var(--surface-elevated)] border-red-700/80 hover:border-cyan-500 cursor-pointer shadow-sm"
-                        : "bg-[var(--surface-void)] border-[var(--border-hairline)] opacity-80"
+                        ? "bg-rose-50/50 border-rose-300 hover:border-sky-500 cursor-pointer shadow-sm"
+                        : "bg-white border-[var(--border-hairline)] opacity-90"
                     }`}
                   >
                     <div className="flex items-center justify-between gap-1 mb-1">
@@ -1324,7 +1496,7 @@ export function FlawExplorerSidebar() {
                           {adv.severity}
                         </span>
                         {adv.cwe_id && (
-                          <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-cyan-950 text-cyan-300 border border-cyan-800">
+                          <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-sky-50 text-sky-800 border border-sky-300 font-semibold">
                             {adv.cwe_id}
                           </span>
                         )}
@@ -1334,7 +1506,7 @@ export function FlawExplorerSidebar() {
                         target="_blank"
                         rel="noreferrer"
                         onClick={(e) => e.stopPropagation()}
-                        className="text-[10px] font-mono text-cyan-400 hover:underline flex items-center gap-0.5"
+                        className="text-[10px] font-mono text-sky-800 hover:underline flex items-center gap-0.5 font-semibold"
                       >
                         <span>{adv.source_site}</span>
                         <ExternalLink className="w-2.5 h-2.5" />
@@ -1351,12 +1523,12 @@ export function FlawExplorerSidebar() {
 
                     <div className="mt-2 pt-1.5 border-t border-[var(--border-hairline)] flex items-center justify-between text-[10px] font-mono">
                       {adv.matched_in_code ? (
-                        <span className="px-1.5 py-0.5 rounded bg-red-950/90 text-red-300 border border-red-700 font-bold flex items-center gap-1">
-                          <Flame className="w-3 h-3 text-red-400" />
+                        <span className="px-1.5 py-0.5 rounded bg-rose-50 text-rose-800 border border-rose-300 font-bold flex items-center gap-1">
+                          <Flame className="w-3 h-3 text-rose-700" />
                           FOUND IN CODE ({adv.match_count} {adv.match_count === 1 ? "line" : "lines"}) — Click to Inspect
                         </span>
                       ) : (
-                        <span className="text-emerald-400/80">✓ Safe (0 matches in code)</span>
+                        <span className="text-emerald-800 font-semibold">✓ Safe (0 matches in code)</span>
                       )}
                     </div>
                   </div>
@@ -1371,7 +1543,7 @@ export function FlawExplorerSidebar() {
       {activeSidebarTab === "APP_TREE" && (
         <div className="flex-1 flex flex-col overflow-hidden">
           <div className="px-2.5 py-1.5 bg-[var(--surface-void)] border-b border-[var(--border-hairline)] text-[10px] text-[var(--ink-muted)] flex items-center gap-1.5">
-            <Layers className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <Layers className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
             <span>
               Click any file to open its source code, see its architectural role, and highlight it on the <b>360° Spider Map</b>.
             </span>
@@ -1385,7 +1557,7 @@ export function FlawExplorerSidebar() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search file name or architectural role..."
-                className="w-full bg-[var(--surface-void)] border border-[var(--border-hairline)] rounded-md pl-8 pr-2.5 py-1 text-xs text-[var(--ink-primary)] placeholder-[var(--ink-muted)] focus:outline-none focus:border-cyan-500 font-mono"
+                className="w-full bg-[var(--surface-void)] border border-[var(--border-hairline)] rounded-md pl-8 pr-2.5 py-1 text-xs text-[var(--ink-primary)] placeholder-[var(--ink-muted)] focus:outline-none focus:border-sky-600 font-mono"
               />
             </div>
 
@@ -1400,10 +1572,11 @@ export function FlawExplorerSidebar() {
               ].map((cat) => (
                 <button
                   key={cat.id}
+                  type="button"
                   onClick={() => setSelectedCategory(cat.id)}
                   className={`px-1.5 py-0.5 rounded whitespace-nowrap border transition-colors ${
                     selectedCategory === cat.id
-                      ? "bg-cyan-950 text-cyan-300 border-cyan-800 font-bold"
+                      ? "bg-sky-700 text-white border-sky-800 font-bold"
                       : "bg-[var(--surface-void)] text-[var(--ink-muted)] border-[var(--border-hairline)] hover:text-[var(--ink-primary)]"
                   }`}
                 >
@@ -1418,7 +1591,7 @@ export function FlawExplorerSidebar() {
               <div className="text-center py-12 px-4 text-[var(--ink-muted)] text-xs">
                 <Layers className="w-8 h-8 mx-auto mb-2 opacity-40 text-[var(--ink-muted)]" />
                 <p>No project tree loaded.</p>
-                <p className="mt-1 text-[11px]">Click &quot;Scan&quot; above to map the codebase architecture.</p>
+                <p className="mt-1 text-[11px]">Click &quot;Scan Target&quot; above to map the codebase architecture.</p>
               </div>
             ) : searchQuery || selectedCategory !== "ALL" ? (
               <div className="space-y-1.5">
@@ -1438,8 +1611,8 @@ export function FlawExplorerSidebar() {
                         onClick={() => selectTreeFile(file)}
                         className={`p-2 rounded-lg border cursor-pointer transition-all ${
                           isSelected
-                            ? "bg-[var(--surface-elevated)] border-cyan-500/80 shadow-sm"
-                            : "bg-[var(--surface-void)] border-[var(--border-hairline)] hover:bg-[var(--surface-elevated)]"
+                            ? "bg-sky-50 border-sky-500 shadow-sm"
+                            : "bg-white border-[var(--border-hairline)] hover:bg-[var(--surface-elevated)]"
                         }`}
                       >
                         <div className="flex items-center justify-between gap-1 mb-1">
@@ -1451,8 +1624,8 @@ export function FlawExplorerSidebar() {
                           </div>
                           <div className="flex items-center gap-1">
                             {fileFindings > 0 && (
-                              <span className="flex items-center gap-0.5 px-1 py-0.2 rounded bg-red-950 text-red-400 border border-red-800 text-[9px] font-mono font-bold">
-                                <Flame className="w-2.5 h-2.5" />
+                              <span className="flex items-center gap-0.5 px-1 py-0.2 rounded bg-rose-50 text-rose-800 border border-rose-300 text-[9px] font-mono font-bold">
+                                <Flame className="w-2.5 h-2.5 text-rose-700" />
                                 {fileFindings}
                               </span>
                             )}
