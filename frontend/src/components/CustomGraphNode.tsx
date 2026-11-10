@@ -246,8 +246,7 @@ export const CustomGraphNode = memo(({ data, id }: NodeProps<any>) => {
   if (nodeLabel === "AppElement") {
     return (
       <div
-        onClick={(e) => {
-          e.stopPropagation();
+        onClick={() => {
           selectGraphNode({
             ...data,
             start_line: data.line_number || data.start_line || 1,

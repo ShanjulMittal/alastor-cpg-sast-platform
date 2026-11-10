@@ -335,7 +335,6 @@ export const DirectionalFlowEdge = memo((props: EdgeProps<DirectionalFlowEdgeDat
     targetY,
     sourcePosition = Position.Right,
     targetPosition = Position.Left,
-    markerEnd,
     style,
     data,
     label,
@@ -473,11 +472,10 @@ export const DirectionalFlowEdge = memo((props: EdgeProps<DirectionalFlowEdgeDat
         pointerEvents="none"
       />
 
-      {/* Primary edge path + native markerEnd */}
+      {/* Primary edge path (dynamic perimeter arrowhead rendered below) */}
       <BaseEdge
         id={id}
         path={edgePath}
-        markerEnd={markerEnd}
         style={{
           ...style,
           stroke: strokeColor,
