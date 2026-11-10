@@ -37,3 +37,6 @@ backend/data/*.json
 Thumbs.db
 .vscode/
 .idea/
+
+# Superpowers Brainstorming Local Session State
+.superpowers/
