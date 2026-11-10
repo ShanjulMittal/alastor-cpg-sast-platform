@@ -21,7 +21,15 @@ import {
   ArrowUpRight,
 } from "lucide-react";
 
-export const EngineAccessWorkspace: React.FC = () => {
+export interface EngineAccessWorkspaceProps {
+  hideInternalNav?: boolean;
+  activeTabOverride?: EngineAccessTab;
+}
+
+export const EngineAccessWorkspace: React.FC<EngineAccessWorkspaceProps> = ({
+  hideInternalNav = false,
+  activeTabOverride,
+}) => {
   const engineAccessTab = useAuditStore((s) => s.engineAccessTab);
   const setEngineAccessTab = useAuditStore((s) => s.setEngineAccessTab);
   const platformSettings = useAuditStore((s) => s.platformSettings);
@@ -44,7 +52,9 @@ export const EngineAccessWorkspace: React.FC = () => {
   );
   const findings = useAuditStore((s) => s.findings);
   const selectFinding = useAuditStore((s) => s.selectFinding);
-  const setWorkspaceViewMode = useAuditStore((s) => s.setWorkspaceViewMode);
+  const setPrimaryStage = useAuditStore((s) => s.setPrimaryStage);
+
+  const activeTab: EngineAccessTab = activeTabOverride ?? engineAccessTab;
 
   // Cypher & Sanitizer Inline Studio State
   const [selectedRuleId, setSelectedRuleId] = useState<string>("");
@@ -126,14 +136,20 @@ export const EngineAccessWorkspace: React.FC = () => {
       scope: platformSettings?.active_scope || "GLOBAL",
       max_dfg_depth: depth,
     });
-    showTransientBanner(`Updated Neo4j DFG Inter-Procedural Hop Depth to ${depth}`, 3000);
+    showTransientBanner(
+      `Updated Neo4j DFG Inter-Procedural Hop Depth to ${depth}`,
+      3000
+    );
   };
 
   const handleAutoSyncIssues = async () => {
     setIsSyncingTickets(true);
     await autoSyncTickets();
     setIsSyncingTickets(false);
-    showTransientBanner("Synchronized Issue Tracker with active CPG findings.", 3500);
+    showTransientBanner(
+      "Synchronized Issue Tracker with active CPG findings.",
+      3500
+    );
   };
 
   const tabs: Array<{
@@ -145,124 +161,129 @@ export const EngineAccessWorkspace: React.FC = () => {
     {
       id: "RULE_PROFILES",
       label: `1. Rule Profiles (${enabledRulesCount || 21}/${totalRulesCount})`,
-      icon: <Sliders className="w-3.5 h-3.5 text-[var(--sig-gold)]" />,
+      icon: <Sliders className="w-3.5 h-3.5 text-amber-700" />,
     },
     {
       id: "CYPHER_SANITIZERS",
       label: "2. Sanitizer & Cypher Studio",
-      icon: <Code2 className="w-3.5 h-3.5 text-[var(--sig-cyan)]" />,
+      icon: <Code2 className="w-3.5 h-3.5 text-sky-700" />,
       badge: `${sanitizers.length} Sanitizers`,
     },
     {
       id: "ACCOUNTS_RBAC",
       label: "3. Multi-Tenant RBAC",
-      icon: <Users className="w-3.5 h-3.5 text-[var(--sig-emerald)]" />,
-      badge: accountsCount ? `${accountsCount} Tenants · ${usersCount} Users` : undefined,
+      icon: <Users className="w-3.5 h-3.5 text-emerald-700" />,
+      badge: accountsCount
+        ? `${accountsCount} Tenants · ${usersCount} Users`
+        : undefined,
     },
     {
       id: "ISSUE_CONNECTORS",
       label: "4. Jira & GitHub Sync",
-      icon: <Ticket className="w-3.5 h-3.5 text-[var(--sig-gold)]" />,
+      icon: <Ticket className="w-3.5 h-3.5 text-amber-700" />,
       badge: tickets.length,
     },
   ];
 
   return (
     <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden bg-[var(--surface-void)] text-[var(--ink-primary)]">
-      {/* Sleek 38px Studio Sub-Navigation Bar */}
-      <nav
-        aria-label="Engine & Access Sub-Navigation"
-        className="h-[38px] px-3 bg-[var(--surface-panel)] border-b border-[var(--border-hairline)] flex items-center justify-between gap-2 shrink-0 overflow-x-auto select-none"
-      >
-        <div className="flex items-center gap-1 min-w-max">
-          {tabs.map((tab) => {
-            const isActive = engineAccessTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setEngineAccessTab(tab.id)}
-                className={`h-7 px-2.5 rounded-md text-[11px] font-semibold flex items-center gap-1.5 transition-all border ${
-                  isActive
-                    ? "bg-[var(--surface-elevated)] text-[var(--ink-primary)] border-[var(--sig-gold)]/60 shadow-sm"
-                    : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)] hover:bg-[var(--surface-elevated)] border-transparent"
-                }`}
-              >
-                {tab.icon}
-                <span>{tab.label}</span>
-                {tab.badge !== undefined && (
-                  <span
-                    className={`px-1.5 py-0 rounded text-[9.5px] font-mono font-bold border ${
-                      isActive
-                        ? "bg-[var(--surface-void)] text-[var(--sig-gold)] border-[var(--sig-gold)]/40"
-                        : "bg-[var(--surface-void)] text-[var(--ink-muted)] border-[var(--border-hairline)]"
-                    }`}
-                  >
-                    {tab.badge}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
+      {/* Standalone Studio Sub-Navigation Bar (hidden when hosted inside Stage 4 unified sub-bars) */}
+      {!hideInternalNav && (
+        <nav
+          aria-label="Engine & Access Sub-Navigation"
+          className="h-[38px] px-3 bg-[var(--surface-panel)] border-b border-[var(--border-hairline)] flex items-center justify-between gap-2 shrink-0 overflow-x-auto select-none"
+        >
+          <div className="flex items-center gap-1 min-w-max">
+            {tabs.map((tab) => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setEngineAccessTab(tab.id)}
+                  className={`h-7 px-2.5 rounded-md text-[11px] font-semibold flex items-center gap-1.5 transition-all border ${
+                    isActive
+                      ? "bg-sky-700 text-white border-sky-800 shadow-sm"
+                      : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)] hover:bg-[var(--surface-elevated)] border-transparent"
+                  }`}
+                >
+                  {tab.icon}
+                  <span>{tab.label}</span>
+                  {tab.badge !== undefined && (
+                    <span
+                      className={`px-1.5 py-0 rounded text-[9.5px] font-mono font-bold border ${
+                        isActive
+                          ? "bg-sky-900 text-white border-sky-950"
+                          : "bg-[var(--surface-void)] text-[var(--ink-muted)] border-[var(--border-hairline)]"
+                      }`}
+                    >
+                      {tab.badge}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
 
-        {/* Right: Quick Modal Launchers */}
-        <div className="hidden lg:flex items-center gap-2 shrink-0 font-mono text-[10px]">
-          <button
-            type="button"
-            onClick={() => setSettingsModalOpen(true, "QUERY_VIEWER")}
-            className="px-2.5 py-1 rounded-md bg-[var(--surface-elevated)] hover:bg-[var(--surface-void)] border border-[var(--border-hairline)] text-[var(--sig-cyan)] font-semibold flex items-center gap-1 transition-colors"
-          >
-            <Settings className="w-3 h-3" />
-            <span>Full Query &amp; Threshold Modal</span>
-          </button>
+          <div className="hidden lg:flex items-center gap-2 shrink-0 font-mono text-[10px]">
+            <button
+              type="button"
+              onClick={() => setSettingsModalOpen(true, "QUERY_VIEWER")}
+              className="px-2.5 py-1 rounded-md bg-white hover:bg-slate-50 border border-slate-300 text-sky-800 font-semibold flex items-center gap-1 transition-colors"
+            >
+              <Settings className="w-3 h-3" />
+              <span>Full Query &amp; Threshold Modal</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => setIntegrationModalOpen(true)}
-            className="px-2.5 py-1 rounded-md bg-[var(--surface-elevated)] hover:bg-[var(--surface-void)] border border-[var(--border-hairline)] text-[var(--sig-gold)] font-semibold flex items-center gap-1 transition-colors"
-          >
-            <Ticket className="w-3 h-3" />
-            <span>Configure Connectors</span>
-          </button>
-        </div>
-      </nav>
+            <button
+              type="button"
+              onClick={() => setIntegrationModalOpen(true)}
+              className="px-2.5 py-1 rounded-md bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 font-semibold flex items-center gap-1 transition-colors"
+            >
+              <Ticket className="w-3 h-3 text-amber-700" />
+              <span>Configure Connectors</span>
+            </button>
+          </div>
+        </nav>
+      )}
 
       {statusBanner && (
-        <div className="px-4 py-1.5 bg-[var(--surface-elevated)] border-b border-[var(--sig-emerald)]/50 text-[var(--sig-emerald)] text-xs font-mono flex items-center gap-2 shrink-0">
-          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+        <div className="px-4 py-1.5 bg-emerald-50 border-b border-emerald-300 text-emerald-900 text-xs font-mono font-semibold flex items-center gap-2 shrink-0">
+          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
           <span>{statusBanner}</span>
         </div>
       )}
 
       {/* Active Sub-Workspace Content */}
       <div className="flex-1 flex min-w-0 min-h-0 overflow-hidden">
-        {engineAccessTab === "RULE_PROFILES" ? (
+        {activeTab === "RULE_PROFILES" ? (
           <RuleEngineProfilesView />
-        ) : engineAccessTab === "ACCOUNTS_RBAC" ? (
+        ) : activeTab === "ACCOUNTS_RBAC" ? (
           <UserAccountProfileView />
-        ) : engineAccessTab === "CYPHER_SANITIZERS" ? (
+        ) : activeTab === "CYPHER_SANITIZERS" ? (
           /* INLINE SANITIZER & NEO4J CYPHER STUDIO */
           <div className="flex-1 overflow-y-auto p-5 space-y-5 bg-[var(--surface-void)]">
             {/* Top Header & DFG Depth Controls */}
-            <div className="p-4 rounded-xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] flex items-center justify-between gap-4 flex-wrap">
+            <div className="p-4 rounded-xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] flex items-center justify-between gap-4 flex-wrap shadow-sm">
               <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <Database className="w-4 h-4 text-[var(--sig-cyan)]" />
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Database className="w-4 h-4 text-sky-700" />
                   <h2 className="text-sm font-bold text-[var(--ink-primary)]">
                     Neo4j Cypher Rule Inspector &amp; AST Sanitizer Workbench
                   </h2>
-                  <span className="px-2 py-0.5 rounded bg-[var(--surface-void)] border border-[var(--border-hairline)] text-[10px] font-mono text-[var(--sig-emerald)]">
+                  <span className="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-300 text-[10px] font-mono font-bold text-emerald-900">
                     0% FP TAINT ENGINE
                   </span>
                 </div>
                 <p className="text-xs text-[var(--ink-muted)]">
-                  Inspect live Neo4j Cypher traversal queries across AST/CFG/DFG edges, tune inter-procedural DFG hop depth, and register custom codebase sanitizer functions.
+                  Inspect live Neo4j Cypher traversal queries across AST/CFG/DFG
+                  edges, tune inter-procedural DFG hop depth, and register
+                  custom codebase sanitizer functions.
                 </p>
               </div>
 
               <div className="flex items-center gap-3 flex-wrap">
-                <div className="flex items-center gap-2 bg-[var(--surface-void)] border border-[var(--border-hairline)] rounded-lg px-3 py-1.5 text-xs font-mono">
+                <div className="flex items-center gap-1.5 bg-[var(--surface-void)] border border-[var(--border-hairline)] rounded-lg px-3 py-1.5 text-xs font-mono">
                   <span className="text-[var(--ink-muted)]">Max DFG Hops:</span>
                   {[8, 12, 16, 24].map((hop) => (
                     <button
@@ -271,8 +292,8 @@ export const EngineAccessWorkspace: React.FC = () => {
                       onClick={() => handleDfgDepthChange(hop)}
                       className={`px-2 py-0.5 rounded text-[11px] font-bold transition-colors ${
                         maxDfgDepth === hop
-                          ? "bg-[var(--surface-elevated)] text-[var(--sig-gold)] border border-[var(--sig-gold)]/60"
-                          : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)]"
+                          ? "bg-sky-700 text-white shadow-sm"
+                          : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)] hover:bg-[var(--surface-panel)]"
                       }`}
                     >
                       {hop}
@@ -283,7 +304,7 @@ export const EngineAccessWorkspace: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setSettingsModalOpen(true, "CUSTOMIZATION")}
-                  className="px-3 py-1.5 rounded-lg bg-[var(--surface-elevated)] hover:bg-[var(--surface-void)] border border-[var(--sig-cyan)]/60 text-[var(--sig-cyan)] text-xs font-semibold flex items-center gap-1.5"
+                  className="px-3 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-800 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
                 >
                   <Wrench className="w-3.5 h-3.5" />
                   <span>Open Full Query Authoring Modal</span>
@@ -293,11 +314,13 @@ export const EngineAccessWorkspace: React.FC = () => {
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
               {/* Left 7 Cols: Neo4j Cypher Query Inspector */}
-              <div className="lg:col-span-7 rounded-xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] p-4 space-y-3 flex flex-col">
-                <div className="flex items-center justify-between gap-2 border-b border-[var(--border-hairline)] pb-2.5">
+              <div className="lg:col-span-7 rounded-xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] p-4 space-y-3 flex flex-col shadow-sm">
+                <div className="flex items-center justify-between gap-2 border-b border-[var(--border-hairline)] pb-2.5 flex-wrap">
                   <div className="text-xs font-bold text-[var(--ink-primary)] flex items-center gap-2">
-                    <Code2 className="w-4 h-4 text-[var(--sig-cyan)]" />
-                    <span>Compiled Neo4j Cypher Security Queries ({queries.length})</span>
+                    <Code2 className="w-4 h-4 text-sky-700" />
+                    <span>
+                      Compiled Neo4j Cypher Security Queries ({queries.length})
+                    </span>
                   </div>
                   <select
                     aria-label="Select Security Query Rule"
@@ -317,13 +340,14 @@ export const EngineAccessWorkspace: React.FC = () => {
                   <div className="space-y-3">
                     <div className="flex items-center justify-between gap-2 flex-wrap">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="px-2 py-0.5 rounded bg-[var(--surface-void)] border border-[var(--sig-gold)]/50 text-[var(--sig-gold)] font-mono text-[10px] font-bold">
+                        <span className="px-2 py-0.5 rounded bg-amber-50 border border-amber-300 text-amber-900 font-mono text-[10px] font-bold">
                           {selectedRule.id}
                         </span>
-                        <span className="px-2 py-0.5 rounded bg-[var(--surface-void)] border border-[var(--border-hairline)] text-[var(--sig-cyan)] font-mono text-[10px]">
-                          {selectedRule.engine} • {selectedRule.language} • {selectedRule.cwe_id}
+                        <span className="px-2 py-0.5 rounded bg-sky-50 border border-sky-300 text-sky-900 font-mono text-[10px] font-semibold">
+                          {selectedRule.engine} • {selectedRule.language} •{" "}
+                          {selectedRule.cwe_id}
                         </span>
-                        <span className="px-2 py-0.5 rounded bg-[var(--surface-void)] border border-[var(--border-hairline)] text-[var(--ink-muted)] font-mono text-[10px]">
+                        <span className="px-2 py-0.5 rounded bg-[var(--surface-void)] border border-[var(--border-hairline)] text-[var(--ink-secondary)] font-mono text-[10px]">
                           CVSS {selectedRule.cvss_score}
                         </span>
                       </div>
@@ -332,7 +356,7 @@ export const EngineAccessWorkspace: React.FC = () => {
                         onClick={() => toggleQueryRule(selectedRule.id)}
                         className={`px-2.5 py-1 rounded text-[10px] font-mono font-bold border ${
                           selectedRule.enabled
-                            ? "bg-[var(--surface-elevated)] text-[var(--sig-emerald)] border-[var(--sig-emerald)]/60"
+                            ? "bg-emerald-50 text-emerald-900 border-emerald-300"
                             : "bg-[var(--surface-void)] text-[var(--ink-muted)] border-[var(--border-hairline)]"
                         }`}
                       >
@@ -340,21 +364,23 @@ export const EngineAccessWorkspace: React.FC = () => {
                       </button>
                     </div>
 
-                    <p className="text-xs text-[var(--ink-muted)] leading-relaxed">
+                    <p className="text-xs text-[var(--ink-secondary)] leading-relaxed">
                       {selectedRule.description}
                     </p>
 
                     <div className="space-y-1">
-                      <div className="text-[10px] font-mono uppercase tracking-wider text-[var(--sig-cyan)] font-bold">
+                      <div className="text-[10px] font-mono uppercase tracking-wider text-sky-800 font-bold">
                         Underlying Neo4j CPG Traversal Query (Cypher)
                       </div>
-                      <pre className="p-3 rounded-lg bg-[var(--surface-void)] border border-[var(--border-hairline)] font-mono text-[11px] text-[var(--sig-cyan)] overflow-x-auto leading-relaxed">
+                      <pre className="p-3 rounded-lg bg-[var(--surface-void)] border border-[var(--border-hairline)] font-mono text-[11px] text-emerald-950 overflow-x-auto leading-relaxed select-text">
                         {selectedRule.cypher}
                       </pre>
                     </div>
 
-                    <div className="p-2.5 rounded-lg bg-[var(--surface-void)] border border-[var(--border-hairline)] text-xs text-[var(--ink-muted)]">
-                      <strong className="text-[var(--sig-emerald)]">BFL Remediation Guidance: </strong>
+                    <div className="p-2.5 rounded-lg bg-emerald-50/50 border border-emerald-200 text-xs text-[var(--ink-secondary)]">
+                      <strong className="text-emerald-900">
+                        BFL Remediation Guidance:{" "}
+                      </strong>
                       {selectedRule.remediation}
                     </div>
                   </div>
@@ -366,18 +392,21 @@ export const EngineAccessWorkspace: React.FC = () => {
               </div>
 
               {/* Right 5 Cols: Custom AST Sanitizer Registration */}
-              <div className="lg:col-span-5 rounded-xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] p-4 space-y-3 flex flex-col">
+              <div className="lg:col-span-5 rounded-xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] p-4 space-y-3 flex flex-col shadow-sm">
                 <div className="flex items-center justify-between border-b border-[var(--border-hairline)] pb-2.5">
                   <div className="text-xs font-bold text-[var(--ink-primary)] flex items-center gap-2">
-                    <ShieldCheck className="w-4 h-4 text-[var(--sig-emerald)]" />
+                    <ShieldCheck className="w-4 h-4 text-emerald-700" />
                     <span>Custom AST Sanitizers ({sanitizers.length})</span>
                   </div>
-                  <span className="text-[10px] font-mono text-[var(--sig-emerald)]">
+                  <span className="text-[10px] font-mono font-semibold text-emerald-800">
                     Sever DFG Paths Automatically
                   </span>
                 </div>
 
-                <form onSubmit={handleRegisterSanitizer} className="space-y-2.5">
+                <form
+                  onSubmit={handleRegisterSanitizer}
+                  className="space-y-2.5"
+                >
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <input
                       type="text"
@@ -415,7 +444,7 @@ export const EngineAccessWorkspace: React.FC = () => {
                     />
                     <button
                       type="submit"
-                      className="px-3 py-1.5 rounded-lg bg-[var(--sig-emerald)] text-white text-xs font-bold flex items-center gap-1 shrink-0"
+                      className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold flex items-center gap-1 shrink-0 shadow-sm transition-colors"
                     >
                       <Plus className="w-3.5 h-3.5" />
                       <span>Register</span>
@@ -431,7 +460,7 @@ export const EngineAccessWorkspace: React.FC = () => {
                     >
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs font-bold text-[var(--sig-emerald)]">
+                          <span className="font-mono text-xs font-bold text-emerald-900">
                             {san.function_name}()
                           </span>
                           <span className="text-[10px] font-mono text-[var(--ink-muted)]">
@@ -447,7 +476,7 @@ export const EngineAccessWorkspace: React.FC = () => {
                         onClick={() => toggleCustomSanitizer(san.id)}
                         className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border shrink-0 ${
                           san.active
-                            ? "bg-[var(--surface-elevated)] text-[var(--sig-emerald)] border-[var(--sig-emerald)]/50"
+                            ? "bg-emerald-50 text-emerald-900 border-emerald-300"
                             : "bg-[var(--surface-panel)] text-[var(--ink-muted)] border-[var(--border-hairline)]"
                         }`}
                       >
@@ -462,35 +491,39 @@ export const EngineAccessWorkspace: React.FC = () => {
         ) : (
           /* INLINE JIRA & GITHUB ISSUE CONNECTOR HUB */
           <div className="flex-1 overflow-y-auto p-5 space-y-5 bg-[var(--surface-void)]">
-            <div className="p-4 rounded-xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] flex items-center justify-between gap-4 flex-wrap">
+            <div className="p-4 rounded-xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] flex items-center justify-between gap-4 flex-wrap shadow-sm">
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
-                  <Ticket className="w-4 h-4 text-[var(--sig-gold)]" />
+                  <Ticket className="w-4 h-4 text-amber-700" />
                   <h2 className="text-sm font-bold text-[var(--ink-primary)]">
                     Jira &amp; GitHub Issues Bi-Directional Remediation Sync
                   </h2>
                 </div>
                 <p className="text-xs text-[var(--ink-muted)]">
-                  Track remediation tickets linked to Best Fix Locations (BFL) and synchronize triage status with Jira Cloud or GitHub Issues.
+                  Track remediation tickets linked to Best Fix Locations (BFL)
+                  and synchronize triage status with Jira Cloud or GitHub
+                  Issues.
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
                   disabled={isSyncingTickets}
                   onClick={handleAutoSyncIssues}
-                  className="px-3 py-1.5 rounded-lg bg-[var(--surface-elevated)] hover:bg-[var(--surface-void)] border border-[var(--sig-emerald)]/50 text-[var(--sig-emerald)] text-xs font-bold flex items-center gap-1.5 disabled:opacity-50"
+                  className="px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-emerald-900 text-xs font-bold flex items-center gap-1.5 disabled:opacity-50 transition-colors"
                 >
                   <RefreshCw
-                    className={`w-3.5 h-3.5 ${isSyncingTickets ? "animate-spin" : ""}`}
+                    className={`w-3.5 h-3.5 text-emerald-700 ${
+                      isSyncingTickets ? "animate-spin" : ""
+                    }`}
                   />
                   <span>Auto-Generate Tickets for Active Flaws</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setIntegrationModalOpen(true)}
-                  className="px-3.5 py-1.5 rounded-lg bg-[var(--sig-gold)] text-black text-xs font-bold flex items-center gap-1.5"
+                  className="px-3.5 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition-colors"
                 >
                   <Settings className="w-3.5 h-3.5" />
                   <span>Configure / Create Ticket</span>
@@ -500,44 +533,46 @@ export const EngineAccessWorkspace: React.FC = () => {
 
             {/* Connector Status Cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="p-4 rounded-xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] flex items-center justify-between gap-3">
+              <div className="p-4 rounded-xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] flex items-center justify-between gap-3 shadow-sm">
                 <div className="space-y-1">
                   <div className="text-xs font-bold text-[var(--ink-primary)] flex items-center gap-2">
                     <span>Jira Software / Cloud Connector</span>
-                    <span className="px-2 py-0.5 rounded bg-[var(--surface-void)] border border-[var(--border-hairline)] text-[10px] font-mono text-[var(--sig-cyan)]">
+                    <span className="px-2 py-0.5 rounded bg-sky-50 border border-sky-300 text-[10px] font-mono font-semibold text-sky-900">
                       Key: {connectorCfg?.jira_project_key || "SEC"}
                     </span>
                   </div>
                   <p className="text-[11px] font-mono text-[var(--ink-muted)]">
-                    {connectorCfg?.jira_url || "Local Tracker Mode (Click Configure to attach Jira REST URL)"}
+                    {connectorCfg?.jira_url ||
+                      "Local Tracker Mode (Click Configure to attach Jira REST URL)"}
                   </p>
                 </div>
                 <button
                   type="button"
                   onClick={() => setIntegrationModalOpen(true)}
-                  className="px-2.5 py-1 rounded-lg bg-[var(--surface-elevated)] border border-[var(--border-hairline)] text-xs font-mono text-[var(--sig-cyan)] flex items-center gap-1 shrink-0"
+                  className="px-2.5 py-1 rounded-lg bg-[var(--surface-void)] hover:bg-sky-50 border border-[var(--border-hairline)] text-xs font-mono font-semibold text-sky-800 flex items-center gap-1 shrink-0"
                 >
                   <span>Settings</span>
                   <ExternalLink className="w-3 h-3" />
                 </button>
               </div>
 
-              <div className="p-4 rounded-xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] flex items-center justify-between gap-3">
+              <div className="p-4 rounded-xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] flex items-center justify-between gap-3 shadow-sm">
                 <div className="space-y-1">
                   <div className="text-xs font-bold text-[var(--ink-primary)] flex items-center gap-2">
                     <span>GitHub Issues Connector</span>
-                    <span className="px-2 py-0.5 rounded bg-[var(--surface-void)] border border-[var(--border-hairline)] text-[10px] font-mono text-[var(--sig-emerald)]">
+                    <span className="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-300 text-[10px] font-mono font-semibold text-emerald-900">
                       BFL Labels Ready
                     </span>
                   </div>
                   <p className="text-[11px] font-mono text-[var(--ink-muted)]">
-                    {connectorCfg?.github_repo || "Local Tracker Mode (Click Configure to attach owner/repo)"}
+                    {connectorCfg?.github_repo ||
+                      "Local Tracker Mode (Click Configure to attach owner/repo)"}
                   </p>
                 </div>
                 <button
                   type="button"
                   onClick={() => setIntegrationModalOpen(true)}
-                  className="px-2.5 py-1 rounded-lg bg-[var(--surface-elevated)] border border-[var(--border-hairline)] text-xs font-mono text-[var(--sig-emerald)] flex items-center gap-1 shrink-0"
+                  className="px-2.5 py-1 rounded-lg bg-[var(--surface-void)] hover:bg-emerald-50 border border-[var(--border-hairline)] text-xs font-mono font-semibold text-emerald-800 flex items-center gap-1 shrink-0"
                 >
                   <span>Settings</span>
                   <ExternalLink className="w-3 h-3" />
@@ -546,7 +581,7 @@ export const EngineAccessWorkspace: React.FC = () => {
             </div>
 
             {/* Ticket Table */}
-            <div className="rounded-xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] overflow-hidden">
+            <div className="rounded-xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] overflow-hidden shadow-sm">
               <div className="px-4 py-2.5 border-b border-[var(--border-hairline)] flex items-center justify-between">
                 <span className="text-xs font-bold text-[var(--ink-primary)]">
                   Active Remediation Tickets ({tickets.length})
@@ -564,7 +599,7 @@ export const EngineAccessWorkspace: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleAutoSyncIssues}
-                    className="px-3 py-1.5 rounded-lg bg-[var(--surface-elevated)] border border-[var(--sig-gold)]/50 text-[var(--sig-gold)] text-xs font-bold"
+                    className="px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold shadow-sm"
                   >
                     Generate Tickets From Active Findings
                   </button>
@@ -584,13 +619,15 @@ export const EngineAccessWorkspace: React.FC = () => {
                     </thead>
                     <tbody className="divide-y divide-[var(--border-hairline)]">
                       {tickets.map((t) => {
-                        const linkedF = findings.find((f) => f.id === t.finding_id);
+                        const linkedF = findings.find(
+                          (f) => f.id === t.finding_id
+                        );
                         return (
                           <tr
                             key={t.id}
                             className="hover:bg-[var(--surface-elevated)] transition-colors"
                           >
-                            <td className="p-3 font-mono font-bold text-[var(--sig-gold)]">
+                            <td className="p-3 font-mono font-bold text-amber-900">
                               {t.ticket_key}
                             </td>
                             <td className="p-3 font-mono text-[11px] text-[var(--ink-muted)]">
@@ -604,7 +641,7 @@ export const EngineAccessWorkspace: React.FC = () => {
                                 {t.bfl_summary}
                               </div>
                             </td>
-                            <td className="p-3 font-mono text-[var(--sig-cyan)]">
+                            <td className="p-3 font-mono text-sky-800 font-medium">
                               {t.filepath}:L{t.line}
                             </td>
                             <td className="p-3">
@@ -632,18 +669,18 @@ export const EngineAccessWorkspace: React.FC = () => {
                                   type="button"
                                   onClick={() => {
                                     selectFinding(linkedF);
-                                    setWorkspaceViewMode("REMEDIATION_IDE");
+                                    setPrimaryStage("TRIAGE_FIX");
                                   }}
-                                  className="px-2.5 py-1 rounded bg-[var(--surface-void)] hover:bg-[var(--surface-panel)] border border-[var(--border-hairline)] text-[var(--sig-emerald)] font-mono text-[10px] font-bold flex items-center gap-1"
+                                  className="px-2.5 py-1 rounded bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-emerald-900 font-mono text-[10px] font-bold flex items-center gap-1"
                                 >
-                                  <span>Inspect in IDE</span>
+                                  <span>Inspect in Stage 2</span>
                                   <ArrowUpRight className="w-3 h-3" />
                                 </button>
                               ) : (
                                 <button
                                   type="button"
                                   onClick={() => setIntegrationModalOpen(true)}
-                                  className="px-2.5 py-1 rounded bg-[var(--surface-void)] border border-[var(--border-hairline)] text-[var(--ink-muted)] font-mono text-[10px]"
+                                  className="px-2.5 py-1 rounded bg-[var(--surface-void)] border border-[var(--border-hairline)] text-[var(--ink-secondary)] font-mono text-[10px]"
                                 >
                                   Details
                                 </button>

@@ -212,6 +212,15 @@ export default function AuditPage() {
   }, [projectPath]);
 
   useEffect(() => {
+    if (
+      engineAccessTab === "RULE_PROFILES" ||
+      engineAccessTab === "CYPHER_SANITIZERS"
+    ) {
+      setRulesSubMode("ENGINE");
+    }
+  }, [engineAccessTab]);
+
+  useEffect(() => {
     hydrateUiPreferences();
     fetchFindings();
     fetchMetrics();
@@ -525,6 +534,11 @@ export default function AuditPage() {
     },
   ];
 
+  const activeRulesEngineTab: "RULE_PROFILES" | "CYPHER_SANITIZERS" =
+    engineAccessTab === "CYPHER_SANITIZERS"
+      ? "CYPHER_SANITIZERS"
+      : "RULE_PROFILES";
+
   const activeGovernanceTab =
     workspaceViewMode === "ENGINE_ACCESS" &&
     (engineAccessTab === "ACCOUNTS_RBAC" ||
@@ -817,17 +831,36 @@ export default function AuditPage() {
               {aspmSubSection === "RULES_ENGINE" && (
                 <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
                   <div className="px-4 py-1.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2 flex-wrap shrink-0">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <button
                         type="button"
-                        onClick={() => setRulesSubMode("ENGINE")}
+                        onClick={() => {
+                          setRulesSubMode("ENGINE");
+                          setEngineAccessTab("RULE_PROFILES");
+                        }}
                         className={`px-2.5 py-1 rounded-md text-xs font-bold border transition-colors ${
-                          rulesSubMode === "ENGINE"
+                          rulesSubMode === "ENGINE" &&
+                          activeRulesEngineTab === "RULE_PROFILES"
                             ? "bg-sky-700 text-white border-sky-800"
                             : "bg-white text-slate-700 border-slate-300 hover:bg-slate-100"
                         }`}
                       >
-                        21-Rule Matrix, Cypher &amp; AST Sanitizers
+                        1. Rule Profiles &amp; 21-Rule Matrix
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRulesSubMode("ENGINE");
+                          setEngineAccessTab("CYPHER_SANITIZERS");
+                        }}
+                        className={`px-2.5 py-1 rounded-md text-xs font-bold border transition-colors ${
+                          rulesSubMode === "ENGINE" &&
+                          activeRulesEngineTab === "CYPHER_SANITIZERS"
+                            ? "bg-sky-700 text-white border-sky-800"
+                            : "bg-white text-slate-700 border-slate-300 hover:bg-slate-100"
+                        }`}
+                      >
+                        2. Sanitizer &amp; Cypher Studio
                       </button>
                       <button
                         type="button"
@@ -840,7 +873,7 @@ export default function AuditPage() {
                       >
                         <Globe className="w-3.5 h-3.5" />
                         <span>
-                          Live Web CVE &amp; Advisory Extractor (
+                          3. Live Web CVE &amp; Advisory Extractor (
                           {extractedAdvisories.length})
                         </span>
                       </button>
@@ -859,7 +892,10 @@ export default function AuditPage() {
 
                   {rulesSubMode === "ENGINE" ? (
                     <div className="flex-1 flex min-h-0 overflow-hidden">
-                      <EngineAccessWorkspace />
+                      <EngineAccessWorkspace
+                        hideInternalNav
+                        activeTabOverride={activeRulesEngineTab}
+                      />
                     </div>
                   ) : (
                     <div className="flex-1 overflow-y-auto p-5 space-y-4 select-text">
@@ -1002,18 +1038,17 @@ export default function AuditPage() {
               {aspmSubSection === "GOVERNANCE" && (
                 <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
                   <div className="px-4 py-1.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2 flex-wrap shrink-0">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <button
                         type="button"
                         onClick={() => setExecutiveAspmTab("RACI")}
                         className={`px-2.5 py-1 rounded-md text-xs font-bold border transition-colors ${
-                          activeGovernanceTab === "RACI" &&
-                          executiveAspmTab === "RACI"
+                          activeGovernanceTab === "RACI"
                             ? "bg-sky-700 text-white border-sky-800"
                             : "bg-white text-slate-700 border-slate-300 hover:bg-slate-100"
                         }`}
                       >
-                        RACI Accountability Matrix
+                        1. RACI Accountability Matrix
                       </button>
                       <button
                         type="button"
@@ -1024,7 +1059,7 @@ export default function AuditPage() {
                             : "bg-white text-slate-700 border-slate-300 hover:bg-slate-100"
                         }`}
                       >
-                        Multi-Tenant Accounts &amp; RBAC
+                        2. Multi-Tenant Accounts &amp; RBAC
                       </button>
                       <button
                         type="button"
@@ -1035,7 +1070,7 @@ export default function AuditPage() {
                             : "bg-white text-slate-700 border-slate-300 hover:bg-slate-100"
                         }`}
                       >
-                        Jira &amp; GitHub Issue Sync
+                        3. Jira &amp; GitHub Issue Sync
                       </button>
                     </div>
 
@@ -1055,7 +1090,10 @@ export default function AuditPage() {
                     </div>
                   ) : (
                     <div className="flex-1 flex min-h-0 overflow-hidden">
-                      <EngineAccessWorkspace />
+                      <EngineAccessWorkspace
+                        hideInternalNav
+                        activeTabOverride={activeGovernanceTab}
+                      />
                     </div>
                   )}
                 </div>

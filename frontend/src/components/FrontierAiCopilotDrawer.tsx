@@ -178,7 +178,7 @@ export function FrontierAiCopilotDrawer() {
   useEffect(() => {
     if (!isAiDrawerOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !useAuditStore.getState().isQuickCommandOpen) {
         setAiDrawerOpen(false);
       }
     };

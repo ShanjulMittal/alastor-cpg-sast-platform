@@ -51,12 +51,13 @@ export function useKeyboardNavigation(): void {
         state.isIntegrationModalOpen ||
         state.isQuickCommandOpen ||
         state.isTargetPickerOpen ||
-        state.isTrackChangesPanelOpen
+        state.isTrackChangesPanelOpen ||
+        state.isAiDrawerOpen
       ) {
         return;
       }
 
-      if (state.workspaceViewMode !== "REMEDIATION_IDE") {
+      if (state.primaryStage !== "TRIAGE_FIX") {
         return;
       }
 
