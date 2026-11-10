@@ -104,6 +104,8 @@ class RemediationPatcherTests(unittest.TestCase):
                 )
 
     def test_synthesizes_rule_1_taint_os_system_and_eval(self):
+        import shlex
+
         with tempfile.TemporaryDirectory() as tmpdir:
             cmd_file = os.path.join(tmpdir, "runner.py")
             with open(cmd_file, "w", encoding="utf-8", newline="\n") as fh:
@@ -118,8 +120,63 @@ class RemediationPatcherTests(unittest.TestCase):
             self.assertIsNotNone(preview_cmd)
             self.assertTrue(preview_cmd["can_auto_patch"])
             self.assertIn("subprocess.run(shlex.split(", preview_cmd["patched_content"])
+            self.assertIn("shlex.quote(", preview_cmd["patched_content"])
             self.assertIn("shell=False", preview_cmd["patched_content"])
             self.assertNotIn("os.system(", preview_cmd["patched_content"])
+            self.assertNotIn("shlex.split(_safe_cmd)", preview_cmd["patched_content"])
+
+            # Verify f-string interpolation under RULE-1-TAINT wraps {host} in shlex.quote(str(host))
+            fstr_file = os.path.join(tmpdir, "pinger.py")
+            with open(fstr_file, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write('import os\ndef ping(host):\n    return os.system(f"ping -c 1 {host}")\n')
+            preview_fstr = generate_remediation_preview(
+                raw_filepath="pinger.py",
+                allowed_roots=[tmpdir],
+                rule_id="RULE-1-TAINT",
+                target_line=3,
+            )
+            self.assertIsNotNone(preview_fstr)
+            self.assertTrue(preview_fstr["can_auto_patch"])
+            self.assertIn(
+                'subprocess.run(shlex.split(f"ping -c 1 {shlex.quote(str(host))}"), shell=False, check=False)',
+                preview_fstr["patched_content"],
+            )
+            self.assertEqual(
+                shlex.split(f"ping -c 1 {shlex.quote(str('8.8.8.8'))}"),
+                ["ping", "-c", "1", "8.8.8.8"],
+            )
+
+            # Verify string concatenation under RULE-1-TAINT wraps dynamic operand in shlex.quote(str(...))
+            concat_file = os.path.join(tmpdir, "concat_ping.py")
+            with open(concat_file, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write('import os\ndef ping_c(host):\n    return os.system("ping -c 1 " + host)\n')
+            preview_concat = generate_remediation_preview(
+                raw_filepath="concat_ping.py",
+                allowed_roots=[tmpdir],
+                rule_id="RULE-1-TAINT",
+                target_line=3,
+            )
+            self.assertIsNotNone(preview_concat)
+            self.assertTrue(preview_concat["can_auto_patch"])
+            self.assertIn(
+                'subprocess.run(shlex.split("ping -c 1 " + shlex.quote(str(host))), shell=False, check=False)',
+                preview_concat["patched_content"],
+            )
+
+            # Verify RULE-1-TAINT on subprocess.run(..., shell=True) is not shadowed by RULE-6
+            sub_taint_file = os.path.join(tmpdir, "sub_taint.py")
+            with open(sub_taint_file, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write('import subprocess\ndef run_tainted(host):\n    return subprocess.run(f"ping -c 1 {host}", shell=True)\n')
+            preview_sub_taint = generate_remediation_preview(
+                raw_filepath="sub_taint.py",
+                allowed_roots=[tmpdir],
+                rule_id="RULE-1-TAINT",
+                target_line=3,
+            )
+            self.assertIsNotNone(preview_sub_taint)
+            self.assertTrue(preview_sub_taint["can_auto_patch"])
+            self.assertIn("shlex.quote(str(host))", preview_sub_taint["patched_content"])
+            self.assertIn("shell=False", preview_sub_taint["patched_content"])
 
             eval_file = os.path.join(tmpdir, "calc.py")
             with open(eval_file, "w", encoding="utf-8", newline="\n") as fh:
@@ -134,6 +191,44 @@ class RemediationPatcherTests(unittest.TestCase):
             self.assertIsNotNone(preview_eval)
             self.assertTrue(preview_eval["can_auto_patch"])
             self.assertIn("ast.literal_eval(", preview_eval["patched_content"])
+
+    def test_subprocess_multi_kwarg_and_dockerfile_rule_isolation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            kw_file = os.path.join(tmpdir, "multi_kw.py")
+            with open(kw_file, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(
+                    "import subprocess\n"
+                    "def run_diag(host):\n"
+                    '    return subprocess.run(f"ping -c 1 {host}", capture_output=True, shell = True)\n'
+                )
+            kw_prev = generate_remediation_preview(
+                raw_filepath="multi_kw.py",
+                allowed_roots=[tmpdir],
+                rule_id="RULE-6-SHELL-INJECTION",
+                target_line=3,
+            )
+            self.assertIsNotNone(kw_prev)
+            self.assertTrue(kw_prev["can_auto_patch"])
+            self.assertIn(
+                'subprocess.run(shlex.split(f"ping -c 1 {host}"), capture_output=True, shell=False)',
+                kw_prev["patched_content"],
+            )
+
+            # Dockerfile with non-IAC-2 rule must NOT be intercepted by IAC-2-CONTAINER-ROOT
+            df_path = os.path.join(tmpdir, "Dockerfile")
+            with open(df_path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write('FROM python:3.12-slim\nCMD ["python", "app.py"]\n')
+            df_other = generate_remediation_preview(
+                raw_filepath="Dockerfile",
+                allowed_roots=[tmpdir],
+                rule_id="CUSTOM-DOCKER-RULE",
+                target_line=2,
+                recommended_fix="Pin base image digest.",
+            )
+            self.assertIsNotNone(df_other)
+            self.assertFalse(df_other["can_auto_patch"])
+            self.assertNotIn("USER appuser", df_other["patched_content"])
+            self.assertIn("# ALASTOR BFL Fix Guidance: Pin base image digest.", df_other["patched_content"])
 
     def test_synthesizes_rule_8_hardcoded_credential_py_and_ts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -373,6 +468,129 @@ class RemediationPatcherTests(unittest.TestCase):
                     undo_json = undo_resp.json()
                     self.assertEqual(undo_json["status"], "reverted")
                     self.assertEqual(undo_json["restored_sha256"], prev_json["expected_sha256"])
+            finally:
+                main.current_scan_dir = prev_scan_dir
+
+    def test_remediate_apply_verification_matrix_severed_shifted_and_unscanned(self):
+        import main
+        from models import BestFixLocation, Finding
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vuln_file = os.path.join(tmpdir, "worker.py")
+            original = 'import subprocess\nsubprocess.run("ls -la", shell=True)\n'
+            with open(vuln_file, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(original)
+            orig_sha = hashlib.sha256(original.encode("utf-8")).hexdigest()
+
+            vault_dir = os.path.join(tmpdir, ".alastor_patches")
+            pre_finding = Finding(
+                id="F-PRE-1",
+                rule_id="RULE-6-SHELL-INJECTION",
+                severity="CRITICAL",
+                title="Unsafe Shell Execution",
+                path_nodes=[{"id": "n1", "filepath": "worker.py", "start_line": 2}],
+                best_fix_location=BestFixLocation(filepath="worker.py", line=2),
+            )
+            unrelated_finding = Finding(
+                id="F-OTHER-9",
+                rule_id="RULE-9-DOM-XSS",
+                severity="HIGH",
+                title="Unsanitized DOM Sink",
+                path_nodes=[{"id": "n9", "filepath": "ui.js", "start_line": 10}],
+                best_fix_location=BestFixLocation(filepath="ui.js", line=10),
+            )
+            shifted_finding = Finding(
+                id="F-POST-SHIFTED",
+                rule_id="RULE-6-SHELL-INJECTION",
+                severity="CRITICAL",
+                title="Unsafe Shell Execution",
+                path_nodes=[{"id": "n2", "filepath": "worker.py", "start_line": 4}],
+                best_fix_location=BestFixLocation(filepath="worker.py", line=4),
+            )
+
+            prev_scan_dir = main.current_scan_dir
+            try:
+                client = TestClient(main.app)
+
+                # (a) Matching (rule_id, filepath) finding disappears -> verified_severed=True, fixed_delta_count=1
+                main.current_scan_dir = tmpdir
+                patched_a = 'import shlex\nimport subprocess\nsubprocess.run(shlex.split("ls -la"), shell=False)\n'
+                with (
+                    patch.object(main, "_get_remediation_vault_root", return_value=vault_dir),
+                    patch.object(main, "scan_project", return_value=None),
+                    patch.object(
+                        main,
+                        "get_or_compute_findings",
+                        side_effect=[[pre_finding, unrelated_finding], [unrelated_finding]],
+                    ),
+                ):
+                    resp_a = client.post(
+                        "/api/remediate/apply",
+                        json={
+                            "finding_id": "F-PRE-1",
+                            "filepath": "worker.py",
+                            "rule_id": "",
+                            "expected_sha256": orig_sha,
+                            "patched_content": patched_a,
+                        },
+                    )
+                    self.assertEqual(resp_a.status_code, 200)
+                    data_a = resp_a.json()
+                    self.assertTrue(data_a["verified_severed"])
+                    self.assertEqual(data_a["fixed_delta_count"], 1)
+                    self.assertEqual(data_a["remaining_findings_count"], 1)
+
+                # Reset file for (b): non-fixing fallback comment shifts unfixed finding from L=2 to L=4 (new node/finding ID)
+                with open(vuln_file, "w", encoding="utf-8", newline="\n") as fh:
+                    fh.write(original)
+                shifted_patch = '# ALASTOR BFL Fix Guidance: replace subshell\n# TODO\nimport subprocess\nsubprocess.run("ls -la", shell=True)\n'
+                with (
+                    patch.object(main, "_get_remediation_vault_root", return_value=vault_dir),
+                    patch.object(main, "scan_project", return_value=None),
+                    patch.object(
+                        main,
+                        "get_or_compute_findings",
+                        side_effect=[[pre_finding], [shifted_finding]],
+                    ),
+                ):
+                    resp_b = client.post(
+                        "/api/remediate/apply",
+                        json={
+                            "finding_id": "F-PRE-1",
+                            "filepath": "worker.py",
+                            "rule_id": "",
+                            "expected_sha256": orig_sha,
+                            "patched_content": shifted_patch,
+                        },
+                    )
+                    self.assertEqual(resp_b.status_code, 200)
+                    data_b = resp_b.json()
+                    self.assertFalse(data_b["verified_severed"])
+                    self.assertEqual(data_b["fixed_delta_count"], 0)
+                    self.assertNotIn("confirmed taint path severed", data_b["message"])
+
+                # Reset file for (c): current_scan_dir unset/empty -> scan skipped -> verified_severed=False
+                with open(vuln_file, "w", encoding="utf-8", newline="\n") as fh:
+                    fh.write(original)
+                main.current_scan_dir = ""
+                with (
+                    patch.object(main, "_get_authorized_remediation_roots", return_value=[tmpdir]),
+                    patch.object(main, "_get_remediation_vault_root", return_value=vault_dir),
+                    patch.object(main, "get_or_compute_findings", return_value=[pre_finding]),
+                ):
+                    resp_c = client.post(
+                        "/api/remediate/apply",
+                        json={
+                            "finding_id": "F-PRE-1",
+                            "filepath": "worker.py",
+                            "rule_id": "RULE-6-SHELL-INJECTION",
+                            "expected_sha256": orig_sha,
+                            "patched_content": patched_a,
+                        },
+                    )
+                    self.assertEqual(resp_c.status_code, 200)
+                    data_c = resp_c.json()
+                    self.assertFalse(data_c["verified_severed"])
             finally:
                 main.current_scan_dir = prev_scan_dir
 

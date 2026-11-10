@@ -89,6 +89,136 @@ def _ensure_python_import(lines: List[str], module_name: str) -> List[str]:
     return updated
 
 
+def _split_first_call_arg(inner_args: str) -> Tuple[str, str]:
+    """Splits `<first_arg><, rest_args>` at the first top-level comma outside quotes and brackets."""
+    depth = 0
+    quote_tok: Optional[str] = None
+    pos = 0
+    total = len(inner_args)
+    while pos < total:
+        ch = inner_args[pos]
+        if quote_tok is not None:
+            if ch == "\\":
+                pos += 2
+                continue
+            if inner_args.startswith(quote_tok, pos):
+                pos += len(quote_tok)
+                quote_tok = None
+                continue
+            pos += 1
+            continue
+        if inner_args.startswith('"""', pos) or inner_args.startswith("'''", pos):
+            quote_tok = inner_args[pos : pos + 3]
+            pos += 3
+            continue
+        if ch in ('"', "'"):
+            quote_tok = ch
+            pos += 1
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}" and depth > 0:
+            depth -= 1
+        elif ch == "," and depth == 0:
+            return inner_args[:pos].strip(), inner_args[pos:]
+        pos += 1
+    return inner_args.strip(), ""
+
+
+def _split_top_level_plus(expr: str) -> List[str]:
+    """Splits string concatenation `a + b` at top-level `+` operators outside quotes and brackets."""
+    parts: List[str] = []
+    depth = 0
+    quote_tok: Optional[str] = None
+    start_idx = 0
+    pos = 0
+    total = len(expr)
+    while pos < total:
+        ch = expr[pos]
+        if quote_tok is not None:
+            if ch == "\\":
+                pos += 2
+                continue
+            if expr.startswith(quote_tok, pos):
+                pos += len(quote_tok)
+                quote_tok = None
+                continue
+            pos += 1
+            continue
+        if expr.startswith('"""', pos) or expr.startswith("'''", pos):
+            quote_tok = expr[pos : pos + 3]
+            pos += 3
+            continue
+        if ch in ('"', "'"):
+            quote_tok = ch
+            pos += 1
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}" and depth > 0:
+            depth -= 1
+        elif ch == "+" and depth == 0:
+            parts.append(expr[start_idx:pos].strip())
+            start_idx = pos + 1
+        pos += 1
+    parts.append(expr[start_idx:].strip())
+    return [p for p in parts if p]
+
+
+def _build_shell_argv_expr(cmd_expr: str, sanitize_taint: bool) -> str:
+    """Builds a tokenized `shlex.split(...)` argv expression, quoting dynamic interpolations when tainted."""
+    clean_cmd = cmd_expr.strip()
+    if clean_cmd.startswith("["):
+        return clean_cmd
+    if not sanitize_taint:
+        return clean_cmd if clean_cmd.startswith("shlex.split(") else f"shlex.split({clean_cmd})"
+
+    def _quote_fstr_slot(match_obj: re.Match) -> str:
+        slot = match_obj.group(1).strip()
+        if slot.startswith("shlex.quote("):
+            return f"{{{slot}}}"
+        return f"{{shlex.quote(str({slot}))}}"
+
+    fstr_m = re.match(r"^([fFrR]{1,2})(['\"])(.*)\2$", clean_cmd, flags=re.DOTALL)
+    if fstr_m and "f" in fstr_m.group(1).lower():
+        sanitized_fstr = re.sub(
+            r"(?<!\{)\{\s*([^{}]+?)\s*\}(?!\})",
+            _quote_fstr_slot,
+            clean_cmd,
+        )
+        return f"shlex.split({sanitized_fstr})"
+
+    concat_parts = _split_top_level_plus(clean_cmd)
+    if len(concat_parts) >= 2:
+        rebuilt_parts: List[str] = []
+        for part in concat_parts:
+            is_plain_str = (
+                (part.startswith('"') and part.endswith('"'))
+                or (part.startswith("'") and part.endswith("'"))
+            )
+            part_fstr = re.match(r"^([fFrR]{1,2})(['\"])(.*)\2$", part, flags=re.DOTALL)
+            if is_plain_str:
+                rebuilt_parts.append(part)
+            elif part_fstr and "f" in part_fstr.group(1).lower():
+                rebuilt_parts.append(
+                    re.sub(r"(?<!\{)\{\s*([^{}]+?)\s*\}(?!\})", _quote_fstr_slot, part)
+                )
+            elif part.startswith("shlex.quote("):
+                rebuilt_parts.append(part)
+            else:
+                rebuilt_parts.append(f"shlex.quote(str({part}))")
+        return f"shlex.split({' + '.join(rebuilt_parts)})"
+
+    is_literal = (
+        (clean_cmd.startswith('"') and clean_cmd.endswith('"'))
+        or (clean_cmd.startswith("'") and clean_cmd.endswith("'"))
+    )
+    if is_literal:
+        return f"shlex.split({clean_cmd})"
+
+    return f'shlex.split(" ".join(shlex.quote(t) for t in shlex.split(str({clean_cmd}))))'
+
+
 def _synthesize_line_fix(
     lines: List[str],
     target_line: int,
@@ -111,7 +241,7 @@ def _synthesize_line_fix(
     )
 
     # IaC Dockerfile non-root user hardening (IAC-2-CONTAINER-ROOT)
-    if "IAC-2-CONTAINER-ROOT" in rule_upper or base_name == "dockerfile":
+    if "IAC-2" in rule_upper or (not rule_upper and base_name == "dockerfile"):
         joined_raw = "\n".join(lines)
         if base_name == "dockerfile" or any(
             l.strip().upper().startswith("FROM ") for l in lines
@@ -146,30 +276,88 @@ def _synthesize_line_fix(
     indent = indent_match.group(1) if indent_match else ""
     stripped = orig_line.strip()
     updated_lines = list(lines)
+    has_shell_true = bool(re.search(r"\bshell\s*=\s*True\b", orig_line))
 
-    # 1. RULE-6-SHELL-INJECTION: shell=True -> shlex.split + shell=False; cp.exec -> cp.execFile
-    if "RULE-6-SHELL-INJECTION" in rule_upper or _SHELL_TRUE_FLAG in orig_line:
-        if _SHELL_TRUE_FLAG in orig_line:
+    # 1. RULE-1-TAINT: checked BEFORE RULE-6 so taint sanitization (shlex.quote) is never shadowed by shell=True
+    if "RULE-1-TAINT" in rule_upper:
+        os_sys_m = re.match(
+            r"^(\s*(?:return\s+|[A-Za-z_][A-Za-z0-9_]*\s*=\s*)?)os\.system\s*\((.+)\)\s*$",
+            orig_line,
+        )
+        if os_sys_m:
+            prefix_part = os_sys_m.group(1)
+            cmd_arg = os_sys_m.group(2).strip()
+            safe_argv = _build_shell_argv_expr(cmd_arg, sanitize_taint=True)
+            exec_line = f"{prefix_part}subprocess.run({safe_argv}, {_SHELL_FALSE_FLAG}, check=False)"
+            updated_lines[idx] = exec_line
+            if is_py:
+                updated_lines = _ensure_python_import(updated_lines, "shlex")
+                updated_lines = _ensure_python_import(updated_lines, "subprocess")
+            return (
+                updated_lines,
+                True,
+                "Replaced `os.system()` shell sink with `shlex.quote`-hardened `subprocess.run(..., shell=False)`.",
+            )
+        if re.search(r"\beval\s*\(", orig_line):
+            new_line = re.sub(r"\beval\s*\(", "ast.literal_eval(", orig_line, count=1)
+            updated_lines[idx] = new_line
+            if is_py:
+                updated_lines = _ensure_python_import(updated_lines, "ast")
+            return (
+                updated_lines,
+                True,
+                "Replaced arbitrary code execution `eval()` with safe literal parser `ast.literal_eval()`.",
+            )
+        sub_taint_m = re.search(
+            r"(subprocess\.(?:run|Popen|call|check_output)\s*\()(.+)(\)\s*(?:#.*)?$)",
+            orig_line,
+        )
+        if sub_taint_m:
+            call_open, call_inner, call_close = sub_taint_m.groups()
+            first_arg, rest_args = _split_first_call_arg(call_inner)
+            safe_argv = _build_shell_argv_expr(first_arg, sanitize_taint=True)
+            if re.search(r"\bshell\s*=\s*(?:True|False)\b", rest_args):
+                clean_rest = re.sub(r"\bshell\s*=\s*(?:True|False)\b", _SHELL_FALSE_FLAG, rest_args)
+            else:
+                extra_check = (
+                    ", check=False"
+                    if "run" in call_open and not re.search(r"\bcheck\s*=", rest_args)
+                    else ""
+                )
+                clean_rest = f"{rest_args}, {_SHELL_FALSE_FLAG}{extra_check}"
+            new_line = (
+                orig_line[: sub_taint_m.start()]
+                + f"{call_open}{safe_argv}{clean_rest}{call_close}"
+            )
+            updated_lines[idx] = new_line
+            if is_py and "shlex." in new_line:
+                updated_lines = _ensure_python_import(updated_lines, "shlex")
+            return (
+                updated_lines,
+                True,
+                "Sanitized tainted command interpolations via `shlex.quote` and enforced `shell=False`.",
+            )
+
+    # 2. RULE-6-SHELL-INJECTION: shell=True -> shlex.split(first_arg) + shell=False preserving kwargs; cp.exec -> cp.execFile
+    if "RULE-6-SHELL-INJECTION" in rule_upper or has_shell_true:
+        if has_shell_true:
             subproc_m = re.search(
-                r"(subprocess\.(?:run|Popen|call|check_output)\s*\()(.+?)(,\s*shell\s*=\s*True)",
+                r"(subprocess\.(?:run|Popen|call|check_output)\s*\()(.+)(\)\s*(?:#.*)?$)",
                 orig_line,
             )
             if subproc_m:
-                cmd_expr = subproc_m.group(2).strip()
-                safe_arg = (
-                    cmd_expr
-                    if cmd_expr.startswith("[")
-                    else f"shlex.split({cmd_expr})"
-                )
+                call_open, call_inner, call_close = subproc_m.groups()
+                first_arg, rest_args = _split_first_call_arg(call_inner)
+                safe_arg = _build_shell_argv_expr(first_arg, sanitize_taint=False)
+                clean_rest = re.sub(r"\bshell\s*=\s*True\b", _SHELL_FALSE_FLAG, rest_args)
                 new_line = (
                     orig_line[: subproc_m.start()]
-                    + f"{subproc_m.group(1)}{safe_arg}, {_SHELL_FALSE_FLAG}"
-                    + orig_line[subproc_m.end() :]
+                    + f"{call_open}{safe_arg}{clean_rest}{call_close}"
                 )
             else:
-                new_line = re.sub(r"shell\s*=\s*True", _SHELL_FALSE_FLAG, orig_line)
+                new_line = re.sub(r"\bshell\s*=\s*True\b", _SHELL_FALSE_FLAG, orig_line)
             updated_lines[idx] = new_line
-            if is_py and "shlex.split(" in new_line:
+            if is_py and "shlex." in new_line:
                 updated_lines = _ensure_python_import(updated_lines, "shlex")
             return (
                 updated_lines,
@@ -185,60 +373,6 @@ def _synthesize_line_fix(
                 updated_lines,
                 True,
                 "Replaced shell-spawning `.exec()` with direct process execution `.execFile()`.",
-            )
-
-    # 2. RULE-1-TAINT: os.system(...) -> shlex.quote + subprocess.run(shlex.split(...), shell=False, check=False); eval( -> ast.literal_eval(
-    if "RULE-1-TAINT" in rule_upper:
-        os_sys_m = re.match(
-            r"^(\s*(?:return\s+|[A-Za-z_][A-Za-z0-9_]*\s*=\s*)?)os\.system\s*\((.+)\)\s*$",
-            orig_line,
-        )
-        if os_sys_m:
-            prefix_part = os_sys_m.group(1)
-            cmd_arg = os_sys_m.group(2).strip()
-            guard_line = f"{indent}_safe_cmd = shlex.quote(str({cmd_arg}))"
-            exec_line = (
-                f"{prefix_part}subprocess.run(shlex.split(_safe_cmd), "
-                f"{_SHELL_FALSE_FLAG}, check=False)"
-            )
-            updated_lines[idx : idx + 1] = [guard_line, exec_line]
-            if is_py:
-                updated_lines = _ensure_python_import(updated_lines, "shlex")
-                updated_lines = _ensure_python_import(updated_lines, "subprocess")
-            return (
-                updated_lines,
-                True,
-                "Replaced `os.system()` shell sink with `shlex.quote` + `subprocess.run(..., shell=False)`.",
-            )
-        if re.search(r"\beval\s*\(", orig_line):
-            new_line = re.sub(r"\beval\s*\(", "ast.literal_eval(", orig_line, count=1)
-            updated_lines[idx] = new_line
-            if is_py:
-                updated_lines = _ensure_python_import(updated_lines, "ast")
-            return (
-                updated_lines,
-                True,
-                "Replaced arbitrary code execution `eval()` with safe literal parser `ast.literal_eval()`.",
-            )
-        sub_taint_m = re.match(
-            r"^(\s*(?:return\s+|[A-Za-z_][A-Za-z0-9_]*\s*=\s*)?)subprocess\.(?:run|Popen|call)\s*\((.+)\)\s*$",
-            orig_line,
-        )
-        if sub_taint_m:
-            prefix_part = sub_taint_m.group(1)
-            raw_inner = re.sub(r",\s*shell\s*=\s*(?:True|False)", "", sub_taint_m.group(2)).strip()
-            guard_line = f"{indent}_safe_cmd = shlex.quote(str({raw_inner}))"
-            exec_line = (
-                f"{prefix_part}subprocess.run(shlex.split(_safe_cmd), "
-                f"{_SHELL_FALSE_FLAG}, check=False)"
-            )
-            updated_lines[idx : idx + 1] = [guard_line, exec_line]
-            if is_py:
-                updated_lines = _ensure_python_import(updated_lines, "shlex")
-            return (
-                updated_lines,
-                True,
-                "Sanitized tainted command argument via `shlex.quote` and enforced `shell=False`.",
             )
 
     # 3. RULE-7-SQLI-FORMAT: f-string .execute(f"SELECT ... {var}") -> parameterized ? tuple

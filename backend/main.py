@@ -2287,13 +2287,10 @@ def _finding_matches_remediated_target(
     finding_id: str,
     rule_id: str,
     filepath: str,
-    orig_line: int,
 ) -> bool:
-    """Determines whether an active finding post-scan corresponds to the patched target."""
-    if finding.id == finding_id:
+    """Determines whether a finding matches `finding_id` or the `(rule_id, filepath)` scope."""
+    if finding_id and finding.id == finding_id:
         return True
-    if not rule_id or finding.rule_id != rule_id:
-        return False
     f_fp = (
         finding.best_fix_location.filepath
         if finding.best_fix_location and finding.best_fix_location.filepath
@@ -2309,14 +2306,9 @@ def _finding_matches_remediated_target(
     )
     if not same_file:
         return False
-    if orig_line <= 0:
-        return True
-    f_line = (
-        finding.best_fix_location.line
-        if finding.best_fix_location and finding.best_fix_location.line
-        else (int(finding.path_nodes[-1].get("start_line") or 0) if finding.path_nodes else 0)
-    )
-    return f_line == orig_line
+    if rule_id:
+        return finding.rule_id == rule_id
+    return True
 
 
 @app.get("/api/file")
@@ -2385,15 +2377,14 @@ def remediate_apply(req: RemediateApplyRequest):
         logger.warning("Pre-patch findings lookup degraded: %s", _sanitize_log(pre_err))
 
     orig_finding = next((f for f in pre_findings if f.id == req.finding_id), None)
-    orig_line = (
-        orig_finding.best_fix_location.line
-        if orig_finding and orig_finding.best_fix_location
-        else (
-            int(orig_finding.path_nodes[-1].get("start_line") or 0)
-            if orig_finding and orig_finding.path_nodes
-            else 0
-        )
-    )
+    if orig_finding is None and _cached_findings:
+        orig_finding = next((f for f in _cached_findings if f.id == req.finding_id), None)
+    effective_rule = req.rule_id or (orig_finding.rule_id if orig_finding else "")
+
+    pre_target_matches = [
+        f for f in pre_findings
+        if _finding_matches_remediated_target(f, req.finding_id, effective_rule, req.filepath)
+    ]
 
     try:
         applied = apply_workspace_patch(
@@ -2403,7 +2394,7 @@ def remediate_apply(req: RemediateApplyRequest):
             expected_sha256=req.expected_sha256,
             patched_content=req.patched_content,
             finding_id=req.finding_id,
-            rule_id=req.rule_id,
+            rule_id=effective_rule,
         )
     except FileNotFoundError as fnf_exc:
         raise HTTPException(status_code=404, detail=_sanitize_log(fnf_exc)) from fnf_exc
@@ -2411,8 +2402,10 @@ def remediate_apply(req: RemediateApplyRequest):
         raise HTTPException(status_code=409, detail=_sanitize_log(val_exc)) from val_exc
 
     post_findings: List[Finding] = []
+    scan_executed = False
     scan_degraded = False
     if current_scan_dir and os.path.exists(current_scan_dir):
+        scan_executed = True
         try:
             _scan_res = scan_project(ScanRequest(target_path=current_scan_dir))
             post_findings = [
@@ -2429,16 +2422,23 @@ def remediate_apply(req: RemediateApplyRequest):
             except Exception:
                 post_findings = []
 
-    still_present = any(
-        _finding_matches_remediated_target(
-            f, req.finding_id, req.rule_id, req.filepath, orig_line
+    post_target_matches = [
+        f for f in post_findings
+        if _finding_matches_remediated_target(f, req.finding_id, effective_rule, req.filepath)
+    ]
+    exact_id_present = any(f.id == req.finding_id for f in post_findings)
+    if pre_target_matches:
+        finding_eliminated = (not exact_id_present) and (
+            len(post_target_matches) < len(pre_target_matches)
         )
-        for f in post_findings
-    )
-    is_non_cpg_rule = (req.rule_id or "").upper().startswith(("SCA-", "IAC-"))
-    verified_severed = (not still_present) and (not scan_degraded or is_non_cpg_rule)
-    remaining_count = len(post_findings)
-    fixed_delta = max(0, len(pre_findings) - remaining_count)
+    else:
+        finding_eliminated = (not exact_id_present) and (len(post_target_matches) == 0)
+
+    is_non_cpg_rule = effective_rule.upper().startswith(("SCA-", "IAC-"))
+    can_verify = scan_executed and (not scan_degraded or is_non_cpg_rule)
+    verified_severed = can_verify and finding_eliminated
+    remaining_count = len(post_findings) if scan_executed else len(pre_findings)
+    fixed_delta = max(0, len(pre_findings) - remaining_count) if scan_executed else 0
 
     logger.info(
         "Applied remediation patch %s on %s (severed=%s, remaining=%d)",
