@@ -315,17 +315,30 @@ def run_live_osv_lockfile_scan(
             if vid not in vuln_cache and vid not in needed_vids:
                 needed_vids.append(vid)
 
-    # Hydrate up to 40 uncached vuln details per scan so latency stays fast
-    for vid in needed_vids[:40]:
-        if not re.match(r"^[A-Za-z0-9._-]+$", vid):
-            continue
-        try:
-            v_resp = requests.get(f"{OSV_VULN_URL_PREFIX}{vid}", timeout=5)
-            if v_resp.status_code == 200:
-                vuln_cache[vid] = v_resp.json()
-                cache_dirty = True
-        except Exception:
-            break
+    # Hydrate uncached vuln details concurrently with a strict 3.0s total budget so latency stays sub-second
+    valid_vids = [v for v in needed_vids[:24] if re.match(r"^[A-Za-z0-9._-]+$", v)]
+    if valid_vids:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _fetch_osv_vuln(v_id: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+            try:
+                vr = requests.get(f"{OSV_VULN_URL_PREFIX}{v_id}", timeout=2.5)
+                if vr.status_code == 200:
+                    return v_id, vr.json()
+            except Exception:
+                pass
+            return v_id, None
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futs = [pool.submit(_fetch_osv_vuln, v) for v in valid_vids]
+            try:
+                for fut in as_completed(futs, timeout=3.5):
+                    v_id, v_json = fut.result()
+                    if v_json:
+                        vuln_cache[v_id] = v_json
+                        cache_dirty = True
+            except Exception:
+                pass
 
     if cache_dirty:
         _save_osv_cache(cache_file, cache)

@@ -199,7 +199,14 @@ RULES = [
         "cypher": """
         MATCH (c:Call)
         WHERE (c.name ENDS WITH '.execute' OR c.code CONTAINS 'cursor.execute')
-          AND (c.code CONTAINS 'f"SELECT' OR c.code CONTAINS "f'SELECT" OR c.code CONTAINS 'f"INSERT' OR c.code CONTAINS 'f"UPDATE' OR c.code CONTAINS 'f"DELETE' OR c.code CONTAINS 'SELECT * FROM')
+          AND (
+            c.code CONTAINS 'f"SELECT'
+            OR c.code CONTAINS "f'SELECT"
+            OR c.code CONTAINS 'f"INSERT'
+            OR c.code CONTAINS 'f"UPDATE'
+            OR c.code CONTAINS 'f"DELETE'
+            OR (c.code CONTAINS 'SELECT ' AND (c.code CONTAINS '.format(' OR c.code CONTAINS ' + ' OR c.code CONTAINS ' % '))
+          )
           AND NOT EXISTS {
             MATCH (san:CPGNode {is_sanitizer: true})-[:DFG_FLOWS_TO*1..5]->(c)
           }
@@ -394,28 +401,133 @@ RULES = [
         "owasp_category": "A08:2021 - Software and Data Integrity Failures",
         "cvss_score": 8.6,
         "remediation": "Use JSON or yaml.safe_load() instead of pickle/yaml.load(), enforce JWT signature verification, and replace MD5/SHA1 with SHA-256/Argon2id (or pass usedforsecurity=False for non-security checksums).",
-        "description": "Application invokes unsafe object deserialization (pickle/marshal/yaml.load without SafeLoader), disables JWT signature verification, or uses broken MD5/SHA1 digests without usedforsecurity=False.",
+        "description": "Application invokes unsafe object deserialization (pickle/marshal/shelve/yaml.load without SafeLoader), disables JWT signature verification, or uses broken MD5/SHA1 digests without usedforsecurity=False.",
         "cypher": """
         MATCH (c:Call)
         WHERE (
-            c.name IN ['pickle.loads', 'pickle.load', 'marshal.loads', 'marshal.load', 'jsonpickle.decode']
+            c.name IN ['pickle.loads', 'pickle.load', 'marshal.loads', 'marshal.load', 'jsonpickle.decode', 'shelve.open']
             OR (c.name = 'yaml.load' AND NOT c.code CONTAINS 'SafeLoader' AND NOT c.code CONTAINS 'CSafeLoader')
-            OR (c.name IN ['hashlib.md5', 'hashlib.sha1'] AND NOT c.code CONTAINS 'usedforsecurity=False')
+            OR (c.name IN ['hashlib.md5', 'hashlib.sha1', 'CryptoJS.MD5', 'CryptoJS.SHA1'] AND NOT c.code CONTAINS 'usedforsecurity=False')
             OR (c.name IN ['jwt.decode', 'jose.jwt.decode'] AND c.code CONTAINS 'verify_signature' AND c.code CONTAINS 'False')
           )
         RETURN
           CASE
-            WHEN c.name IN ['hashlib.md5', 'hashlib.sha1'] THEN 'MEDIUM'
+            WHEN c.name IN ['hashlib.md5', 'hashlib.sha1', 'CryptoJS.MD5', 'CryptoJS.SHA1'] THEN 'MEDIUM'
             ELSE 'HIGH'
           END AS severity,
           CASE
-            WHEN c.name IN ['hashlib.md5', 'hashlib.sha1'] THEN 'Weak Cryptographic Digest Without Security Exemption: ' + c.name + '()'
+            WHEN c.name IN ['hashlib.md5', 'hashlib.sha1', 'CryptoJS.MD5', 'CryptoJS.SHA1'] THEN 'Weak Cryptographic Digest Without Security Exemption: ' + c.name + '()'
             WHEN c.name IN ['jwt.decode', 'jose.jwt.decode'] THEN 'Unverified JWT Signature Verification Bypass: ' + c.name + '()'
             ELSE 'Insecure Deserialization of Untrusted Object Stream: ' + c.name + '()'
           END AS title,
           [properties(c)] AS path_nodes,
           [] AS path_edges
         LIMIT 100
+        """
+    },
+    {
+        "id": "RULE-14-CODE-INJECTION",
+        "name": "Dynamic Code Evaluation & Server-Side Template Injection (SSTI)",
+        "cwe_id": "CWE-94",
+        "owasp_category": "A03:2021 - Injection",
+        "cvss_score": 9.8,
+        "remediation": "Replace eval()/exec()/new Function() with safe parsers such as ast.literal_eval() or JSON.parse(), and use pre-compiled Jinja2 templates instead of render_template_string().",
+        "description": "Application invokes dynamic code evaluation (eval, exec, new Function, vm.runInNewContext) or server-side template string compilation on non-constant expressions.",
+        "cypher": """
+        MATCH (c:Call)
+        WHERE (
+            c.name IN ['eval', 'exec', 'render_template_string', 'vm.runInNewContext', 'vm.runInThisContext']
+            OR c.code STARTS WITH 'new Function('
+          )
+          AND NOT c.code STARTS WITH 'eval("'
+          AND NOT c.code STARTS WITH "eval('"
+          AND NOT c.code STARTS WITH 'exec("'
+          AND NOT c.code STARTS WITH "exec('"
+          AND NOT EXISTS {
+            MATCH (san:CPGNode {is_sanitizer: true})-[:DFG_FLOWS_TO*1..5]->(c)
+          }
+        RETURN
+          'CRITICAL' AS severity,
+          'Dynamic Code / Template Execution Sink (CWE-94): ' + c.name + '()' AS title,
+          [properties(c)] AS path_nodes,
+          [] AS path_edges
+        LIMIT 100
+        """
+    },
+    {
+        "id": "RULE-15-XXE-TLS-BYPASS",
+        "name": "XML External Entity (XXE) & TLS Certificate Verification Bypass",
+        "cwe_id": "CWE-611",
+        "owasp_category": "A05:2021 - Security Misconfiguration",
+        "cvss_score": 8.2,
+        "remediation": "Disable external entity resolution (resolve_entities=False or defusedxml) when parsing XML, and enforce TLS certificate validation (verify=True) on all outbound HTTPS requests.",
+        "description": "Application enables XML External Entity (XXE) resolution in XML parsers or explicitly disables TLS certificate chain verification (verify=False / _create_unverified_context).",
+        "cypher": """
+        MATCH (c:Call)
+        WHERE (
+            (c.name CONTAINS 'XMLParser' AND c.code CONTAINS 'resolve_entities=True')
+            OR c.name IN ['xml.dom.minidom.parseString', 'minidom.parseString', 'xml.sax.make_parser']
+            OR (c.code CONTAINS 'verify=False' AND (c.name STARTS WITH 'requests.' OR c.name STARTS WITH 'http_requests.' OR c.name STARTS WITH 'httpx.' OR c.name ENDS WITH '.get' OR c.name ENDS WITH '.post' OR c.name ENDS WITH '.request'))
+            OR c.name IN ['ssl._create_unverified_context', '_create_unverified_context']
+          )
+        RETURN
+          'HIGH' AS severity,
+          CASE
+            WHEN c.code CONTAINS 'verify=False' OR c.name CONTAINS 'unverified_context'
+              THEN 'Improper TLS Certificate Validation Bypass (CWE-295): ' + c.name + '()'
+            ELSE 'XML External Entity (XXE) Unsafe Parser Configuration (CWE-611): ' + c.name + '()'
+          END AS title,
+          [properties(c)] AS path_nodes,
+          [] AS path_edges
+        LIMIT 100
+        """
+    },
+    {
+        "id": "RULE-16-INSECURE-RANDOM-OPEN-REDIRECT",
+        "name": "Weak Cryptographic PRNG for Secrets & Unvalidated Open Redirect",
+        "cwe_id": "CWE-330",
+        "owasp_category": "A02:2021 - Cryptographic Failures",
+        "cvss_score": 6.5,
+        "remediation": "Use cryptographically secure CSPRNG functions (secrets.token_urlsafe(), secrets.choice(), or crypto.randomBytes()) for security tokens/OTPs, and validate redirect URLs against a strict host allowlist.",
+        "description": "Application generates security tokens/OTPs/secrets using predictable non-cryptographic PRNG (random/Math.random) or redirects users to unvalidated URLs controlled by request input.",
+        "cypher": """
+        MATCH (a:Assignment)
+        WHERE (
+            toLower(a.name) CONTAINS 'token'
+            OR toLower(a.name) CONTAINS 'secret'
+            OR toLower(a.name) CONTAINS 'otp'
+            OR toLower(a.name) CONTAINS 'nonce'
+            OR toLower(a.name) CONTAINS 'csrf'
+            OR toLower(a.name) CONTAINS 'reset_code'
+            OR toLower(a.name) CONTAINS 'session_key'
+          )
+          AND (
+            a.code CONTAINS 'random.randint('
+            OR a.code CONTAINS 'random.choice('
+            OR a.code CONTAINS 'random.choices('
+            OR a.code CONTAINS 'random.random('
+            OR a.code CONTAINS 'Math.random()'
+          )
+          AND NOT a.code CONTAINS 'secrets.'
+          AND NOT a.code CONTAINS 'SystemRandom'
+        RETURN
+          'MEDIUM' AS severity,
+          'Cryptographically Weak PRNG in Security Token Assignment (CWE-330): ' + a.name AS title,
+          [properties(a)] AS path_nodes,
+          [] AS path_edges
+        UNION
+        MATCH path = (source:CPGNode {is_source: true})-[:DFG_FLOWS_TO*1..10]->(sink:Call)
+        WHERE NOT source.code CONTAINS 'sys.argv'
+          AND sink.name IN ['RedirectResponse', 'redirect', 'flask.redirect', 'res.redirect', 'NextResponse.redirect']
+          AND NONE(n IN nodes(path) WHERE n.is_sanitizer = true)
+        WITH source, sink, path
+        ORDER BY length(path) ASC
+        WITH source, sink, head(collect(path)) AS shortest_p
+        RETURN
+          'MEDIUM' AS severity,
+          'Unvalidated Open Redirect from Untrusted Input (CWE-601): ' + sink.name + '()' AS title,
+          [n IN nodes(shortest_p) | properties(n)] AS path_nodes,
+          [r IN relationships(shortest_p) | {id: r.id, source: startNode(r).id, target: endNode(r).id, type: type(r)}] AS path_edges
         """
     }
 ]

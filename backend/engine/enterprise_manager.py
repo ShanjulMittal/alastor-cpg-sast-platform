@@ -904,6 +904,7 @@ class EnterpriseManager:
                     "RULE-1-TAINT", "RULE-6-SHELL-INJECTION", "RULE-7-SQLI-FORMAT",
                     "RULE-8-HARDCODED-SECRET", "RULE-9-DOM-XSS", "RULE-10-PATH-TRAVERSAL",
                     "RULE-11-SSRF-URLOPEN", "RULE-13-UNSAFE-DESERIALIZATION-CRYPTO",
+                    "RULE-14-CODE-INJECTION", "RULE-15-XXE-TLS-BYPASS",
                     "SCA-2-LIVE-CVE-LOCKFILE", "IAC-1-COMPOSE-SECRET", "IAC-3-CICD-WORKFLOW-SECURITY"
                 ]
             ),
@@ -937,7 +938,8 @@ class EnterpriseManager:
                 enabled_rule_ids=[
                     "RULE-1-TAINT", "RULE-2-ORPHAN", "RULE-6-SHELL-INJECTION",
                     "RULE-7-SQLI-FORMAT", "RULE-9-DOM-XSS", "RULE-10-PATH-TRAVERSAL",
-                    "RULE-11-SSRF-URLOPEN", "RULE-12-LOG-INJECTION", "RULE-13-UNSAFE-DESERIALIZATION-CRYPTO"
+                    "RULE-11-SSRF-URLOPEN", "RULE-12-LOG-INJECTION", "RULE-13-UNSAFE-DESERIALIZATION-CRYPTO",
+                    "RULE-14-CODE-INJECTION", "RULE-15-XXE-TLS-BYPASS", "RULE-16-INSECURE-RANDOM-OPEN-REDIRECT"
                 ]
             ),
         ]
@@ -1262,6 +1264,9 @@ class EnterpriseManager:
             "RULE-11-SSRF-URLOPEN": "Python / JS / TS",
             "RULE-12-LOG-INJECTION": "Python / FastAPI / Flask",
             "RULE-13-UNSAFE-DESERIALIZATION-CRYPTO": "Python / JS / TS",
+            "RULE-14-CODE-INJECTION": "Python / JS / TS",
+            "RULE-15-XXE-TLS-BYPASS": "Python / XML / HTTPS",
+            "RULE-16-INSECURE-RANDOM-OPEN-REDIRECT": "Python / JS / TS",
         }
         sev_map = {
             "RULE-1-TAINT": "CRITICAL",
@@ -1277,6 +1282,9 @@ class EnterpriseManager:
             "RULE-11-SSRF-URLOPEN": "HIGH",
             "RULE-12-LOG-INJECTION": "LOW",
             "RULE-13-UNSAFE-DESERIALIZATION-CRYPTO": "HIGH",
+            "RULE-14-CODE-INJECTION": "CRITICAL",
+            "RULE-15-XXE-TLS-BYPASS": "HIGH",
+            "RULE-16-INSECURE-RANDOM-OPEN-REDIRECT": "MEDIUM",
         }
         for r in RULES:
             rid = r["id"]

@@ -567,6 +567,21 @@ def run_assertions():
                 'def safe_sql_lookup(cursor, raw_uid: str):\n'
                 '    uid_int = int(raw_uid)\n'
                 '    cursor.execute(f"SELECT id FROM accounts WHERE id = {uid_int}")\n'
+                '    cursor.execute("SELECT id FROM accounts WHERE id = ?", (raw_uid,))\n'
+                '\n'
+                'def unsafe_code_and_tls(raw_expr: str):\n'
+                '    res = eval(raw_expr)\n'
+                '    tls_resp = requests.get("https://api.example.com/status", verify=False, timeout=3)\n'
+                '    otp_token = random.randint(100000, 999999)\n'
+                '    return res, tls_resp, otp_token\n'
+                '\n'
+                'def safe_code_and_tls(raw_expr: str):\n'
+                '    import ast\n'
+                '    import secrets\n'
+                '    res = ast.literal_eval(raw_expr)\n'
+                '    tls_resp = requests.get("https://api.example.com/status", verify=True, timeout=3)\n'
+                '    otp_token = secrets.token_urlsafe(32)\n'
+                '    return res, tls_resp, otp_token\n'
             )
 
         # 2. Vulnerable pinned dependency in requirements.txt (requests==2.32.3 -> real OSV CVE + imported in service_api.py)
@@ -624,7 +639,16 @@ def run_assertions():
             "Assertion S FAILED: Expected RULE-8-HARDCODED-SECRET to detect GraphDatabase.driver hardcoded tuple auth!"
         )
         assert len(by_rule.get("RULE-7-SQLI-FORMAT", [])) == 0, (
-            f"Assertion S FAILED: Sanitized int(raw_uid) SQL query caused a False Positive in RULE-7-SQLI-FORMAT: {by_rule.get('RULE-7-SQLI-FORMAT')}"
+            f"Assertion S FAILED: Sanitized int(raw_uid) or parameterized SQL query caused a False Positive in RULE-7-SQLI-FORMAT: {by_rule.get('RULE-7-SQLI-FORMAT')}"
+        )
+        assert len(by_rule.get("RULE-14-CODE-INJECTION", [])) == 1, (
+            f"Assertion S FAILED: Expected 1 RULE-14-CODE-INJECTION TP (eval) and 0 FP on ast.literal_eval, got: {by_rule.get('RULE-14-CODE-INJECTION')}"
+        )
+        assert len(by_rule.get("RULE-15-XXE-TLS-BYPASS", [])) == 1, (
+            f"Assertion S FAILED: Expected 1 RULE-15-XXE-TLS-BYPASS TP (verify=False) and 0 FP on verify=True, got: {by_rule.get('RULE-15-XXE-TLS-BYPASS')}"
+        )
+        assert len(by_rule.get("RULE-16-INSECURE-RANDOM-OPEN-REDIRECT", [])) == 1, (
+            f"Assertion S FAILED: Expected 1 RULE-16-INSECURE-RANDOM-OPEN-REDIRECT TP (random.randint) and 0 FP on secrets.token_urlsafe, got: {by_rule.get('RULE-16-INSECURE-RANDOM-OPEN-REDIRECT')}"
         )
         sca2_list = by_rule.get("SCA-2-LIVE-CVE-LOCKFILE", [])
         assert len(sca2_list) >= 1 and sca2_list[0].get("reachability_status") == "REACHABLE", (
@@ -821,6 +845,22 @@ def run_assertions():
         raise AssertionError(
             f"Assertion P FAILED: Expected 0 findings on self-audit of {ROOT_DIR}, but found {len(self_findings)}: {summary_str}"
         )
+    self_intel_resp = requests.post(
+        f"{BACKEND_URL}/api/vuln-intel/extract",
+        json={
+            "sources": ["osv", "nvd", "cisa_owasp"],
+            "custom_urls": [],
+            "auto_scan_code": True,
+        },
+        timeout=30,
+    )
+    assert self_intel_resp.status_code == 200, f"Assertion P FAILED: Web Intel on self-audit returned {self_intel_resp.status_code}"
+    self_intel_data = self_intel_resp.json()
+    assert self_intel_data.get("code_findings_created") == 0, (
+        f"Assertion P FAILED: Expected 0 Web Intel false positives on cpg-sast-platform, got {self_intel_data.get('code_findings_created')}: "
+        f"{[f.get('rule_id') + '@' + f.get('path_nodes', [{}])[0].get('filepath', '') + ':' + str(f.get('path_nodes', [{}])[0].get('start_line', '')) for f in self_intel_data.get('code_findings', [])[:10]]}"
+    )
+
     self_report_resp = requests.get(f"{BACKEND_URL}/api/export/report?format=json", timeout=20)
     assert self_report_resp.status_code == 200
     self_report_data = self_report_resp.json()
@@ -830,7 +870,7 @@ def run_assertions():
     dd_self = requests.get(f"{BACKEND_URL}/api/analytics/deep-dive", timeout=20).json()
     assert dd_self.get("project_name") == "cpg-sast-platform", f"Assertion P FAILED: Deep dive project_name should be 'cpg-sast-platform', got {dd_self.get('project_name')}"
     log(
-        f"PASS: Assertion P (Self-Audit of cpg-sast-platform verified: 0 findings across SAST, SCA, and IaC; active application '{dd_self.get('project_name')}' with {self_scan_resp.json().get('files_scanned')} files scanned)."
+        f"PASS: Assertion P (Self-Audit of cpg-sast-platform verified: 0 findings across SAST, SCA, IaC & Web Intel; active application '{dd_self.get('project_name')}' with {self_scan_resp.json().get('files_scanned')} files scanned)."
     )
 
     # 16. Assertion Q: Saved Scan Snapshot, Last Scanned Timestamp & Continuous Track Changes Mode

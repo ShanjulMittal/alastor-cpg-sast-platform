@@ -43,7 +43,8 @@ SANITIZER_PATTERNS = {
     "int", "float", "bool", "shlex.quote", "html.escape", "bleach.clean", "urllib.parse.quote",
     "DOMPurify.sanitize", "encodeURIComponent", "esc", "escapeHtml",
     "os.path.commonpath", "os.path.basename", "path.basename", "secure_filename",
-    "yaml.safe_load", "uuid.uuid4"
+    "yaml.safe_load", "uuid.uuid4", "ast.literal_eval",
+    "defusedxml.ElementTree.fromstring", "secrets.token_urlsafe", "secrets.token_hex"
 }
 
 HTTP_ROUTE_DECORATOR_TOKENS = (

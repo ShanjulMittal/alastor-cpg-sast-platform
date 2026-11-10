@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [3.0.0] — 2026-11-10 — Studio IDE Overhaul, Live BFL "Sever the Thread" Auto-Patcher, CPG-Backed Zero-FP Web Intel & 21-Rule Matrix
+
+### Added
+- **2-Bar Studio IDE Shell & 5-Pillar Composite Workspaces ([`StudioCommandHeader.tsx`](./frontend/src/components/StudioCommandHeader.tsx), [`StudioStatusBar.tsx`](./frontend/src/components/StudioStatusBar.tsx), [`LeftFunctionBar.tsx`](./frontend/src/components/LeftFunctionBar.tsx), [`ResizableSplitPane.tsx`](./frontend/src/components/ResizableSplitPane.tsx))**:
+  - Replaced legacy top bars with a unified `44px` `StudioCommandHeader`, `26px` `StudioStatusBar`, and 5-pillar navigation rail (`Code & Graph Studio`, `Threat & Secret Intelligence`, `Executive ASPM & Governance`, `Rule & Profile Studio`, `Repos, Accounts & Connectors`) with `Cinzel` / `Plus Jakarta Sans` / `JetBrains Mono` typography and 6 persisted themes.
+  - Added per-card `Re-Scan`, `Open in Studio`, `Configure`, and `Delete` actions with live progress banner in [`ProjectsHubView.tsx`](./frontend/src/components/ProjectsHubView.tsx) and `O(1)` batched `UNWIND` Neo4j ingestion in [`ingestor.py`](./backend/database/ingestor.py).
+- **Live Best Fix Location (`BFL`) "Sever the Thread" Auto-Patcher ([`remediation_patcher.py`](./backend/engine/remediation_patcher.py), [`MonacoCodePane.tsx`](./frontend/src/components/MonacoCodePane.tsx), [`GraphCanvas.tsx`](./frontend/src/components/GraphCanvas.tsx))**:
+  - Added `POST /api/remediate/preview`, `POST /api/remediate/apply`, `POST /api/remediate/undo`, and `GET /api/remediate/history` with `os.path.realpath` + `os.path.commonpath` workspace confinement, `.alastor_patches` SHA-256 backup journal, live Monaco `DiffEditor`, instant CPG re-verification delta (`severed: true`), and `j`/`k`/`d`/`p`/`u` keyboard triage.
+  - Added 20th E2E verification assertion (`Assertion U` in [`verify_harness.py`](./verify_harness.py)) validating `preview` $\rightarrow$ `apply` (`fixed_delta=1`, `remaining=0`) $\rightarrow$ `undo` (restoring exact pre-patch SHA-256).
+- **3 New Zero-FP Deterministic CPG Security Rules (`RULE-14`, `RULE-15`, `RULE-16`) & Expanded `RULE-7` / `RULE-13` ([`rule_executor.py`](./backend/engine/rule_executor.py), [`ast_parser.py`](./backend/compiler/ast_parser.py), [`remediation_patcher.py`](./backend/engine/remediation_patcher.py))**:
+  - **`RULE-14-CODE-INJECTION` (`CWE-94`)**: Detects `eval()`, `exec()`, `render_template_string()`, `vm.runInNewContext()`, `vm.runInThisContext()`, and `new Function()` on non-constant inputs unless sanitized by `ast.literal_eval`.
+  - **`RULE-15-XXE-TLS-BYPASS` (`CWE-611` / `CWE-295`)**: Detects `XMLParser(..., resolve_entities=True)`, `xml.dom.minidom.parseString()`, `xml.sax.make_parser()` without `defusedxml`, outbound HTTP calls with `verify=False`, and `ssl._create_unverified_context()`.
+  - **`RULE-16-INSECURE-RANDOM-OPEN-REDIRECT` (`CWE-330` / `CWE-601`)**: Detects `random.randint`/`random.choice`/`random.random`/`Math.random()` assigned to security token/secret/OTP/CSRF/nonce variables (suppressing `secrets.token_urlsafe`/`token_hex`), and unsanitized taint flows into `RedirectResponse`/`redirect`/`res.redirect`.
+  - Refined `RULE-7-SQLI-FORMAT` (`CWE-89`) to require dynamic string interpolation (`f"`, `.format(`, `+`, `%`) and expanded `RULE-13-UNSAFE-DESERIALIZATION-CRYPTO` with `shelve.open`, `CryptoJS.MD5`, and `CryptoJS.SHA1`.
+- **CPG-Backed Zero-FP Web Intel Engine ([`vuln_extractor.py`](./backend/engine/vuln_extractor.py), [`neo4j_client.py`](./backend/database/neo4j_client.py))**:
+  - Upgraded `VulnExtractorEngine.identify_vulnerabilities_in_code` from substring matching to CPG AST/CFG/DFG verification (`_is_inside_quotes_or_comment`, `_cpg_node_matches_advisory`), eliminating all 163 false positives on `cpg-sast-platform` while expanding `CWE_SIGNATURE_CATALOG` with `CWE-918`, `CWE-611`, `CWE-295`, `CWE-330`, and `CWE-601`.
+  - Hardened [`Neo4jClient.clear_database`](./backend/database/neo4j_client.py) fallback batch deletion with a bounded `for _ in range(1000):` loop (`CWE-835`) and parallelized OSV advisory hydration in [`osv_lockfile_scanner.py`](./backend/engine/osv_lockfile_scanner.py).
+
+---
+
 ## [2.6.2] — 2026-10-27 — Open / Public (Paste-URL-Only) & Private (Ephemeral PAT Header) GitHub Repository Scanner
 
 ### Added

@@ -599,8 +599,8 @@ def _synthesize_line_fix(
                     "Parameterized logger call and stripped CR/LF (`\\r`, `\\n`) to prevent CWE-117 log forging.",
                 )
 
-    # 9. RULE-13: yaml.load -> yaml.safe_load, hashlib.md5/sha1 -> hashlib.sha256, pickle.loads -> json.loads
-    if "RULE-13" in rule_upper:
+    # 9. RULE-13 / EXT-CWE-502 / EXT-CWE-328: yaml.load -> yaml.safe_load, hashlib.md5/sha1 -> hashlib.sha256, pickle.loads -> json.loads
+    if "RULE-13" in rule_upper or "CWE-502" in rule_upper or "CWE-328" in rule_upper:
         if "yaml.load(" in orig_line:
             updated_lines[idx] = orig_line.replace("yaml.load(", "yaml.safe_load(")
             return (
@@ -628,6 +628,58 @@ def _synthesize_line_fix(
                 True,
                 "Replaced unsafe `pickle` deserialization with safe `json` parsing.",
             )
+
+    # 9b. RULE-14-CODE-INJECTION / EXT-CWE-94: eval/exec -> ast.literal_eval
+    if "RULE-14" in rule_upper or "CWE-94" in rule_upper:
+        if re.search(r"\b(?:eval|exec)\s*\(", orig_line):
+            new_line = re.sub(r"\b(?:eval|exec)\s*\(", "ast.literal_eval(", orig_line, count=1)
+            updated_lines[idx] = new_line
+            if is_py:
+                updated_lines = _ensure_python_import(updated_lines, "ast")
+            return (
+                updated_lines,
+                True,
+                "Replaced dynamic code execution (`eval`/`exec`) with safe literal parser `ast.literal_eval()`.",
+            )
+
+    # 9c. RULE-15-XXE-TLS-BYPASS / EXT-CWE-611 / EXT-CWE-295: verify=False -> verify=True, resolve_entities=True -> resolve_entities=False
+    if "RULE-15" in rule_upper or "CWE-611" in rule_upper or "CWE-295" in rule_upper:
+        if "verify=False" in orig_line:
+            updated_lines[idx] = orig_line.replace("verify=False", "verify=True")
+            return (
+                updated_lines,
+                True,
+                "Enforced TLS certificate validation (`verify=True`) on outbound HTTPS request.",
+            )
+        if "resolve_entities=True" in orig_line:
+            updated_lines[idx] = orig_line.replace("resolve_entities=True", "resolve_entities=False")
+            return (
+                updated_lines,
+                True,
+                "Disabled external entity resolution (`resolve_entities=False`) to prevent XXE.",
+            )
+        if "ssl._create_unverified_context(" in orig_line:
+            updated_lines[idx] = orig_line.replace(
+                "ssl._create_unverified_context(", "ssl.create_default_context("
+            )
+            return (
+                updated_lines,
+                True,
+                "Replaced unverified SSL context with `ssl.create_default_context()`.",
+            )
+
+    # 9d. RULE-16-INSECURE-RANDOM-OPEN-REDIRECT / EXT-CWE-330 / EXT-CWE-601
+    if "RULE-16" in rule_upper or "CWE-330" in rule_upper or "CWE-601" in rule_upper:
+        if any(r_fn in orig_line for r_fn in ("random.randint(", "random.choice(", "random.random(")):
+            lhs_m = re.match(r"^(\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*).+$", orig_line)
+            if lhs_m and is_py:
+                updated_lines[idx] = f"{lhs_m.group(1)}secrets.token_urlsafe(32)"
+                updated_lines = _ensure_python_import(updated_lines, "secrets")
+                return (
+                    updated_lines,
+                    True,
+                    "Replaced predictable PRNG call with cryptographically secure `secrets.token_urlsafe(32)`.",
+                )
 
     # 10. SCA-1-MANIFEST-AUDIT: pin floating ^ / ~ / >= version ranges in package.json or requirements.txt
     if "SCA-1-MANIFEST-AUDIT" in rule_upper:

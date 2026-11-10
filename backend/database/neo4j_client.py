@@ -119,7 +119,7 @@ class Neo4jClient:
                 )
             except Exception as apoc_err:
                 logger.warning("APOC periodic iterate failed (%s), falling back to chunked Cypher delete.", apoc_err)
-                while True:
+                for _ in range(1000):
                     res = session.run("MATCH (n) WITH n LIMIT 10000 DETACH DELETE n RETURN count(n) AS deleted")
                     rec = res.single()
                     if not rec or rec["deleted"] == 0:

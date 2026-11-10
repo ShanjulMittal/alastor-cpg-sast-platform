@@ -2,14 +2,14 @@
 
 <img src="./docs/screenshots/alastor_demon_logo.jpg" alt="ALASTOR Mythological Daimon Crest" width="190" />
 
-# ALASTOR (`Ἀλάστωρ`) `v2.6.2`
+# ALASTOR (`Ἀλάστωρ`) `v3.0.0`
 
-### **The Relentless Open-Source Code Property Graph (CPG), Zero-Noise SAST, Public & Private GitHub Repo Scanner, Live Reachable SCA, CI/CD & IaC, Secret Vault, STRIDE Threat Modeling & Executive ASPM Platform**
+### **The Relentless Open-Source Code Property Graph (CPG), Zero-Noise SAST, Live BFL "Sever the Thread" Auto-Patcher, Public & Private GitHub Repo Scanner, Live Reachable SCA, CI/CD & IaC, Secret Vault, STRIDE Threat Modeling & Executive ASPM Platform**
 
 *Stop drowning in regex false positives and six-figure SaaS lock-in. Paste any GitHub URL or select a local repo to compile your codebase into a mathematical **AST + CFG + DFG + Call Graph** inside **Neo4j** — 100% locally on your own hardware.*
 
-[![Version: v2.6.2 Enterprise](https://img.shields.io/badge/Release-v2.6.2%20Enterprise-7c3aed?style=for-the-badge)](./CHANGELOG.md)
-[![Self-Audit: 0 Findings (19/19 Pass)](https://img.shields.io/badge/Self--Audit-0%20Findings%20(19%2F19%20Pass)-10b981?style=for-the-badge)](./verify_harness.py)
+[![Version: v3.0.0 Studio Enterprise](https://img.shields.io/badge/Release-v3.0.0%20Studio%20Enterprise-7c3aed?style=for-the-badge)](./CHANGELOG.md)
+[![Self-Audit: 0 Findings (20/20 Pass)](https://img.shields.io/badge/Self--Audit-0%20Findings%20(20%2F20%20Pass)-10b981?style=for-the-badge)](./verify_harness.py)
 [![GitHub Scanner: Public URL & Private PAT](https://img.shields.io/badge/GitHub%20Scanner-Public%20URL%20%26%20Private%20PAT-2563eb?style=for-the-badge)](#-1c-instant-github-repository-scanner--open--public-paste-url-only-vs-private-pat-auth-required)
 [![False Positives: 0% AST-Verified](https://img.shields.io/badge/False%20Positives-0%25%20AST--Verified-059669?style=for-the-badge)](./backend/compiler/ast_parser.py)
 [![Semgrep Pro/OSS Parity: 0/0 Clean](https://img.shields.io/badge/Semgrep%20Pro%20%26%20OSS%20Audit-0%20Findings-06b6d4?style=for-the-badge)](./CHANGELOG.md)
@@ -26,7 +26,7 @@
 [**⚔️ vs. Semgrep / Checkmarx / Snyk**](#️-head-to-head-competitive-benchmark) •
 [**🧠 7-Pass CPG Architecture**](#-compiler-grade-7-pass-cpg-architecture) •
 [**📸 Complete 31-Screen Visual Tour**](#-complete-visual-tour--every-option-module-graph--modal) •
-[**🛡️ All 18 Security Rules**](#️-complete-18-rule-deterministic-security-matrix) •
+[**🛡️ All 21 Security Rules**](#️-complete-21-rule-deterministic-security-matrix) •
 [**📖 Full Master SOP**](./docs/ALASTOR_Master_SOP_and_Product_Guide.md)
 
 </div>
@@ -315,7 +315,7 @@ Prefer crisp light mode for boardroom presentations or PDF reports? Toggle in 1 
 
 ---
 
-## 🛡️ Complete 18-Rule Deterministic Security Matrix
+## 🛡️ Complete 21-Rule Deterministic Security Matrix
 
 | Rule ID | Engine | Severity | MITRE CWE | Vulnerability / Control Audited | Zero-FP Deterministic Proof |
 | :--- | :---: | :---: | :---: | :--- | :--- |
@@ -325,13 +325,16 @@ Prefer crisp light mode for boardroom presentations or PDF reports? Toggle in 1 
 | **`RULE-4-INFINITE-LOOP`** | `SAST (CPG)` | `HIGH` | `CWE-835` | Non-Terminating Infinite Loop (`DoS` Risk) | `CFG_NEXT` loop back-edge without reachable `break` / `return` |
 | **`RULE-5-UNREACHABLE`** | `SAST (CPG)` | `MEDIUM` | `CWE-561` | Unreachable Dead Code / Orphaned Cleanup Logic | Statements following unconditional `return`, `raise`, or `break` |
 | **`RULE-6-SHELL-INJECTION`** | `SAST (CPG)` | `CRITICAL` | `CWE-78` | Unsafe Subprocess Shell Execution (`shell=True`) | AST argument inspection of `subprocess.run/Popen/call(..., shell=True)` |
-| **`RULE-7-SQLI-FORMAT`** | `SAST (CPG)` | `CRITICAL` | `CWE-89` | Format-String / Concatenated SQL & Cypher Injection | Dynamic string formatting in `.execute()` without `int()` coercion sanitizer |
+| **`RULE-7-SQLI-FORMAT`** | `SAST (CPG)` | `CRITICAL` | `CWE-89` | Format-String / Concatenated SQL & Cypher Injection | Dynamic string formatting (`f"`, `.format(`, `+`, `%`) in `.execute()` without `int()` coercion |
 | **`RULE-8-HARDCODED-SECRET`** | `SAST + Secret` | `HIGH` | `CWE-798` | Hardcoded API Keys, JWT Secrets, DB Auth & Cloud Tokens (`AKIA`, `ghp_`, `sk_`, PEM) | AST literal + SDK auth driver + Shannon entropy + placeholder exclusion |
 | **`RULE-9-DOM-XSS`** | `SAST (CPG)` | `HIGH` | `CWE-79` | DOM-Based XSS & Unsanitized HTML Sinks (`innerHTML`, `document.write`) | Dynamic expression flowing into browser DOM HTML/script sinks |
 | **`RULE-10-PATH-TRAVERSAL`** | `SAST (CPG)` | `HIGH` | `CWE-22` | Inter-Procedural Arbitrary File Read/Write/Delete (`open`, `rmtree`, `fs.*`) | Suppresses **only** AST-verified `commonpath` / `basename` / `is_relative_to` confinement |
 | **`RULE-11-SSRF-URLOPEN`** | `SAST (CPG)` | `HIGH` / `MED` | `CWE-918` | Server-Side Request Forgery (`urllib.request.urlopen`, `requests.*`, `httpx.*`, `axios.*`) | Suppresses **only** AST-verified `ipaddress` private-IP rejection or constant HTTPS origin |
 | **`RULE-12-LOG-INJECTION`** | `SAST (CPG)` | `LOW` | `CWE-117` | Tainted CR/LF Log Forging (`logger.info/warning/error`) | Suppresses **only** AST-verified `\r` / `\n` neutralization helpers |
-| **`RULE-13-UNSAFE-DESERIALIZATION-CRYPTO`** | `SAST (CPG)` | `HIGH` / `MED` | `CWE-502` / `CWE-327` | Unsafe `pickle`/`marshal`/`yaml.load`, Unverified JWT, Weak `md5`/`sha1` | Verifies `SafeLoader`, `verify_signature`, and `usedforsecurity=False` |
+| **`RULE-13-UNSAFE-DESERIALIZATION-CRYPTO`** | `SAST (CPG)` | `HIGH` / `MED` | `CWE-502` / `CWE-328` | Unsafe `pickle`/`marshal`/`shelve.open`/`yaml.load`, Unverified JWT, Weak `md5`/`sha1` | Verifies `SafeLoader`, `verify_signature`, and `usedforsecurity=False` |
+| **`RULE-14-CODE-INJECTION`** | `SAST (CPG)` | `CRITICAL` | `CWE-94` | Dynamic Code & SSTI Evaluation (`eval`, `exec`, `render_template_string`, `vm.runInNewContext`) | Non-constant expression in dynamic code/template sink unless `ast.literal_eval` |
+| **`RULE-15-XXE-TLS-BYPASS`** | `SAST (CPG)` | `HIGH` | `CWE-611` / `CWE-295` | XML External Entity (`XXE`) Expansion & Disabled TLS Verification (`verify=False`, `_create_unverified_context`) | Suppresses `defusedxml` / `resolve_entities=False` and `verify=True` |
+| **`RULE-16-INSECURE-RANDOM-OPEN-REDIRECT`** | `SAST (CPG)` | `MEDIUM` / `HIGH` | `CWE-330` / `CWE-601` | Weak PRNG (`random.*` / `Math.random`) for Security Tokens & Unvalidated Open Redirect | Verifies security-token variable context (`secrets.token_urlsafe`) & taint to redirect sink |
 | **`SCA-1-MANIFEST-AUDIT`** | `SCA` | `MEDIUM` | `CWE-1395` | Unpinned / Floating SemVer Dependencies (`^`, `~`, `*`, `>=`) | Exact manifest parser across `package.json` & `requirements.txt` |
 | **`SCA-2-LIVE-CVE-LOCKFILE`** | `SCA + CPG` | `CRIT`–`MED` | `CWE-1395` | Live `OSV.dev` Direct & Transitive Lockfile CVEs + CPG Import Reachability | Batch OSV API lookup + Neo4j CPG `Import` AST cross-check + patched version |
 | **`IAC-1-COMPOSE-SECRET`** | `IaC` | `HIGH` | `CWE-798` | Plaintext Credentials in `docker-compose.yml` / Kubernetes Manifests | Environment block parser flagging hardcoded DB/service passwords |
@@ -414,9 +417,9 @@ curl -X POST http://127.0.0.1:8000/api/scan \
 
 ---
 
-## 🧪 Zero-Trust Proof: Run the 19-Assertion Autonomous Self-Audit
+## 🧪 Zero-Trust Proof: Run the 20-Assertion Autonomous Self-Audit
 
-Don't just take our word for it. ALASTOR ships with an autonomous end-to-end verification suite ([`verify_harness.py`](./verify_harness.py)) that boots the live CPG pipeline, verifies all **19 security assertions** (including `Assertion S` proving **100% True Positive detection and `0%` False Positive suppression** across sanitized vs. unsanitized endpoints, `Assertion T` verifying **Open/Public GitHub URL-only cloning + Private Repo `401` PAT enforcement**, live OSV CVE reachability, STRIDE counts, RACI Golden Rules, CycloneDX v1.5 SBOM, Multi-Tenant RBAC, and SARIF v2.1.0), and concludes by **scanning ALASTOR's own production codebase (`cpg-sast-platform`) — asserting `0` unpatched vulnerabilities**:
+Don't just take our word for it. ALASTOR ships with an autonomous end-to-end verification suite ([`verify_harness.py`](./verify_harness.py)) that boots the live CPG pipeline, verifies all **20 security assertions** (including `Assertion S` proving **100% True Positive detection and `0%` False Positive suppression** across sanitized vs. unsanitized endpoints for `RULE-8` through `RULE-16`, `Assertion T` verifying **Open/Public GitHub URL-only cloning + Private Repo `401` PAT enforcement**, `Assertion U` verifying **Live BFL Remediation (`preview` $\rightarrow$ `apply` severing the CPG taint path $\rightarrow$ `undo` restoring exact SHA-256)**, live OSV CVE reachability, STRIDE counts, RACI Golden Rules, CycloneDX v1.5 SBOM, Multi-Tenant RBAC, and SARIF v2.1.0), and concludes by **scanning ALASTOR's own production codebase (`cpg-sast-platform`) across both Core CPG and Web Intel — asserting `0` unpatched vulnerabilities**:
 
 ```powershell
 # Windows PowerShell
@@ -428,8 +431,8 @@ Don't just take our word for it. ALASTOR ships with an autonomous end-to-end ver
 
 Expected result:
 ```text
-[PASS] 19 / 19 E2E Enterprise Assertions Verified (100%)
-[PASS] Self-Audit of cpg-sast-platform: 0 Active Findings (SAST: 0, SCA: 0, IaC: 0, Secrets: 0)
+[PASS] 20 / 20 E2E Enterprise Assertions Verified (100%)
+[PASS] Self-Audit of cpg-sast-platform: 0 Active Findings (SAST: 0, SCA: 0, IaC: 0, Secrets: 0, Web Intel: 0)
 ```
 
 ---
@@ -438,6 +441,7 @@ Expected result:
 
 | Export / API Endpoint | Standard / Format | Use Case |
 | :--- | :--- | :--- |
+| `POST /api/remediate/preview` / `apply` / `undo` | **Live BFL Patch & SHA-256 Undo Journal** | Preview unified diff, apply 1-click BFL chokepoint patch, re-verify CPG taint severance, or revert via SHA-256 backup |
 | `POST /api/github/verify-repo` | **GitHub / Git Remote Pre-Flight JSON** | Verify `public` vs. `private` visibility, default branch, language, and PAT access before cloning |
 | `POST /api/scan` & `POST /api/scan/track-changes` | **Public URL / Private PAT / Local Scan** | Scan local paths, Open/Public Git URLs (zero token), or Private repos (`GIT_CONFIG_*` header auth + delta tracking) |
 | `GET /api/export/sarif` | **OASIS SARIF `v2.1.0`** | Upload directly to **GitHub Advanced Security Code Scanning**, Azure DevOps, or VS Code SARIF Viewer |
@@ -452,7 +456,8 @@ Expected result:
 
 | Version | Date | Key Milestones |
 | :--- | :---: | :--- |
-| **`v2.6.2`** | **2026-10-27** | **1-Click GitHub Repository Scanner (`Open / Public` Paste-URL-Only with zero token + `Private` PAT-authenticated mode via ephemeral `GIT_CONFIG_*` HTTP headers), pre-flight `POST /api/github/verify-repo` visibility & branch detector, `.alastor_vault` local credential vault for 1-click `Re-Scan & Track Changes`, and 19/19 Self-Audit pass.** |
+| **`v3.0.0`** | **2026-11-10** | **Studio IDE Overhaul (`StudioCommandHeader` + `StudioStatusBar` + 5-Pillar Composite Workspaces), Live BFL `"Sever the Thread"` Auto-Patcher (`POST /api/remediate/preview`, `/apply`, `/undo` with SHA-256 journal & instant CPG re-verification), 3 New Zero-FP CPG Rules (`RULE-14-CODE-INJECTION`, `RULE-15-XXE-TLS-BYPASS`, `RULE-16-INSECURE-RANDOM-OPEN-REDIRECT`), CPG-Backed Zero-FP Web Intel Engine (`0` FPs on self-audit), `O(1)` UNWIND Neo4j Batch Ingestion, and `20/20` E2E Self-Audit pass.** |
+| **`v2.6.2`** | 2026-10-27 | 1-Click GitHub Repository Scanner (`Open / Public` Paste-URL-Only with zero token + `Private` PAT-authenticated mode via ephemeral `GIT_CONFIG_*` HTTP headers), pre-flight `POST /api/github/verify-repo` visibility & branch detector, `.alastor_vault` local credential vault for 1-click `Re-Scan & Track Changes`, and 19/19 Self-Audit pass. |
 | **`v2.6.1`** | 2026-10-25 | AST-Verified Inter-Procedural Sanitizer Summary Engine (`0%` FP on custom helpers), `for`-loop iterator taint, call-site-routed inter-procedural DFG, DNS/IP SSRF guards, UUID-isolated scan sandboxes, and 100% Semgrep Pro & OSS `0`-finding parity. |
 | **`v2.6.0`** | 2026-10-25 | Live `OSV.dev` Lockfile CVE + CPG Import Reachability (`SCA-2`), GitHub Actions CI/CD Scanner (`IAC-3`), Inter-Procedural Route Taint (`RULE-10` Path Traversal, `RULE-11` SSRF, `RULE-12` Log Injection, `RULE-13` Deserialization/Crypto), Sanitizer-Aware SQLi (`RULE-7`), and Cloud/SDK Secret Hunter (`RULE-8`). |
 | **`v2.5.0`** | 2026-10-22 | Desktop Enterprise Shell (`AppMenuBar` + `LeftFunctionBar`), STRIDE Count & Observation Matrix (`✔ OK` vs `✖ Issue`), Secret Keys Vault, Rule Engine Profiles, Multi-Tenant RBAC Accounts, Cross-File Call Graph (`:CALLS`), Entrypoints Graph, and Decluttered 360° Spider Map. |

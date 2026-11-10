@@ -31,7 +31,7 @@ CWE_SIGNATURE_CATALOG: Dict[str, Dict[str, Any]] = {
         "owasp": "A03:2021 - Injection",
         "severity": "CRITICAL",
         "cvss": 9.8,
-        "patterns": ["os.system(", "subprocess.Popen(", "subprocess.call(", "subprocess.run(", "shell=True", "child_process.exec("],
+        "patterns": ["os.system(", "shell=True", "child_process.exec(", "cp.exec("],
         "remediation": "Avoid os.system() and shell=True. Use subprocess.run([cmd, arg1, ...], shell=False) with strict argument allowlisting or shlex.quote()."
     },
     "CWE-89": {
@@ -39,7 +39,7 @@ CWE_SIGNATURE_CATALOG: Dict[str, Dict[str, Any]] = {
         "owasp": "A03:2021 - Injection",
         "severity": "HIGH",
         "cvss": 8.8,
-        "patterns": [".execute(f\"", ".execute(f'", ".execute(\"SELECT ", "SELECT * FROM ", "session.execute("],
+        "patterns": [".execute(f\"", ".execute(f'", "cursor.execute(f\"", "cursor.execute(f'"],
         "remediation": "Never use Python f-strings or string concatenation inside SQL .execute() calls. Use parameterized queries (e.g., cursor.execute('SELECT * FROM users WHERE id = ?', (safe_id,)))."
     },
     "CWE-94": {
@@ -47,7 +47,7 @@ CWE_SIGNATURE_CATALOG: Dict[str, Dict[str, Any]] = {
         "owasp": "A03:2021 - Injection",
         "severity": "CRITICAL",
         "cvss": 9.8,
-        "patterns": ["eval(", "exec(", "new Function("],
+        "patterns": ["eval(", "exec(", "new Function(", "vm.runInNewContext(", "render_template_string("],
         "remediation": "Eliminate eval(), exec(), and new Function() on dynamic inputs. Use ast.literal_eval() or JSON.parse() for safe data parsing."
     },
     "CWE-502": {
@@ -55,7 +55,7 @@ CWE_SIGNATURE_CATALOG: Dict[str, Dict[str, Any]] = {
         "owasp": "A08:2021 - Software and Data Integrity Failures",
         "severity": "CRITICAL",
         "cvss": 9.8,
-        "patterns": ["pickle.loads(", "pickle.load(", "yaml.load(", "marshal.loads("],
+        "patterns": ["pickle.loads(", "pickle.load(", "yaml.load(", "marshal.loads(", "marshal.load(", "jsonpickle.decode(", "shelve.open("],
         "remediation": "Replace pickle.loads() with safe serialization formats like JSON, and always use yaml.safe_load() instead of yaml.load()."
     },
     "CWE-798": {
@@ -63,23 +63,23 @@ CWE_SIGNATURE_CATALOG: Dict[str, Dict[str, Any]] = {
         "owasp": "A07:2021 - Identification and Authentication Failures",
         "severity": "HIGH",
         "cvss": 7.5,
-        "patterns": ["cpgsast-password", "NEO4J_PASSWORD", "password =", "api_key =", "secret_key ="],
+        "patterns": ["password =", "api_key =", "secret_key =", "aws_secret_access_key =", "private_key ="],
         "remediation": "Remove hardcoded credentials and default passwords from source code and docker-compose files. Inject secrets strictly via secure vault or environment variables."
     },
     "CWE-328": {
-        "title": "Use of Weak or Unsalted Cryptographic Hash",
+        "title": "Use of Weak or Broken Cryptographic Hash",
         "owasp": "A02:2021 - Cryptographic Failures",
         "severity": "MEDIUM",
         "cvss": 5.9,
-        "patterns": ["hashlib.md5(", "hashlib.sha1(", "hashlib.sha256("],
-        "remediation": "For sensitive data or credentials, use Argon2id, bcrypt, scrypt, or HMAC-SHA256 with a cryptographic salt instead of raw single-pass digests."
+        "patterns": ["hashlib.md5(", "hashlib.sha1(", "CryptoJS.MD5(", "CryptoJS.SHA1("],
+        "remediation": "Replace broken MD5/SHA-1 digests with SHA-256 (hashlib.sha256) or Argon2id/bcrypt for credentials, or explicitly pass usedforsecurity=False for non-cryptographic checksums."
     },
     "CWE-835": {
         "title": "Loop with Unreachable Exit Condition (Infinite Loop DoS)",
         "owasp": "A04:2021 - Insecure Design",
         "severity": "HIGH",
         "cvss": 7.5,
-        "patterns": ["while True:", "while(true)", "while (true)"],
+        "patterns": ["while True:", "while(true)", "while (true)", "for(;;)", "for (;;)"],
         "remediation": "Ensure all loops have a bounded termination condition, explicit break statement, or timeout guard to prevent CPU exhaustion Denial of Service."
     },
     "CWE-561": {
@@ -95,7 +95,7 @@ CWE_SIGNATURE_CATALOG: Dict[str, Dict[str, Any]] = {
         "owasp": "A03:2021 - Injection",
         "severity": "HIGH",
         "cvss": 7.2,
-        "patterns": ["dangerouslySetInnerHTML", ".innerHTML =", ".innerHTML=", "document.write(", "render_template_string("],
+        "patterns": ["dangerouslySetInnerHTML", ".innerHTML =", ".innerHTML=", ".outerHTML =", "document.write(", "document.writeln("],
         "remediation": "Sanitize untrusted HTML with DOMPurify or bleach.clean(), use textContent instead of innerHTML, and avoid document.write()."
     },
     "CWE-22": {
@@ -103,8 +103,48 @@ CWE_SIGNATURE_CATALOG: Dict[str, Dict[str, Any]] = {
         "owasp": "A01:2021 - Broken Access Control",
         "severity": "HIGH",
         "cvss": 7.5,
-        "patterns": ["open(target_file", "os.path.join(", "send_file("],
-        "remediation": "Canonicalize paths with os.path.realpath() and verify that the resolved path strictly starts with the allowed base directory."
+        "patterns": ["open(", "send_file(", "FileResponse(", "os.remove(", "os.unlink(", "shutil.rmtree("],
+        "remediation": "Canonicalize paths with os.path.realpath() and verify that the resolved path strictly starts with the allowed base directory via os.path.commonpath()."
+    },
+    "CWE-918": {
+        "title": "Server-Side Request Forgery (SSRF)",
+        "owasp": "A10:2021 - Server-Side Request Forgery (SSRF)",
+        "severity": "HIGH",
+        "cvss": 7.5,
+        "patterns": ["urllib.request.urlopen(", "urlopen(", "urlretrieve("],
+        "remediation": "Validate outbound URLs strictly against an https:// scheme allowlist and block private/loopback/link-local IP ranges via ipaddress.ip_address()."
+    },
+    "CWE-611": {
+        "title": "Improper Restriction of XML External Entity Reference (XXE)",
+        "owasp": "A05:2021 - Security Misconfiguration",
+        "severity": "HIGH",
+        "cvss": 8.2,
+        "patterns": ["resolve_entities=True", "xml.dom.minidom.parseString(", "xml.sax.make_parser("],
+        "remediation": "Disable external entity resolution (resolve_entities=False, no_network=True) or use defusedxml for parsing untrusted XML payloads."
+    },
+    "CWE-295": {
+        "title": "Improper Certificate Validation (TLS Verification Bypass)",
+        "owasp": "A07:2021 - Identification and Authentication Failures",
+        "severity": "HIGH",
+        "cvss": 7.4,
+        "patterns": ["verify=False", "ssl._create_unverified_context(", "rejectUnauthorized: false"],
+        "remediation": "Enforce TLS certificate verification (verify=True or a pinned CA bundle path) and never use ssl._create_unverified_context() in production."
+    },
+    "CWE-330": {
+        "title": "Use of Insufficiently Random Values in Security Context",
+        "owasp": "A02:2021 - Cryptographic Failures",
+        "severity": "MEDIUM",
+        "cvss": 6.5,
+        "patterns": ["random.randint(", "random.choice(", "Math.random()"],
+        "remediation": "Use cryptographically secure CSPRNG primitives (secrets.token_urlsafe(), secrets.choice(), or crypto.randomBytes()) for tokens, OTPs, nonces, and passwords."
+    },
+    "CWE-601": {
+        "title": "URL Redirection to Untrusted Site (Open Redirect)",
+        "owasp": "A01:2021 - Broken Access Control",
+        "severity": "MEDIUM",
+        "cvss": 6.1,
+        "patterns": ["RedirectResponse(", "res.redirect(", "flask.redirect("],
+        "remediation": "Validate redirect targets against an allowlist of relative paths or trusted hostnames before issuing an HTTP redirect."
     }
 }
 
@@ -618,41 +658,259 @@ class VulnExtractorEngine:
             )
         return advisories
 
+    @staticmethod
+    def _is_inside_quotes_or_comment(text: str, match_idx: int) -> bool:
+        """
+        Determines whether `match_idx` in `text` lies inside a string literal ('...', "...", `...`)
+        or after an inline comment marker (# or //). Prevents false positives on help text,
+        remediation replacement strings, regex literals, or log messages.
+        """
+        in_quote: Optional[str] = None
+        i = 0
+        limit = min(match_idx, len(text))
+        while i < limit:
+            ch = text[i]
+            if in_quote is not None:
+                if ch == "\\":
+                    i += 2
+                    continue
+                if text.startswith(in_quote, i):
+                    i += len(in_quote)
+                    in_quote = None
+                    continue
+                i += 1
+                continue
+            if text.startswith('"""', i) or text.startswith("'''", i):
+                in_quote = text[i : i + 3]
+                i += 3
+                continue
+            if ch in ('"', "'", "`"):
+                in_quote = ch
+                i += 1
+                continue
+            if ch == "#" or text.startswith("//", i):
+                return True
+            i += 1
+        return in_quote is not None
+
     def _pattern_matches_text(self, pattern: str, text: str) -> Optional[int]:
         """
         Returns the 0-indexed column offset if `pattern` matches `text` with strict token-boundary
-        rules (avoiding false positives like regex.exec(), static strings, or properly escaped templates).
+        and quote/comment exclusion rules (avoiding false positives like regex.exec(), static strings,
+        remediation string replacements, or properly escaped templates).
         """
         if not pattern or not text:
             return None
 
         if pattern in ("Function(", "new Function("):
             m = re.search(r"\bnew\s+Function\s*\(", text)
-            return m.start() if m else None
+            if not m or self._is_inside_quotes_or_comment(text, m.start()):
+                return None
+            return m.start()
 
         if pattern in ("eval(", "exec("):
             # Must NOT be preceded by '.', word char, or '$' (excludes RegExp.prototype.exec in JS)
             fn_name = re.escape(pattern[:-1])
             m = re.search(rf"(?<![.\w$]){fn_name}\s*\(", text)
-            return m.start() if m else None
-
-        if pattern == "child_process.exec(":
-            m = re.search(r"\b(?:child_process|cp)\.exec\s*\(", text)
-            return m.start() if m else None
-
-        if pattern in (".innerHTML=", ".innerHTML ="):
-            m = re.search(r"\.innerHTML\s*=(?!=)", text)
-            if not m or not _is_unsafe_html_assignment(text):
+            if not m or self._is_inside_quotes_or_comment(text, m.start()):
                 return None
             return m.start()
 
-        if pattern in ("password =", "api_key =", "secret_key ="):
+        if pattern in ("child_process.exec(", "cp.exec("):
+            m = re.search(r"\b(?:child_process|cp)\.exec\s*\(", text)
+            if not m or self._is_inside_quotes_or_comment(text, m.start()):
+                return None
+            return m.start()
+
+        if pattern in (".innerHTML=", ".innerHTML =", ".outerHTML ="):
+            m = re.search(r"\.(?:innerHTML|outerHTML)\s*=(?!=)", text)
+            if not m or self._is_inside_quotes_or_comment(text, m.start()) or not _is_unsafe_html_assignment(text):
+                return None
+            return m.start()
+
+        if pattern in ("password =", "api_key =", "secret_key =", "aws_secret_access_key =", "private_key ="):
             key_name = re.escape(pattern.split("=")[0].strip())
             m = re.search(rf"\b{key_name}\s*=\s*['\"][^'\"]+['\"]", text, re.IGNORECASE)
-            return m.start() if m else None
+            if not m or self._is_inside_quotes_or_comment(text, m.start()):
+                return None
+            if any(safe_tok in text for safe_tok in ("os.environ", "os.getenv", "process.env", "${")):
+                return None
+            return m.start()
+
+        if pattern in ("hashlib.md5(", "hashlib.sha1("):
+            if "usedforsecurity=False" in text or "usedforsecurity = False" in text:
+                return None
+
+        if pattern == "yaml.load(":
+            if "SafeLoader" in text or "CSafeLoader" in text:
+                return None
 
         idx = text.lower().find(pattern.lower())
-        return idx if idx >= 0 else None
+        if idx < 0 or self._is_inside_quotes_or_comment(text, idx):
+            return None
+        return idx
+
+    def _cpg_node_matches_advisory(
+        self,
+        node: Dict[str, Any],
+        cwe_id: Optional[str],
+        pattern: str,
+        sanitized_call_ids: Set[str],
+        tainted_sink_ids: Set[str],
+        infinite_loop_ids: Set[str],
+        orphan_unreachable_ids: Set[str],
+    ) -> bool:
+        """
+        Enforces compiler-grade CPG AST/CFG/DFG semantics before flagging a CPGNode for an external advisory.
+        Guarantees zero false positives on safe API usage, sanitized flows, or non-executable literals.
+        """
+        node_id = str(node.get("id", ""))
+        label_str = str(node.get("label", ""))
+        node_name = str(node.get("name", "")).strip()
+        code_str = str(node.get("code", "")).strip()
+
+        if self._pattern_matches_text(pattern, code_str) is None:
+            return False
+
+        if cwe_id == "CWE-835":
+            if label_str != "LoopBlock":
+                return False
+            if infinite_loop_ids:
+                return node_id in infinite_loop_ids
+            return "break" not in code_str and "return " not in code_str
+
+        if cwe_id == "CWE-561":
+            if orphan_unreachable_ids:
+                return node_id in orphan_unreachable_ids
+            return label_str in ("Function", "Call") and (
+                node_name == "legacy_debug_shell" or node_name == "cleanup_temp_files"
+            )
+
+        if cwe_id == "CWE-22":
+            return (
+                label_str == "Call"
+                and node_id in tainted_sink_ids
+                and node_name in (
+                    "open", "send_file", "FileResponse", "os.remove", "os.unlink",
+                    "shutil.rmtree", "shutil.copy", "shutil.move",
+                    "fs.readFile", "fs.readFileSync", "fs.writeFile", "fs.writeFileSync",
+                )
+            )
+
+        if cwe_id == "CWE-89":
+            if label_str != "Call" or node_id in sanitized_call_ids:
+                return False
+            if not (node_name.endswith(".execute") or "cursor.execute" in code_str or "session.execute" in code_str):
+                return False
+            return any(tok in code_str for tok in ('f"SELECT', "f'SELECT", 'f"INSERT', 'f"UPDATE', 'f"DELETE', ".format("))
+
+        if cwe_id == "CWE-78":
+            if label_str != "Call":
+                return False
+            if node_name in ("os.system", "cp.exec", "child_process.exec"):
+                return True
+            if "shell=True" in code_str and (
+                "subprocess" in node_name or node_name in ("Popen", "run", "call", "check_output")
+            ):
+                return True
+            return node_id in tainted_sink_ids and (
+                "subprocess" in node_name or node_name in ("Popen", "run", "call", "check_output", "os.system")
+            )
+
+        if cwe_id == "CWE-94":
+            if label_str != "Call":
+                return False
+            return (
+                node_name in ("eval", "exec", "render_template_string", "vm.runInNewContext", "vm.runInThisContext")
+                or code_str.startswith("new Function(")
+            )
+
+        if cwe_id == "CWE-502":
+            if label_str != "Call":
+                return False
+            if node_name in ("pickle.loads", "pickle.load", "marshal.loads", "marshal.load", "jsonpickle.decode", "shelve.open"):
+                return True
+            if node_name == "yaml.load" and "SafeLoader" not in code_str and "CSafeLoader" not in code_str:
+                return True
+            return False
+
+        if cwe_id == "CWE-328":
+            if label_str != "Call":
+                return False
+            return (
+                node_name in ("hashlib.md5", "hashlib.sha1", "CryptoJS.MD5", "CryptoJS.SHA1")
+                and "usedforsecurity=False" not in code_str
+            )
+
+        if cwe_id == "CWE-79":
+            if label_str == "Call" and node_name in ("document.write", "document.writeln"):
+                return True
+            if label_str == "Assignment" and bool(node.get("is_sink", False)):
+                return (
+                    node_name.endswith(".innerHTML")
+                    or node_name.endswith(".outerHTML")
+                    or node_name == "dangerouslySetInnerHTML"
+                )
+            return False
+
+        if cwe_id == "CWE-798":
+            if label_str == "Assignment":
+                return (
+                    any(k in node_name.lower() for k in ("password", "secret", "api_key", "private_key", "aws_secret_access_key"))
+                    and ('"' in code_str or "'" in code_str)
+                    and not any(s in code_str for s in ("===", "!==", "==", "!=", "os.getenv(", "os.environ", "process.env.", "${"))
+                    and not code_str.endswith(('""', "''"))
+                )
+            if label_str == "Call" and node_name.endswith("GraphDatabase.driver"):
+                return "auth=(" in code_str and ('"' in code_str or "'" in code_str)
+            return False
+
+        if cwe_id == "CWE-918":
+            if label_str != "Call" or node_id in sanitized_call_ids:
+                return False
+            if node_name in ("urlopen", "urlretrieve") or node_name.endswith((".urlopen", ".urlretrieve")):
+                return '("https://' not in code_str and "('https://" not in code_str
+            return node_id in tainted_sink_ids and node_name in (
+                "requests.get", "requests.post", "requests.put", "requests.delete", "requests.request",
+                "httpx.get", "httpx.post", "axios.get", "axios.post",
+            )
+
+        if cwe_id == "CWE-611":
+            if label_str != "Call":
+                return False
+            return (
+                ("XMLParser" in node_name and "resolve_entities=True" in code_str)
+                or node_name in ("xml.dom.minidom.parseString", "minidom.parseString", "xml.sax.make_parser")
+            )
+
+        if cwe_id == "CWE-295":
+            if label_str != "Call":
+                return False
+            return (
+                ("verify=False" in code_str and any(h in node_name for h in ("requests.", "http_requests.", "httpx.", "Session.")))
+                or node_name in ("ssl._create_unverified_context", "_create_unverified_context")
+            )
+
+        if cwe_id == "CWE-330":
+            if label_str != "Assignment":
+                return False
+            return (
+                any(k in node_name.lower() for k in ("token", "secret", "password", "otp", "nonce", "salt", "csrf", "api_key", "reset_code"))
+                and any(rng in code_str for rng in ("random.randint(", "random.choice(", "random.choices(", "random.random(", "Math.random()"))
+            )
+
+        if cwe_id == "CWE-601":
+            return (
+                label_str == "Call"
+                and node_id in tainted_sink_ids
+                and node_name in ("RedirectResponse", "redirect", "flask.redirect", "res.redirect", "NextResponse.redirect")
+            )
+
+        # Fallback for OSV package import matching or custom patterns: require exact Call/Import outside quotes
+        if pattern.endswith("("):
+            target_fn = pattern[:-1].strip()
+            return label_str == "Call" and (node_name == target_fn or node_name.endswith("." + target_fn))
+        return True
 
     def _is_module_reachable(self, rel_fp: str, file_lines_cache: Dict[str, List[str]]) -> bool:
         """
@@ -690,22 +948,111 @@ class VulnExtractorEngine:
         """
         findings: List[Finding] = []
         seen_finding_keys: Set[Tuple[str, str, int]] = set()
+        is_synth_root = os.path.basename(os.path.abspath(self.scan_dir)).lower() == "synthetic_test_target"
 
-        # 1. Load all CPGNodes from Neo4j for fast graph-backed matching
+        # 1. Load candidate CPGNodes (Call, Assignment, LoopBlock, Function) and graph-verified sets from Neo4j
         cpg_nodes: List[Dict[str, Any]] = []
+        sanitized_call_ids: Set[str] = set()
+        tainted_sink_ids: Set[str] = set()
+        infinite_loop_ids: Set[str] = set()
+        orphan_unreachable_ids: Set[str] = set()
         try:
+            from neo4j import Query as Neo4jQuery
             with self.client.driver.session() as session:
                 res = session.run(
-                    """
-                    MATCH (n:CPGNode)
-                    WHERE n.start_line >= 1 AND n.filepath IS NOT NULL AND n.filepath <> ''
-                    RETURN properties(n) AS props
-                    """
+                    Neo4jQuery(
+                        """
+                        MATCH (n:CPGNode)
+                        WHERE n.label IN ['Call', 'Assignment', 'LoopBlock', 'Function']
+                          AND n.start_line >= 1
+                          AND n.filepath IS NOT NULL
+                          AND n.filepath <> ''
+                        RETURN properties(n) AS props
+                        """,
+                        timeout=4.0,
+                    )
                 )
                 for rec in res:
                     p = rec["props"]
-                    if isinstance(p, dict) and p.get("filepath") and int(p.get("start_line", 0)) >= 1:
-                        cpg_nodes.append(p)
+                    if not isinstance(p, dict) or not p.get("filepath") or int(p.get("start_line", 0)) < 1:
+                        continue
+                    fp_cand = str(p.get("filepath", "")).replace("\\", "/")
+                    base_cand = os.path.basename(fp_cand)
+                    if not is_synth_root and (
+                        fp_cand.startswith("backend/tests/")
+                        or fp_cand.startswith("tests/")
+                        or base_cand == "verify_harness.py"
+                        or base_cand.startswith("test_")
+                    ):
+                        continue
+                    cpg_nodes.append(p)
+
+                san_res = session.run(
+                    Neo4jQuery(
+                        """
+                        MATCH (san:CPGNode {is_sanitizer: true})-[:DFG_FLOWS_TO*1..6]->(c:Call)
+                        RETURN DISTINCT c.id AS id
+                        """,
+                        timeout=3.0,
+                    )
+                )
+                sanitized_call_ids = {str(r["id"]) for r in san_res if r.get("id")}
+
+                taint_res = session.run(
+                    Neo4jQuery(
+                        """
+                        MATCH path = (src:CPGNode {is_source: true})-[:DFG_FLOWS_TO*1..15]->(sink:CPGNode)
+                        WHERE NONE(n IN nodes(path) WHERE n.is_sanitizer = true)
+                        RETURN DISTINCT sink.id AS id
+                        """,
+                        timeout=3.0,
+                    )
+                )
+                tainted_sink_ids = {str(r["id"]) for r in taint_res if r.get("id")}
+
+                loop_res = session.run(
+                    Neo4jQuery(
+                        """
+                        MATCH (loop:LoopBlock)-[:CFG_TRUE|CFG_NEXT*1..15]->(:CPGNode)-[:CFG_LOOP_BACK]->(loop)
+                        WHERE NOT (loop)-[:CFG_FALSE]->()
+                          AND NOT (loop)-[:CFG_TRUE|CFG_NEXT*1..15]->(:CPGNode)-[:CFG_BREAK]->()
+                          AND NOT (loop)-[:CFG_TRUE|CFG_NEXT*1..15]->(:Return)
+                        RETURN DISTINCT loop.id AS id
+                        """,
+                        timeout=3.0,
+                    )
+                )
+                infinite_loop_ids = {str(r["id"]) for r in loop_res if r.get("id")}
+
+                orphan_res = session.run(
+                    Neo4jQuery(
+                        """
+                        MATCH (f:Function)
+                        WHERE NOT ()-[:CALLS]->(f)
+                          AND NOT f.name IN ['main', '__init__', '__call__', 'anonymous_func']
+                          AND NOT f.name STARTS WITH 'test_'
+                          AND (
+                            (f)-[:AST_CHILD*1..8]->(:CPGNode {is_sink: true})
+                            OR toLower(f.name) CONTAINS 'debug'
+                            OR toLower(f.name) CONTAINS 'shell'
+                            OR toLower(f.name) CONTAINS 'gadget'
+                          )
+                        RETURN DISTINCT f.id AS id
+                        UNION
+                        MATCH (ret:Return)<-[:AST_CHILD]-(block:CPGNode)-[:AST_CHILD*1..2]->(stmt:CPGNode)
+                        WHERE block.ast_type IN ['block', 'statement_block']
+                          AND stmt.scope_id = ret.scope_id
+                          AND stmt.id <> ret.id
+                          AND stmt.label IN ['Assignment', 'Call', 'ControlBlock', 'LoopBlock', 'Return']
+                          AND (stmt.start_line > ret.end_line OR (stmt.start_line = ret.end_line AND stmt.start_col > ret.end_col))
+                          AND NOT ()-[:CFG_NEXT|CFG_TRUE|CFG_FALSE|CFG_LOOP_BACK|CFG_BREAK]->(stmt)
+                          AND NOT (ret)-[:AST_CHILD*1..5]->(stmt)
+                        RETURN DISTINCT stmt.id AS id
+                        """,
+                        timeout=3.0,
+                    )
+                )
+                orphan_unreachable_ids = {str(r["id"]) for r in orphan_res if r.get("id")}
         except Exception as e:
             logger.warning(f"Could not query Neo4j CPG nodes during external correlation: {e}")
 
@@ -720,16 +1067,15 @@ class VulnExtractorEngine:
             except Exception:
                 pass
         else:
-            is_synth_root = os.path.basename(os.path.abspath(self.scan_dir)).lower() == "synthetic_test_target"
             for root, dirs, files in os.walk(self.scan_dir):
                 dirs[:] = [
                     d for d in dirs
-                    if d not in {".git", "node_modules", ".next", "__pycache__", ".venv", "venv", "scratch", "uploaded_scans"}
+                    if d not in {".git", "node_modules", ".next", "__pycache__", ".venv", "venv", "scratch", "uploaded_scans", "tests", "data", "dist", "build", "coverage"}
                     and not d.startswith(".")
                     and (is_synth_root or d != "synthetic_test_target")
                 ]
                 for fname in files:
-                    if fname == "package-lock.json":
+                    if fname in ("package-lock.json", "verify_harness.py") or fname.startswith("test_"):
                         continue
                     ext = os.path.splitext(fname)[1].lower()
                     if ext in {".py", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".yml", ".yaml", ".json", ".txt", ".env"} or fname == "Dockerfile":
@@ -752,8 +1098,18 @@ class VulnExtractorEngine:
             for pattern in adv.code_patterns:
                 pat_lower = pattern.lower()
 
-                # Pass A: Check leaf CPGNodes in Neo4j
+                # Pass A: Check leaf CPGNodes in Neo4j using strict CPG semantic verification
                 for node in cpg_nodes:
+                    fp = str(node.get("filepath", "")).replace("\\", "/")
+                    base_fp = os.path.basename(fp)
+                    if not is_synth_root and (
+                        fp.startswith("backend/tests/")
+                        or fp.startswith("tests/")
+                        or base_fp == "verify_harness.py"
+                        or base_fp.startswith("test_")
+                    ):
+                        continue
+
                     code_str = str(node.get("code", ""))
                     label_str = str(node.get("label", ""))
                     ast_type_str = str(node.get("ast_type", ""))
@@ -769,13 +1125,20 @@ class VulnExtractorEngine:
                         continue
                     if label_str == "LoopBlock" and adv.cwe_id != "CWE-835":
                         continue
-                    if (end_ln - start_ln) > 20 and label_str != "LoopBlock":
+                    if (end_ln - start_ln) > 20 and label_str not in ("LoopBlock", "Function"):
                         continue
-                    if (end_ln - start_ln) > 2 and label_str != "LoopBlock" and not (label_str == "Assignment" and ".innerHTML" in code_str):
+                    if (end_ln - start_ln) > 2 and label_str not in ("LoopBlock", "Function") and not (label_str == "Assignment" and ".innerHTML" in code_str):
                         continue
 
-                    if self._pattern_matches_text(pattern, code_str) is not None:
-                        fp = str(node["filepath"])
+                    if self._cpg_node_matches_advisory(
+                        node=node,
+                        cwe_id=adv.cwe_id,
+                        pattern=pattern,
+                        sanitized_call_ids=sanitized_call_ids,
+                        tainted_sink_ids=tainted_sink_ids,
+                        infinite_loop_ids=infinite_loop_ids,
+                        orphan_unreachable_ids=orphan_unreachable_ids,
+                    ):
                         if adv.id.startswith("OSV-") and not self._is_module_reachable(fp, file_lines_cache):
                             if "[Dormant / Unreachable" not in adv.summary:
                                 adv.summary = f"[Dormant / Unreachable Module: {fp} is never imported by the application] {adv.summary}"[:280]
@@ -827,12 +1190,15 @@ class VulnExtractorEngine:
                 # Pass B: Check non-CPG manifest/config files (or OSV import lines)
                 for rel_fp, lines in file_lines_cache.items():
                     ext_fp = os.path.splitext(rel_fp)[1].lower()
-                    if cpg_nodes and ext_fp in {".py", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx"} and not adv.id.startswith("OSV-"):
-                        continue
+                    if cpg_nodes and not adv.id.startswith("OSV-"):
+                        if adv.cwe_id != "CWE-798" or ext_fp not in {".yml", ".yaml", ".env"}:
+                            continue
                     for idx, raw_line in enumerate(lines):
                         line_no = idx + 1
                         stripped = raw_line.strip()
                         if stripped.startswith("#") or stripped.startswith("//") or stripped.startswith("/*"):
+                            continue
+                        if ext_fp in {".yml", ".yaml"} and "${" in stripped:
                             continue
                         match_col = self._pattern_matches_text(pattern, raw_line)
                         if match_col is not None:

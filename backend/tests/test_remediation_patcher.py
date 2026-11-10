@@ -594,6 +594,56 @@ class RemediationPatcherTests(unittest.TestCase):
             finally:
                 main.current_scan_dir = prev_scan_dir
 
+    def test_rule14_rule15_rule16_remediation_and_web_intel_zero_fp(self):
+        from engine.vuln_extractor import VulnExtractorEngine
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            py_file = os.path.join(tmpdir, "extra_rules.py")
+            with open(py_file, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(
+                    "import random\n"
+                    "import requests\n"
+                    "res = eval(user_payload)\n"
+                    'r = requests.get("https://api.example.com", verify=False)\n'
+                    "otp_token = random.randint(100000, 999999)\n"
+                )
+
+            p14 = generate_remediation_preview("extra_rules.py", [tmpdir], "RULE-14-CODE-INJECTION", 3)
+            self.assertIsNotNone(p14)
+            self.assertTrue(p14["can_auto_patch"])
+            self.assertIn("ast.literal_eval(user_payload)", p14["patched_content"])
+
+            p15 = generate_remediation_preview("extra_rules.py", [tmpdir], "RULE-15-XXE-TLS-BYPASS", 4)
+            self.assertIsNotNone(p15)
+            self.assertTrue(p15["can_auto_patch"])
+            self.assertIn("verify=True", p15["patched_content"])
+
+            p16 = generate_remediation_preview("extra_rules.py", [tmpdir], "RULE-16-INSECURE-RANDOM-OPEN-REDIRECT", 5)
+            self.assertIsNotNone(p16)
+            self.assertTrue(p16["can_auto_patch"])
+            self.assertIn("secrets.token_urlsafe(32)", p16["patched_content"])
+
+            # Verify Web Intel quote/comment exclusion and CPG node verification (0% FP)
+            ext_eng = VulnExtractorEngine(None, tmpdir)
+            self.assertIsNone(
+                ext_eng._pattern_matches_text(
+                    "pickle.loads(",
+                    'orig_line.replace("pickle.loads(", "json.loads(")',
+                )
+            )
+            self.assertIsNone(
+                ext_eng._pattern_matches_text(
+                    "hashlib.md5(",
+                    "dg = hashlib.md5(blob, usedforsecurity=False).hexdigest()",
+                )
+            )
+            self.assertIsNone(
+                ext_eng._pattern_matches_text(
+                    "yaml.load(",
+                    "obj = yaml.load(raw, Loader=yaml.SafeLoader)",
+                )
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
