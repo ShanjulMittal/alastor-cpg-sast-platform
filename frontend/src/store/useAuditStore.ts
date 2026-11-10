@@ -5,6 +5,11 @@ import {
   MetricsResponse,
   GraphViewMode,
   WorkspaceViewMode,
+  ExecutiveAspmTab,
+  EngineAccessTab,
+  RemediatePreviewResponse,
+  RemediateApplyResponse,
+  RemediateUndoResponse,
   AudiencePersonaMode,
   AppTreeSummary,
   FilePurposeInfo,
@@ -33,6 +38,59 @@ import {
 } from "@/types/cpg";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+export const UI_PREFS_STORAGE_KEY = "alastor_ui_prefs_v3";
+
+const VALID_APP_THEMES: AppThemeId[] = [
+  "alastor-infernal",
+  "olympian-light",
+  "athena-parchment",
+  "hyperborean-light",
+  "hecate-arcane",
+  "stygian-abyss",
+];
+
+function isLightThemeId(theme: AppThemeId): boolean {
+  return (
+    theme === "olympian-light" ||
+    theme === "athena-parchment" ||
+    theme === "hyperborean-light"
+  );
+}
+
+function applyDocumentTheme(theme: AppThemeId): void {
+  if (typeof document === "undefined") return;
+  const htmlEl = document.documentElement;
+  const isLight = isLightThemeId(theme);
+  htmlEl.setAttribute("data-theme", theme);
+  htmlEl.setAttribute("data-theme-mode", isLight ? "light" : "dark");
+  if (isLight) {
+    htmlEl.classList.remove("dark");
+    htmlEl.classList.add("light");
+  } else {
+    htmlEl.classList.remove("light");
+    htmlEl.classList.add("dark");
+  }
+}
+
+function persistUiPrefs(getState: () => AuditState): void {
+  if (typeof window === "undefined") return;
+  try {
+    const s = getState();
+    const payload = {
+      hasEnteredWorkspace: !s.showPortalGate,
+      showPortalGate: s.showPortalGate,
+      appTheme: s.appTheme,
+      backdropIntensity: s.backdropIntensity,
+      workspaceViewMode: s.workspaceViewMode,
+      executiveAspmTab: s.executiveAspmTab,
+      engineAccessTab: s.engineAccessTab,
+      ideLayoutMode: s.ideLayoutMode,
+      explorerWidth: s.explorerWidth,
+      codeGraphRatio: s.codeGraphRatio,
+    };
+    localStorage.setItem(UI_PREFS_STORAGE_KEY, JSON.stringify(payload));
+  } catch {}
+}
 
 interface AuditState {
   projectPath: string;
@@ -44,6 +102,20 @@ interface AuditState {
   selectedGraphNodeId: string | null;
   graphViewMode: GraphViewMode;
   workspaceViewMode: WorkspaceViewMode;
+  executiveAspmTab: ExecutiveAspmTab;
+  engineAccessTab: EngineAccessTab;
+  explorerWidth: number;
+  codeGraphRatio: number;
+  isDiffEditorOpen: boolean;
+  activePathStepIndex: number;
+  remediationPreview: RemediatePreviewResponse | null;
+  isApplyingPatch: boolean;
+  lastAppliedPatch: {
+    patchId: string;
+    findingId: string;
+    filepath: string;
+    verifiedSevered: boolean;
+  } | null;
   audienceMode: AudiencePersonaMode;
   isSettingsBarVisible: boolean;
   metrics: MetricsResponse | null;
@@ -131,6 +203,16 @@ interface AuditState {
   setQuickCommandOpen: (open: boolean) => void;
   setMenuBarExpanded: (expanded: boolean) => void;
   setSastPlusActiveTab: (tab: "TRANSLATOR" | "SBOM" | "ATTACK_SURFACE" | "ROADMAP" | "THREAT_MODEL" | "ACADEMY") => void;
+  setExecutiveAspmTab: (tab: ExecutiveAspmTab) => void;
+  setEngineAccessTab: (tab: EngineAccessTab) => void;
+  setExplorerWidth: (px: number) => void;
+  setCodeGraphRatio: (ratio: number) => void;
+  setDiffEditorOpen: (open: boolean) => void;
+  stepFindingPath: (delta: 1 | -1) => void;
+  fetchRemediationPreview: (finding: Finding) => Promise<void>;
+  applyRemediationPatch: (patchedContent: string) => Promise<RemediateApplyResponse | null>;
+  undoLastRemediationPatch: () => Promise<boolean>;
+  hydrateUiPreferences: () => void;
   setShowPortalGate: (
     show: boolean,
     operator?: { name: string; role: string; email: string }
@@ -301,6 +383,15 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   selectedGraphNodeId: null,
   graphViewMode: "FINDING_PATH",
   workspaceViewMode: "REMEDIATION_IDE",
+  executiveAspmTab: "TRANSLATOR",
+  engineAccessTab: "RULE_PROFILES",
+  explorerWidth: 310,
+  codeGraphRatio: 0.52,
+  isDiffEditorOpen: false,
+  activePathStepIndex: 0,
+  remediationPreview: null,
+  isApplyingPatch: false,
+  lastAppliedPatch: null,
   audienceMode: "NON_CODER_MANAGEMENT",
   isSettingsBarVisible: false,
   metrics: null,
@@ -399,11 +490,13 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
   setAppTheme: (theme: AppThemeId) => {
     set({ appTheme: theme });
+    applyDocumentTheme(theme);
     if (typeof window !== "undefined") {
       try {
         localStorage.setItem("alastor_app_theme_v3", theme);
       } catch {}
     }
+    persistUiPrefs(get);
   },
 
   setBackdropIntensity: (intensity: BackdropIntensity) => {
@@ -413,6 +506,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         localStorage.setItem("alastor_backdrop_intensity", intensity);
       } catch {}
     }
+    persistUiPrefs(get);
   },
 
   setAudienceMode: (mode: AudiencePersonaMode) => {
@@ -433,6 +527,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
   setIdeLayoutMode: (mode: "SPLIT_BOTH" | "CODE_FOCUS" | "GRAPH_FOCUS") => {
     set({ ideLayoutMode: mode });
+    persistUiPrefs(get);
   },
 
   setSidebarCollapsed: (collapsed: boolean) => {
@@ -459,8 +554,294 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   },
 
   setSastPlusActiveTab: (tab) => {
-    set({ sastPlusActiveTab: tab, workspaceViewMode: "SAST_PLUS_SUITE" });
+    const mappedExecTab: ExecutiveAspmTab =
+      tab === "THREAT_MODEL" ? "ATTACK_SURFACE" : tab;
+    set({
+      sastPlusActiveTab: tab,
+      workspaceViewMode: "EXECUTIVE_ASPM",
+      executiveAspmTab: mappedExecTab,
+    });
+    persistUiPrefs(get);
     get().fetchSastPlusSuite();
+  },
+
+  setExecutiveAspmTab: (tab: ExecutiveAspmTab) => {
+    set((state) => ({
+      executiveAspmTab: tab,
+      workspaceViewMode: "EXECUTIVE_ASPM",
+      ...(tab === "TRANSLATOR" ||
+      tab === "SBOM" ||
+      tab === "ATTACK_SURFACE" ||
+      tab === "ROADMAP" ||
+      tab === "ACADEMY"
+        ? { sastPlusActiveTab: tab }
+        : { sastPlusActiveTab: state.sastPlusActiveTab }),
+    }));
+    persistUiPrefs(get);
+    if (tab === "ANALYTICS") {
+      get().fetchDeepDiveAnalytics();
+    } else if (tab === "RACI") {
+      get().fetchRaciGovernance();
+    } else {
+      get().fetchSastPlusSuite();
+    }
+  },
+
+  setEngineAccessTab: (tab: EngineAccessTab) => {
+    set({
+      engineAccessTab: tab,
+      workspaceViewMode: "ENGINE_ACCESS",
+    });
+    persistUiPrefs(get);
+    if (tab === "RULE_PROFILES" || tab === "CYPHER_SANITIZERS") {
+      get().fetchPlatformSettings();
+    } else if (tab === "ACCOUNTS_RBAC") {
+      get().fetchUserAccounts();
+      get().fetchProjects();
+    } else if (tab === "ISSUE_CONNECTORS") {
+      get().fetchIntegrations();
+    }
+  },
+
+  setExplorerWidth: (px: number) => {
+    const clamped = Math.max(240, Math.min(480, Math.round(px)));
+    set({ explorerWidth: clamped });
+    persistUiPrefs(get);
+  },
+
+  setCodeGraphRatio: (ratio: number) => {
+    const clamped = Math.max(0.25, Math.min(0.75, Number(ratio.toFixed(3))));
+    set({ codeGraphRatio: clamped });
+    persistUiPrefs(get);
+  },
+
+  setDiffEditorOpen: (open: boolean) => {
+    set({ isDiffEditorOpen: open });
+    if (open) {
+      const finding = get().selectedFinding;
+      if (finding) {
+        get().fetchRemediationPreview(finding);
+      }
+    }
+  },
+
+  stepFindingPath: (delta: 1 | -1) => {
+    const finding = get().selectedFinding;
+    if (!finding || !finding.path_nodes || finding.path_nodes.length === 0) {
+      return;
+    }
+    const len = finding.path_nodes.length;
+    const nextIdx = Math.max(0, Math.min(len - 1, get().activePathStepIndex + delta));
+    const node = finding.path_nodes[nextIdx];
+    set({
+      activePathStepIndex: nextIdx,
+      selectedGraphNodeId: node.id,
+      activeFilepath: node.filepath,
+      activeStartLine: node.start_line,
+      activeEndLine: node.end_line,
+    });
+    const rf = get().reactFlowInstance;
+    if (rf && rf.getNode && node.id) {
+      const flowNode = rf.getNode(node.id);
+      if (flowNode) {
+        rf.setCenter(flowNode.position.x + 110, flowNode.position.y + 45, {
+          zoom: 1.4,
+          duration: 320,
+        });
+      }
+    }
+  },
+
+  fetchRemediationPreview: async (finding: Finding) => {
+    const bfl = finding.best_fix_location;
+    const sinkNode =
+      finding.path_nodes && finding.path_nodes.length > 0
+        ? finding.path_nodes[finding.path_nodes.length - 1]
+        : null;
+    const filepath = bfl?.filepath || sinkNode?.filepath || get().activeFilepath || "";
+    const targetLine = bfl?.line || sinkNode?.start_line || get().activeStartLine || 1;
+    const recommendedFix =
+      bfl?.after_code_block || bfl?.recommended_fix || finding.remediation || null;
+
+    if (!filepath) return;
+
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/remediate/preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          finding_id: finding.id,
+          filepath,
+          target_line: targetLine,
+          rule_id: finding.rule_id || "",
+          recommended_fix: recommendedFix,
+        }),
+      });
+      if (res.ok) {
+        const data: RemediatePreviewResponse = await res.json();
+        set({ remediationPreview: data });
+      }
+    } catch (err) {
+      console.error("Failed to fetch remediation preview:", err);
+    }
+  },
+
+  applyRemediationPatch: async (patchedContent: string) => {
+    const finding = get().selectedFinding;
+    const preview = get().remediationPreview;
+    if (!finding || !preview) return null;
+
+    set({ isApplyingPatch: true });
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/remediate/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          finding_id: finding.id,
+          filepath: preview.filepath,
+          rule_id: finding.rule_id || "",
+          expected_sha256: preview.expected_sha256,
+          patched_content: patchedContent,
+        }),
+      });
+      if (res.ok) {
+        const data: RemediateApplyResponse = await res.json();
+        set({
+          lastAppliedPatch: {
+            patchId: data.patch_id,
+            findingId: finding.id,
+            filepath: data.filepath,
+            verifiedSevered: data.verified_severed,
+          },
+          isApplyingPatch: false,
+          isDiffEditorOpen: false,
+        });
+        await Promise.all([
+          get().fetchFindings(),
+          get().fetchMetrics(),
+          get().fetchTrackChanges(),
+        ]);
+        return data;
+      }
+      set({ isApplyingPatch: false });
+      return null;
+    } catch (err) {
+      console.error("Failed to apply remediation patch:", err);
+      set({ isApplyingPatch: false });
+      return null;
+    }
+  },
+
+  undoLastRemediationPatch: async () => {
+    const lastPatch = get().lastAppliedPatch;
+    if (!lastPatch) return false;
+
+    set({ isApplyingPatch: true });
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/remediate/undo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          patch_id: lastPatch.patchId,
+        }),
+      });
+      if (res.ok) {
+        set({
+          lastAppliedPatch: null,
+          isApplyingPatch: false,
+        });
+        await Promise.all([
+          get().fetchFindings(),
+          get().fetchMetrics(),
+          get().fetchTrackChanges(),
+        ]);
+        const currentSelected = get().selectedFinding;
+        if (currentSelected) {
+          await get().fetchRemediationPreview(currentSelected);
+        }
+        return true;
+      }
+      set({ isApplyingPatch: false });
+      return false;
+    } catch (err) {
+      console.error("Failed to undo remediation patch:", err);
+      set({ isApplyingPatch: false });
+      return false;
+    }
+  },
+
+  hydrateUiPreferences: () => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = localStorage.getItem(UI_PREFS_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const updates: Partial<AuditState> = {};
+
+        if (typeof parsed.showPortalGate === "boolean") {
+          updates.showPortalGate = parsed.showPortalGate;
+        } else if (typeof parsed.hasEnteredWorkspace === "boolean") {
+          updates.showPortalGate = !parsed.hasEnteredWorkspace;
+        }
+
+        if (parsed.appTheme && VALID_APP_THEMES.includes(parsed.appTheme)) {
+          updates.appTheme = parsed.appTheme;
+          applyDocumentTheme(parsed.appTheme);
+        }
+
+        if (
+          parsed.backdropIntensity &&
+          ["VIVID", "SUBTLE", "MINIMAL"].includes(parsed.backdropIntensity)
+        ) {
+          updates.backdropIntensity = parsed.backdropIntensity;
+        }
+
+        if (
+          parsed.ideLayoutMode &&
+          ["SPLIT_BOTH", "CODE_FOCUS", "GRAPH_FOCUS"].includes(parsed.ideLayoutMode)
+        ) {
+          updates.ideLayoutMode = parsed.ideLayoutMode;
+        }
+
+        if (typeof parsed.explorerWidth === "number" && !Number.isNaN(parsed.explorerWidth)) {
+          updates.explorerWidth = Math.max(240, Math.min(480, Math.round(parsed.explorerWidth)));
+        }
+
+        if (typeof parsed.codeGraphRatio === "number" && !Number.isNaN(parsed.codeGraphRatio)) {
+          updates.codeGraphRatio = Math.max(
+            0.25,
+            Math.min(0.75, Number(parsed.codeGraphRatio.toFixed(3)))
+          );
+        }
+
+        if (parsed.executiveAspmTab) {
+          updates.executiveAspmTab = parsed.executiveAspmTab;
+        }
+
+        if (parsed.engineAccessTab) {
+          updates.engineAccessTab = parsed.engineAccessTab;
+        }
+
+        set(updates);
+
+        if (parsed.workspaceViewMode) {
+          get().setWorkspaceViewMode(parsed.workspaceViewMode);
+        }
+        return;
+      }
+
+      const legacyTheme = localStorage.getItem("alastor_app_theme_v3") as AppThemeId | null;
+      if (legacyTheme && VALID_APP_THEMES.includes(legacyTheme)) {
+        set({ appTheme: legacyTheme });
+        applyDocumentTheme(legacyTheme);
+      }
+      const legacyBackdrop = localStorage.getItem(
+        "alastor_backdrop_intensity"
+      ) as BackdropIntensity | null;
+      if (legacyBackdrop && ["VIVID", "SUBTLE", "MINIMAL"].includes(legacyBackdrop)) {
+        set({ backdropIntensity: legacyBackdrop });
+      }
+    } catch {}
   },
 
   setShowPortalGate: (show, operator) => {
@@ -468,6 +849,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       showPortalGate: show,
       ...(operator ? { activeOperator: operator } : {}),
     }));
+    persistUiPrefs(get);
   },
 
   setProjectPath: (path: string) => set({ projectPath: path }),
@@ -475,20 +857,65 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   setGraphViewMode: (mode: GraphViewMode) => set({ graphViewMode: mode }),
 
   setWorkspaceViewMode: (mode: WorkspaceViewMode) => {
+    if (mode === "DEEP_DIVE") {
+      set({ workspaceViewMode: "EXECUTIVE_ASPM", executiveAspmTab: "ANALYTICS" });
+      persistUiPrefs(get);
+      get().fetchTrackChanges();
+      get().fetchDeepDiveAnalytics();
+      get().fetchSastPlusSuite();
+      return;
+    }
+    if (mode === "RACI_GOVERNANCE") {
+      set({ workspaceViewMode: "EXECUTIVE_ASPM", executiveAspmTab: "RACI" });
+      persistUiPrefs(get);
+      get().fetchTrackChanges();
+      get().fetchRaciGovernance();
+      get().fetchSastPlusSuite();
+      return;
+    }
+    if (mode === "SAST_PLUS_SUITE") {
+      const currentSastTab = get().sastPlusActiveTab;
+      const mappedExecTab: ExecutiveAspmTab =
+        currentSastTab === "THREAT_MODEL" ? "ATTACK_SURFACE" : currentSastTab;
+      set({ workspaceViewMode: "EXECUTIVE_ASPM", executiveAspmTab: mappedExecTab });
+      persistUiPrefs(get);
+      get().fetchTrackChanges();
+      get().fetchSastPlusSuite();
+      get().fetchDeepDiveAnalytics();
+      get().fetchRaciGovernance();
+      return;
+    }
+    if (mode === "RULE_ENGINE_PROFILES") {
+      set({ workspaceViewMode: "ENGINE_ACCESS", engineAccessTab: "RULE_PROFILES" });
+      persistUiPrefs(get);
+      get().fetchTrackChanges();
+      get().fetchPlatformSettings();
+      return;
+    }
+    if (mode === "USER_PROFILES") {
+      set({ workspaceViewMode: "ENGINE_ACCESS", engineAccessTab: "ACCOUNTS_RBAC" });
+      persistUiPrefs(get);
+      get().fetchTrackChanges();
+      get().fetchUserAccounts();
+      get().fetchProjects();
+      return;
+    }
+
     set({ workspaceViewMode: mode });
+    persistUiPrefs(get);
     get().fetchTrackChanges();
     if (mode === "PROJECTS_HUB") {
       get().fetchProjects();
-    } else if (mode === "DEEP_DIVE") {
-      get().fetchDeepDiveAnalytics();
-    } else if (mode === "RACI_GOVERNANCE") {
-      get().fetchRaciGovernance();
-    } else if (mode === "SAST_PLUS_SUITE" || mode === "THREAT_MODELING") {
+    } else if (mode === "EXECUTIVE_ASPM") {
       get().fetchSastPlusSuite();
-    } else if (mode === "RULE_ENGINE_PROFILES") {
+      get().fetchDeepDiveAnalytics();
+      get().fetchRaciGovernance();
+    } else if (mode === "THREAT_MODELING") {
+      get().fetchSastPlusSuite();
+    } else if (mode === "ENGINE_ACCESS") {
       get().fetchPlatformSettings();
-    } else if (mode === "USER_PROFILES") {
       get().fetchUserAccounts();
+      get().fetchIntegrations();
       get().fetchProjects();
     }
   },
@@ -527,11 +954,16 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     const firstNode = finding.path_nodes && finding.path_nodes.length > 0 ? finding.path_nodes[0] : null;
     set({
       selectedFinding: finding,
+      activePathStepIndex: 0,
+      remediationPreview: null,
       selectedGraphNodeId: firstNode ? firstNode.id : null,
       activeFilepath: firstNode ? firstNode.filepath : null,
       activeStartLine: firstNode ? firstNode.start_line : null,
       activeEndLine: firstNode ? firstNode.end_line : null,
     });
+    if (get().isDiffEditorOpen) {
+      get().fetchRemediationPreview(finding);
+    }
   },
 
   jumpToBestFixLocation: (finding: Finding) => {

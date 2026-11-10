@@ -9,10 +9,25 @@ const config: Config = {
   darkMode: "class",
   theme: {
     extend: {
+      fontFamily: {
+        display: ["var(--font-display)", "Georgia", "serif"],
+        sans: ["var(--font-sans)", "system-ui", "sans-serif"],
+        mono: ["var(--font-mono)", "Consolas", "monospace"],
+      },
       colors: {
         background: "var(--background)",
         foreground: "var(--foreground)",
         border: "var(--border)",
+        "studio-void": "var(--surface-void)",
+        "studio-panel": "var(--surface-panel)",
+        "studio-elevated": "var(--surface-elevated)",
+        "studio-hairline": "var(--border-hairline)",
+        "ink-primary": "var(--ink-primary)",
+        "ink-muted": "var(--ink-muted)",
+        "sig-crimson": "var(--sig-crimson)",
+        "sig-gold": "var(--sig-gold)",
+        "sig-emerald": "var(--sig-emerald)",
+        "sig-cyan": "var(--sig-cyan)",
         zinc: {
           50: "rgb(var(--z-50) / <alpha-value>)",
           100: "rgb(var(--z-100) / <alpha-value>)",

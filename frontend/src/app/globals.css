@@ -12,6 +12,16 @@ html[data-theme="alastor-infernal"] {
   --background: #0b0609;
   --foreground: #fdf4f6;
   --border: #331722;
+  --surface-void: #09090b;
+  --surface-panel: #101014;
+  --surface-elevated: #17171d;
+  --border-hairline: rgba(255, 255, 255, 0.08);
+  --ink-primary: #f4f4f6;
+  --ink-muted: #8e929f;
+  --sig-crimson: #e11d48;
+  --sig-gold: #f59e0b;
+  --sig-emerald: #10b981;
+  --sig-cyan: #06b6d4;
   --alastor-glow-primary: rgba(225, 29, 72, 0.24);
   --alastor-glow-secondary: rgba(245, 158, 11, 0.16);
   --alastor-sigil-stroke: rgba(245, 158, 11, 0.28);
@@ -34,6 +44,16 @@ html[data-theme="olympian-light"] {
   --background: #f3f6fb;
   --foreground: #0f172a;
   --border: #d6e0ee;
+  --surface-void: #f4f6fa;
+  --surface-panel: #ffffff;
+  --surface-elevated: #f8fafc;
+  --border-hairline: rgba(15, 23, 42, 0.10);
+  --ink-primary: #0f172a;
+  --ink-muted: #475569;
+  --sig-crimson: #be123c;
+  --sig-gold: #b45309;
+  --sig-emerald: #047857;
+  --sig-cyan: #0e7490;
   --alastor-glow-primary: rgba(225, 29, 72, 0.09);
   --alastor-glow-secondary: rgba(14, 116, 144, 0.09);
   --alastor-sigil-stroke: rgba(180, 83, 9, 0.22);
@@ -56,6 +76,16 @@ html[data-theme="athena-parchment"] {
   --background: #f6f0e4;
   --foreground: #1c1510;
   --border: #ded2be;
+  --surface-void: #f6f0e4;
+  --surface-panel: #fefbf5;
+  --surface-elevated: #f9f4ea;
+  --border-hairline: rgba(28, 21, 16, 0.11);
+  --ink-primary: #1c1510;
+  --ink-muted: #625342;
+  --sig-crimson: #be123c;
+  --sig-gold: #b45309;
+  --sig-emerald: #047857;
+  --sig-cyan: #0e7490;
   --alastor-glow-primary: rgba(180, 83, 9, 0.11);
   --alastor-glow-secondary: rgba(190, 18, 60, 0.08);
   --alastor-sigil-stroke: rgba(146, 64, 14, 0.24);
@@ -78,6 +108,16 @@ html[data-theme="hyperborean-light"] {
   --background: #ebf4fc;
   --foreground: #09192e;
   --border: #cbe0f5;
+  --surface-void: #ebf4fc;
+  --surface-panel: #fafdff;
+  --surface-elevated: #f2f8fe;
+  --border-hairline: rgba(9, 25, 46, 0.10);
+  --ink-primary: #09192e;
+  --ink-muted: #456282;
+  --sig-crimson: #be123c;
+  --sig-gold: #b45309;
+  --sig-emerald: #047857;
+  --sig-cyan: #0284c7;
   --alastor-glow-primary: rgba(2, 132, 199, 0.11);
   --alastor-glow-secondary: rgba(99, 102, 241, 0.09);
   --alastor-sigil-stroke: rgba(3, 105, 161, 0.22);
@@ -100,6 +140,16 @@ html[data-theme="hecate-arcane"] {
   --background: #090514;
   --foreground: #f7f4ff;
   --border: #2b1b4d;
+  --surface-void: #090514;
+  --surface-panel: #120b24;
+  --surface-elevated: #1b1234;
+  --border-hairline: rgba(255, 255, 255, 0.08);
+  --ink-primary: #f7f4ff;
+  --ink-muted: #9e90c2;
+  --sig-crimson: #e11d48;
+  --sig-gold: #f59e0b;
+  --sig-emerald: #10b981;
+  --sig-cyan: #06b6d4;
   --alastor-glow-primary: rgba(168, 85, 247, 0.25);
   --alastor-glow-secondary: rgba(236, 72, 153, 0.16);
   --alastor-sigil-stroke: rgba(192, 132, 252, 0.28);
@@ -122,6 +172,16 @@ html[data-theme="stygian-abyss"] {
   --background: #09090b;
   --foreground: #fafafa;
   --border: #27272a;
+  --surface-void: #09090b;
+  --surface-panel: #101014;
+  --surface-elevated: #18181b;
+  --border-hairline: rgba(255, 255, 255, 0.08);
+  --ink-primary: #fafafa;
+  --ink-muted: #a1a1aa;
+  --sig-crimson: #e11d48;
+  --sig-gold: #f59e0b;
+  --sig-emerald: #10b981;
+  --sig-cyan: #06b6d4;
   --alastor-glow-primary: rgba(6, 182, 212, 0.2);
   --alastor-glow-secondary: rgba(59, 130, 246, 0.15);
   --alastor-sigil-stroke: rgba(34, 211, 238, 0.24);
@@ -140,11 +200,27 @@ html[data-theme="stygian-abyss"] {
 }
 
 body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color: var(--ink-primary);
+  background: var(--surface-void);
+  font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   overflow: hidden;
   transition: background-color 0.22s ease, color 0.22s ease;
+}
+
+:focus-visible {
+  outline: 1.5px solid var(--sig-gold);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ============================================================================
@@ -335,6 +411,18 @@ html[data-theme-mode="light"] .text-yellow-200 {
 .cpg-active-line-highlight {
   background: rgba(239, 68, 68, 0.18) !important;
   border-left: 3px solid #ef4444 !important;
+}
+
+/* Monaco BFL chokepoint line highlight */
+.cpg-bfl-line-highlight {
+  background: rgba(245, 158, 11, 0.18) !important;
+  border-left: 3px solid #f59e0b !important;
+}
+
+/* Monaco severed thread line highlight */
+.cpg-severed-line-highlight {
+  background: rgba(16, 185, 129, 0.18) !important;
+  border-left: 3px solid #10b981 !important;
 }
 
 /* Monaco vulnerability glyph margin icon */

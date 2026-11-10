@@ -284,12 +284,58 @@ export type GraphViewMode =
 export type WorkspaceViewMode =
   | "REMEDIATION_IDE"
   | "THREAT_MODELING"
+  | "EXECUTIVE_ASPM"
+  | "PROJECTS_HUB"
+  | "ENGINE_ACCESS"
   | "RULE_ENGINE_PROFILES"
   | "USER_PROFILES"
-  | "PROJECTS_HUB"
   | "DEEP_DIVE"
   | "RACI_GOVERNANCE"
   | "SAST_PLUS_SUITE";
+
+export type ExecutiveAspmTab =
+  | "TRANSLATOR"
+  | "SBOM"
+  | "ATTACK_SURFACE"
+  | "ANALYTICS"
+  | "RACI"
+  | "ROADMAP"
+  | "ACADEMY";
+
+export type EngineAccessTab =
+  | "RULE_PROFILES"
+  | "CYPHER_SANITIZERS"
+  | "ACCOUNTS_RBAC"
+  | "ISSUE_CONNECTORS";
+
+export interface RemediatePreviewResponse {
+  can_auto_patch: boolean;
+  filepath: string;
+  expected_sha256: string;
+  original_content: string;
+  patched_content: string;
+  fix_summary: string;
+  target_line: number;
+}
+
+export interface RemediateApplyResponse {
+  status: string;
+  patch_id: string;
+  filepath: string;
+  verified_severed: boolean;
+  remaining_findings_count: number;
+  fixed_delta_count: number;
+  message: string;
+}
+
+export interface RemediateUndoResponse {
+  status: string;
+  patch_id: string;
+  filepath: string;
+  restored_sha256: string;
+  active_findings_count: number;
+  message: string;
+}
 
 export type AudiencePersonaMode = "NON_CODER_MANAGEMENT" | "TECHNICAL_ENGINEER";
 
