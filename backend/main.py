@@ -43,6 +43,7 @@ from models import (
     RemediatePreviewRequest, RemediatePreviewResponse,
     RemediateApplyRequest, RemediateApplyResponse,
     RemediateUndoRequest, RemediateUndoResponse,
+    BatchRemediateRequest, BatchRemediateResponse,
     AiConfigUpdateRequest, AiPublicConfigResponse, AiConnectionTestResponse,
     AiValidateFindingsRequest, AiValidateFindingsResponse,
     AiCodeAuditRequest, AiCodeAuditResponse,
@@ -57,7 +58,9 @@ from engine.enterprise_manager import EnterpriseManager
 from engine.frontier_ai_engine import FrontierAiEngine
 from engine.remediation_patcher import (
     apply_workspace_patch,
+    batch_apply_workspace_patches,
     generate_remediation_preview,
+    synthesize_single_node_context_graph,
     undo_workspace_patch,
 )
 from compiler.scanner import scan_directory, CODE_EXTENSIONS, IGNORE_DIRS
@@ -875,7 +878,10 @@ def startup_event():
         if cached:
             if cached.get("app_tree"):
                 try:
-                    current_app_tree = AppTreeSummary(**cached["app_tree"])
+                    if "cross_file_edges" in cached["app_tree"] or not os.path.exists(current_scan_dir):
+                        current_app_tree = AppTreeSummary(**cached["app_tree"])
+                    else:
+                        current_app_tree = AppTreeAnalyzer(current_scan_dir).analyze()
                 except Exception:
                     pass
             if cached.get("latest_findings") is not None:
@@ -2551,6 +2557,119 @@ def remediate_undo(req: RemediateUndoRequest):
     )
 
 
+@app.post("/api/remediate/batch-apply", response_model=BatchRemediateResponse)
+def remediate_batch_apply(req: BatchRemediateRequest):
+    """
+    Atomically applies deterministic BFL patches across selected (or all open) findings,
+    records `.alastor_patches` undo journal entries for every patch, and runs a single
+    post-batch CPG re-verification scan when at least one patch is applied.
+    """
+    pre_all: List[Finding] = []
+    try:
+        pre_all = get_or_compute_findings()
+    except Exception as pre_err:
+        logger.warning("Pre-batch findings lookup degraded: %s", _sanitize_log(pre_err))
+        if _cached_findings:
+            pre_all = list(_cached_findings)
+
+    pre_open = [f for f in pre_all if f.triage_status != "NOT_EXPLOITABLE"]
+
+    missing_requested = 0
+    if req.finding_ids:
+        wanted_ids = set(req.finding_ids)
+        selected_findings = [f for f in pre_all if f.id in wanted_ids]
+        missing_requested = max(0, len(wanted_ids) - len(selected_findings))
+    else:
+        selected_findings = [f for f in pre_open if f.triage_status != "RESOLVED"]
+
+    batch_res = batch_apply_workspace_patches(
+        findings=selected_findings,
+        allowed_roots=_get_authorized_remediation_roots(),
+        patch_vault_root=_get_remediation_vault_root(),
+    )
+
+    applied_count = int(batch_res["applied_count"])
+    skipped_count = int(batch_res["skipped_count"]) + missing_requested
+    applied_ids = list(batch_res["applied_finding_ids"])
+    applied_id_set = set(applied_ids)
+
+    verified_severed_count = 0
+    remaining_count = len(pre_open)
+
+    if applied_count > 0 and current_scan_dir and os.path.exists(current_scan_dir):
+        post_findings: List[Finding] = []
+        scan_degraded = False
+        try:
+            _batch_scan = scan_project(ScanRequest(target_path=current_scan_dir))
+            post_findings = [
+                f for f in get_or_compute_findings()
+                if f.triage_status != "NOT_EXPLOITABLE"
+            ]
+        except Exception as scan_err:
+            scan_degraded = True
+            logger.warning("Post-batch CPG re-verification scan degraded: %s", _sanitize_log(scan_err))
+            try:
+                post_findings = enterprise_mgr.enrich_findings(
+                    enterprise_mgr.run_sca_and_iac_scanners(current_scan_dir)
+                )
+            except Exception:
+                post_findings = []
+
+        remaining_count = len(post_findings)
+        for af in selected_findings:
+            if af.id not in applied_id_set:
+                continue
+            af_fp = (
+                af.best_fix_location.filepath
+                if af.best_fix_location and af.best_fix_location.filepath
+                else (str(af.path_nodes[-1].get("filepath") or "") if af.path_nodes else "")
+            )
+            pre_matches = [
+                pf for pf in pre_open
+                if _finding_matches_remediated_target(pf, af.id, af.rule_id, af_fp)
+            ]
+            post_matches = [
+                pf for pf in post_findings
+                if _finding_matches_remediated_target(pf, af.id, af.rule_id, af_fp)
+            ]
+            exact_present = any(pf.id == af.id for pf in post_findings)
+            if pre_matches:
+                eliminated = (not exact_present) and (len(post_matches) < len(pre_matches))
+            else:
+                eliminated = (not exact_present) and (len(post_matches) == 0)
+            is_non_cpg = (af.rule_id or "").upper().startswith(("SCA-", "IAC-"))
+            if (not scan_degraded or is_non_cpg) and eliminated:
+                verified_severed_count += 1
+
+    logger.info(
+        "Batch remediation completed: applied=%d, skipped=%d, severed=%d, remaining=%d",
+        applied_count,
+        skipped_count,
+        verified_severed_count,
+        remaining_count,
+    )
+    if applied_count > 0:
+        msg = (
+            f"Applied {applied_count} deterministic BFL patch(es) across {len(batch_res['patched_files'])} file(s); "
+            f"CPG re-scan verified {verified_severed_count} severed ({remaining_count} active remaining)."
+        )
+    else:
+        msg = f"No auto-patchable findings matched ({skipped_count} skipped)."
+
+    return BatchRemediateResponse(
+        status=str(batch_res["status"]),
+        applied_count=applied_count,
+        skipped_count=skipped_count,
+        applied_patch_ids=list(batch_res["applied_patch_ids"]),
+        patched_files=list(batch_res["patched_files"]),
+        applied_finding_ids=applied_ids,
+        verified_severed_count=verified_severed_count,
+        remaining_findings_count=remaining_count,
+        unified_diff=str(batch_res["unified_diff"]),
+        message=msg,
+    )
+
+
 @app.get("/api/node-at-location")
 def get_node_at_location(filepath: str = Query(...), line: int = Query(...)):
     """Finds the most specific CPG node matching filepath and line number."""
@@ -2569,6 +2688,111 @@ def get_node_at_location(filepath: str = Query(...), line: int = Query(...)):
     return {"node": None}
 
 
+def _humanize_graph_edges(edges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Ensures every graph edge returned by `/api/graph` carries a clear directional `flow_label`."""
+    humanized: List[Dict[str, Any]] = []
+    for raw_edge in edges:
+        if not isinstance(raw_edge, dict):
+            continue
+        ed = dict(raw_edge)
+        existing_lbl = str(ed.get("flow_label") or "").strip()
+        if existing_lbl and existing_lbl != "IMPORTS":
+            humanized.append(ed)
+            continue
+        etype = str(ed.get("type") or ed.get("edge_type") or "").upper()
+        var_name = str(ed.get("var_name") or "").strip()
+        if etype == "DFG_FLOWS_TO":
+            lbl = f"TAINT ({var_name}) ▶" if var_name else "FLOWS TO ▶"
+        elif etype == "CALLS":
+            lbl = "CALLS ▶"
+        elif etype == "CFG_TRUE":
+            lbl = "TRUE BRANCH ▶"
+        elif etype == "CFG_FALSE":
+            lbl = "FALSE BRANCH ▶"
+        elif etype == "CFG_LOOP_BACK":
+            lbl = "LOOP BACK ↺"
+        elif etype == "CFG_BREAK":
+            lbl = "BREAK ▶"
+        elif etype == "CFG_NEXT":
+            lbl = "NEXT ▶"
+        elif etype == "CONTAINS":
+            lbl = "CONTAINS ▶"
+        elif etype == "IMPORTS":
+            lbl = f"IMPORTS ({var_name}) ▶" if var_name else "IMPORTS ▶"
+        elif etype == "DEFINES":
+            lbl = "DEFINES ▶"
+        elif etype == "DECLARES":
+            lbl = "DECLARES ▶"
+        elif etype == "CONFIGURES":
+            lbl = "CONFIGURES ▶"
+        else:
+            lbl = f"{etype or 'FLOWS'} ▶"
+        ed["flow_label"] = lbl
+        humanized.append(ed)
+    return humanized
+
+
+def _synthesize_app_tree_nodes_and_edges(
+    tree_summary: AppTreeSummary,
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """Synthesizes `AppDirectory` + `AppFile` + `CONTAINS` topology in-memory from `AppTreeSummary`."""
+    nodes_map: Dict[str, Dict[str, Any]] = {}
+    edges_map: Dict[str, Dict[str, Any]] = {}
+
+    def _walk_dir(dir_node: Any, parent_dir_id: str = "") -> None:
+        dir_path = dir_node.path if dir_node.path else "root"
+        dir_id = f"dir:{dir_path}"
+        nodes_map[dir_id] = {
+            "id": dir_id,
+            "label": "AppDirectory",
+            "path": dir_path,
+            "name": dir_node.name,
+            "purpose": dir_node.purpose or f"Directory: {dir_node.name}",
+        }
+        if parent_dir_id:
+            c_dir_edge_id = f"contains:{parent_dir_id}->{dir_id}"
+            edges_map[c_dir_edge_id] = {
+                "id": c_dir_edge_id,
+                "source": parent_dir_id,
+                "target": dir_id,
+                "type": "CONTAINS",
+                "var_name": None,
+                "flow_label": "CONTAINS ▶",
+            }
+        for f_info in dir_node.files:
+            file_id = f"file:{f_info.filepath}"
+            nodes_map[file_id] = {
+                "id": file_id,
+                "label": "AppFile",
+                "filepath": f_info.filepath,
+                "filename": f_info.filename,
+                "extension": f_info.extension,
+                "category": f_info.category,
+                "purpose": f_info.purpose,
+                "language": f_info.language,
+                "line_count": f_info.line_count,
+                "size_bytes": f_info.size_bytes,
+                "sha256": f_info.sha256,
+                "is_cpg_supported": f_info.is_cpg_supported,
+                "security_tags": list(f_info.security_tags or []),
+                "imports_files": list(getattr(f_info, "imports_files", None) or []),
+            }
+            c_file_edge_id = f"contains:{dir_id}->{file_id}"
+            edges_map[c_file_edge_id] = {
+                "id": c_file_edge_id,
+                "source": dir_id,
+                "target": file_id,
+                "type": "CONTAINS",
+                "var_name": None,
+                "flow_label": "CONTAINS ▶",
+            }
+        for sub_dir in dir_node.subdirectories:
+            _walk_dir(sub_dir, dir_id)
+
+    _walk_dir(tree_summary.tree)
+    return nodes_map, edges_map
+
+
 @app.get("/api/graph")
 def get_graph(
     view_mode: str = Query("FINDING_PATH", description="FULL_CPG, DFG_ONLY, CFG_ONLY, CALL_GRAPH, ENTRYPOINT_GRAPH, FINDING_PATH, APP_TREE"),
@@ -2576,13 +2800,14 @@ def get_graph(
     filepath: Optional[str] = Query(None)
 ):
     """Returns nodes and edges filtered by view mode with bounded limits for sub-50ms ReactFlow canvas rendering."""
+    global current_app_tree
     if view_mode == "FINDING_PATH":
         if not finding_id:
             return {"nodes": [], "edges": []}
         findings = get_or_compute_findings()
         for f in findings:
             if f.id == finding_id:
-                return {"nodes": f.path_nodes, "edges": f.path_edges}
+                return synthesize_single_node_context_graph(f)
         return {"nodes": [], "edges": []}
 
     if view_mode == "ENTRYPOINT_GRAPH":
@@ -2707,185 +2932,226 @@ def get_graph(
                     "var_name": _fl.cwe_id or "taint",
                 })
 
-        return {"nodes": _ep_nodes, "edges": _ep_edges}
+        return {"nodes": _ep_nodes, "edges": _humanize_graph_edges(_ep_edges)}
 
-    with neo4j_client.driver.session() as session:
-        if view_mode == "APP_TREE":
-            q = """
-            MATCH (s) WHERE s:AppDirectory OR s:AppFile
-            OPTIONAL MATCH (s)-[r:CONTAINS]->(t)
-            WHERE t:AppDirectory OR t:AppFile
-            RETURN collect(DISTINCT {props: properties(s), label: head(labels(s))}) AS all_nodes,
-                   [rel IN collect(DISTINCT r) WHERE rel IS NOT NULL | 
-                    {id: toString(coalesce(rel.id, elementId(rel))), source: startNode(rel).id, target: endNode(rel).id, type: type(rel), var_name: null}] AS all_edges
-            """
-            result = session.run(q).single()
-            raw_nodes = result["all_nodes"] if result else []
-            raw_edges = result["all_edges"] if result else []
+    if view_mode == "APP_TREE":
+        raw_nodes: List[Any] = []
+        raw_edges: List[Any] = []
+        try:
+            if neo4j_client.driver is not None:
+                with neo4j_client.driver.session() as session:
+                    q = """
+                    MATCH (s) WHERE s:AppDirectory OR s:AppFile
+                    OPTIONAL MATCH (s)-[r:CONTAINS]->(t)
+                    WHERE t:AppDirectory OR t:AppFile
+                    RETURN collect(DISTINCT {props: properties(s), label: head(labels(s))}) AS all_nodes,
+                           [rel IN collect(DISTINCT r) WHERE rel IS NOT NULL | 
+                            {id: toString(coalesce(rel.id, elementId(rel))), source: startNode(rel).id, target: endNode(rel).id, type: type(rel), var_name: null}] AS all_edges
+                    """
+                    result = session.run(q).single()
+                    raw_nodes = result["all_nodes"] if result else []
+                    raw_edges = result["all_edges"] if result else []
+        except Exception as neo_tree_err:
+            logger.warning("APP_TREE Neo4j query degraded, using in-memory tree: %s", _sanitize_log(neo_tree_err))
 
-            unique_nodes = {}
-            for item in raw_nodes:
-                if isinstance(item, dict) and "props" in item and isinstance(item["props"], dict):
-                    node_dict = dict(item["props"])
-                    node_dict["label"] = item.get("label") or ("AppDirectory" if node_dict.get("id", "").startswith("dir:") else "AppFile")
-                    if "id" in node_dict:
-                        unique_nodes[node_dict["id"]] = node_dict
+        unique_nodes: Dict[str, Dict[str, Any]] = {}
+        for item in raw_nodes:
+            if isinstance(item, dict) and "props" in item and isinstance(item["props"], dict):
+                node_dict = dict(item["props"])
+                node_dict["label"] = item.get("label") or ("AppDirectory" if node_dict.get("id", "").startswith("dir:") else "AppFile")
+                if "id" in node_dict:
+                    unique_nodes[node_dict["id"]] = node_dict
 
-            unique_edges = {}
-            for e in raw_edges:
-                if isinstance(e, dict) and "id" in e and e["id"]:
-                    e["id"] = str(e["id"])
-                    unique_edges[e["id"]] = e
-
-            return {
-                "nodes": list(unique_nodes.values()),
-                "edges": list(unique_edges.values())
-            }
-
-        params = {}
-        where_clauses = []
-        if filepath:
-            norm_fp = filepath.replace("\\", "/").lstrip("/")
-            where_clauses.append("(s.filepath ENDS WITH $filepath OR $filepath ENDS WITH s.filepath OR t.filepath ENDS WITH $filepath)")
-            params["filepath"] = norm_fp
-
-        where_stmt = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
-
-        if view_mode == "DFG_ONLY":
-            rel_filter = ":DFG_FLOWS_TO"
-        elif view_mode == "CFG_ONLY":
-            rel_filter = ":CFG_NEXT|CFG_TRUE|CFG_FALSE|CFG_LOOP_BACK|CFG_BREAK"
-        elif view_mode == "CALL_GRAPH":
-            rel_filter = ":CALLS"
-        else:
-            rel_filter = ""
-
-        def _run_cpg_graph_query(_w_stmt: str, _q_params: Dict[str, Any]):
-            if view_mode == "CALL_GRAPH":
-                _cg_q = f"""
-                MATCH (s:CPGNode)-[r:CALLS]->(t:CPGNode)
-                {_w_stmt}
-                OPTIONAL MATCH (callerFn:Function)-[:AST_CHILD*1..4]->(s)
-                WITH callerFn, s, r, t LIMIT 100
-                WITH collect(DISTINCT properties(s)) AS s_nodes,
-                     collect(DISTINCT properties(t)) AS t_nodes,
-                     [cf IN collect(DISTINCT callerFn) WHERE cf IS NOT NULL | properties(cf)] AS cf_nodes,
-                     collect(DISTINCT {{id: r.id, source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS call_edges,
-                     [ce IN collect(DISTINCT CASE WHEN callerFn IS NOT NULL THEN {{id: 'def-' + callerFn.id + '-' + s.id, source: callerFn.id, target: s.id, type: 'DEFINES', var_name: 'calls'}} ELSE NULL END) WHERE ce IS NOT NULL] AS def_edges
-                RETURN (s_nodes + t_nodes + cf_nodes) AS all_nodes,
-                       (call_edges + def_edges) AS all_edges
-                """
-                return session.run(_cg_q, **_q_params).single()
-            if rel_filter:
-                _std_q = f"""
-                MATCH (s:CPGNode)-[r{rel_filter}]->(t:CPGNode)
-                {_w_stmt}
-                WITH s, r, t LIMIT 120
-                RETURN collect(DISTINCT properties(s)) + collect(DISTINCT properties(t)) AS all_nodes,
-                       collect(DISTINCT {{id: r.id, source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS all_edges
-                """
-                return session.run(_std_q, **_q_params).single()
-            _full_q = f"""
-            MATCH (s:CPGNode)-[r]->(t:CPGNode)
-            {_w_stmt}
-            WITH s, r, t LIMIT 120
-            RETURN collect(DISTINCT properties(s)) + collect(DISTINCT properties(t)) AS all_nodes,
-                   collect(DISTINCT {{id: r.id, source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS all_edges
-            """
-            return session.run(_full_q, **_q_params).single()
-
-        result = _run_cpg_graph_query(where_stmt, params)
-        raw_nodes = result["all_nodes"] if result else []
-        raw_edges = result["all_edges"] if result else []
-
-        # If active file is a manifest/config or has 0 edges for this view_mode, fall back to Project-Wide graph!
-        if not raw_edges and where_stmt:
-            result = _run_cpg_graph_query("", {})
-            raw_nodes = result["all_nodes"] if result else []
-            raw_edges = result["all_edges"] if result else []
-
-        # Deduplicate
-        unique_nodes = {}
-        for n in raw_nodes:
-            if isinstance(n, list):
-                for item in n:
-                    if isinstance(item, dict) and "id" in item:
-                        unique_nodes[item["id"]] = item
-            elif isinstance(n, dict) and "id" in n:
-                unique_nodes[n["id"]] = n
-
-        unique_edges = {}
+        unique_edges: Dict[str, Dict[str, Any]] = {}
         for e in raw_edges:
-            if isinstance(e, dict) and "id" in e and e.get("source") in unique_nodes and e.get("target") in unique_nodes:
-                unique_edges[e["id"]] = e
+            if isinstance(e, dict) and "id" in e and e["id"]:
+                ec = dict(e)
+                ec["id"] = str(ec["id"])
+                unique_edges[ec["id"]] = ec
 
-        # Fallback synthesis if viewing a cached project not currently in Neo4j or a project with 0 CALLS in Neo4j
-        if len(unique_nodes) < 2 and current_app_tree:
-            _synth_nodes: List[Dict[str, Any]] = []
-            _synth_edges: List[Dict[str, Any]] = []
-            _fn_files = [
-                _ff for _ff in current_app_tree.flat_files
-                if _ff.elements and (not filepath or _ff.filepath == filepath or len(current_app_tree.flat_files) > 0)
-            ][:18]
-            _prev_fn_id: Optional[str] = None
-            for _f_i, _ff in enumerate(_fn_files):
-                _mod_id = f"cg-mod:{_ff.filepath}"
-                _synth_nodes.append({
-                    "id": _mod_id,
-                    "label": "Module",
-                    "ast_type": "module",
-                    "name": _ff.filename,
-                    "code": _ff.purpose or _ff.filepath,
-                    "filepath": _ff.filepath,
-                    "start_line": 1,
-                    "end_line": max(1, _ff.line_count),
-                    "start_col": 0,
-                    "end_col": 20,
-                    "scope_id": _ff.filepath,
-                    "is_source": _ff.category == "API_ROUTER",
-                    "is_sink": False,
-                    "is_sanitizer": False,
-                })
-                for _e_i, _el in enumerate(_ff.elements[:4]):
-                    _el_id = f"cg-fn:{_ff.filepath}:{_el.name}:{_el.line_number}:{_e_i}"
-                    _synth_nodes.append({
-                        "id": _el_id,
-                        "label": "Function" if _el.element_type in ("FUNCTION", "ROUTE", "CLASS") else "Call",
-                        "ast_type": _el.element_type.lower(),
-                        "name": f"{_el.name}()",
-                        "code": _el.signature or _el.details or _el.name,
-                        "filepath": _ff.filepath,
-                        "start_line": max(1, _el.line_number),
-                        "end_line": max(1, _el.line_number),
-                        "start_col": 0,
-                        "end_col": 30,
-                        "scope_id": _ff.filepath,
-                        "is_source": _el.element_type == "ROUTE",
-                        "is_sink": False,
-                        "is_sanitizer": False,
-                    })
-                    _synth_edges.append({
-                        "id": f"cg-edge-mod-{_f_i}-{_e_i}",
-                        "source": _mod_id,
-                        "target": _el_id,
-                        "type": "CALLS" if view_mode == "CALL_GRAPH" else "CFG_NEXT",
-                        "var_name": "invokes" if view_mode == "CALL_GRAPH" else None,
-                    })
-                    if _prev_fn_id and _e_i == 0:
-                        _synth_edges.append({
-                            "id": f"cg-edge-cross-{_f_i}",
-                            "source": _prev_fn_id,
-                            "target": _el_id,
-                            "type": "CALLS",
-                            "var_name": "calls",
-                        })
-                    _prev_fn_id = _el_id
-            return {"nodes": _synth_nodes, "edges": _synth_edges}
+        has_app_files = any(
+            n.get("label") == "AppFile" or str(nid).startswith("file:")
+            for nid, n in unique_nodes.items()
+        )
+        if current_app_tree is None and current_scan_dir and os.path.exists(current_scan_dir):
+            current_app_tree = AppTreeAnalyzer(current_scan_dir).analyze()
+        if not has_app_files and current_app_tree is not None:
+            fb_nodes, fb_edges = _synthesize_app_tree_nodes_and_edges(current_app_tree)
+            unique_nodes.update(fb_nodes)
+            unique_edges.update(fb_edges)
+
+        if current_app_tree is not None:
+            for ce in (getattr(current_app_tree, "cross_file_edges", None) or []):
+                src_node_id = f"file:{ce.source_filepath}"
+                tgt_node_id = f"file:{ce.target_filepath}"
+                if src_node_id in unique_nodes and tgt_node_id in unique_nodes:
+                    x_edge_id = f"xfile:{ce.source_filepath}->{ce.target_filepath}"
+                    var_lbl = ", ".join(ce.symbols[:3]) if ce.symbols else None
+                    unique_edges[x_edge_id] = {
+                        "id": x_edge_id,
+                        "source": src_node_id,
+                        "target": tgt_node_id,
+                        "type": "IMPORTS",
+                        "var_name": var_lbl,
+                        "flow_label": ce.flow_label,
+                    }
 
         return {
             "nodes": list(unique_nodes.values()),
-            "edges": list(unique_edges.values())
+            "edges": _humanize_graph_edges(list(unique_edges.values())),
         }
+
+    raw_nodes = []
+    raw_edges = []
+    params: Dict[str, Any] = {}
+    where_clauses: List[str] = []
+    if filepath:
+        norm_fp = filepath.replace("\\", "/").lstrip("/")
+        where_clauses.append("(s.filepath ENDS WITH $filepath OR $filepath ENDS WITH s.filepath OR t.filepath ENDS WITH $filepath)")
+        params["filepath"] = norm_fp
+
+    where_stmt = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    if view_mode == "DFG_ONLY":
+        rel_filter = ":DFG_FLOWS_TO"
+    elif view_mode == "CFG_ONLY":
+        rel_filter = ":CFG_NEXT|CFG_TRUE|CFG_FALSE|CFG_LOOP_BACK|CFG_BREAK"
+    elif view_mode == "CALL_GRAPH":
+        rel_filter = ":CALLS"
+    else:
+        rel_filter = ""
+
+    try:
+        if neo4j_client.driver is not None:
+            with neo4j_client.driver.session() as session:
+                def _run_cpg_graph_query(_w_stmt: str, _q_params: Dict[str, Any]):
+                    if view_mode == "CALL_GRAPH":
+                        _cg_q = f"""
+                        MATCH (s:CPGNode)-[r:CALLS]->(t:CPGNode)
+                        {_w_stmt}
+                        OPTIONAL MATCH (callerFn:Function)-[:AST_CHILD*1..4]->(s)
+                        WITH callerFn, s, r, t LIMIT 100
+                        WITH collect(DISTINCT properties(s)) AS s_nodes,
+                             collect(DISTINCT properties(t)) AS t_nodes,
+                             [cf IN collect(DISTINCT callerFn) WHERE cf IS NOT NULL | properties(cf)] AS cf_nodes,
+                             collect(DISTINCT {{id: r.id, source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS call_edges,
+                             [ce IN collect(DISTINCT CASE WHEN callerFn IS NOT NULL THEN {{id: 'def-' + callerFn.id + '-' + s.id, source: callerFn.id, target: s.id, type: 'DEFINES', var_name: 'calls'}} ELSE NULL END) WHERE ce IS NOT NULL] AS def_edges
+                        RETURN (s_nodes + t_nodes + cf_nodes) AS all_nodes,
+                               (call_edges + def_edges) AS all_edges
+                        """
+                        return session.run(_cg_q, **_q_params).single()
+                    if rel_filter:
+                        _std_q = f"""
+                        MATCH (s:CPGNode)-[r{rel_filter}]->(t:CPGNode)
+                        {_w_stmt}
+                        WITH s, r, t LIMIT 120
+                        RETURN collect(DISTINCT properties(s)) + collect(DISTINCT properties(t)) AS all_nodes,
+                               collect(DISTINCT {{id: r.id, source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS all_edges
+                        """
+                        return session.run(_std_q, **_q_params).single()
+                    _full_q = f"""
+                    MATCH (s:CPGNode)-[r]->(t:CPGNode)
+                    {_w_stmt}
+                    WITH s, r, t LIMIT 120
+                    RETURN collect(DISTINCT properties(s)) + collect(DISTINCT properties(t)) AS all_nodes,
+                           collect(DISTINCT {{id: r.id, source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS all_edges
+                    """
+                    return session.run(_full_q, **_q_params).single()
+
+                result = _run_cpg_graph_query(where_stmt, params)
+                raw_nodes = result["all_nodes"] if result else []
+                raw_edges = result["all_edges"] if result else []
+
+                # If active file is a manifest/config or has 0 edges for this view_mode, fall back to Project-Wide graph!
+                if not raw_edges and where_stmt:
+                    result = _run_cpg_graph_query("", {})
+                    raw_nodes = result["all_nodes"] if result else []
+                    raw_edges = result["all_edges"] if result else []
+    except Exception as neo_cpg_err:
+        logger.warning("CPG graph query degraded (%s): %s", _sanitize_log(view_mode), _sanitize_log(neo_cpg_err))
+
+    # Deduplicate
+    unique_nodes = {}
+    for n in raw_nodes:
+        if isinstance(n, list):
+            for item in n:
+                if isinstance(item, dict) and "id" in item:
+                    unique_nodes[item["id"]] = item
+        elif isinstance(n, dict) and "id" in n:
+            unique_nodes[n["id"]] = n
+
+    unique_edges = {}
+    for e in raw_edges:
+        if isinstance(e, dict) and "id" in e and e.get("source") in unique_nodes and e.get("target") in unique_nodes:
+            unique_edges[e["id"]] = e
+
+    # Fallback synthesis if viewing a cached project not currently in Neo4j or a project with 0 CALLS in Neo4j
+    if len(unique_nodes) < 2 and current_app_tree:
+        _synth_nodes: List[Dict[str, Any]] = []
+        _synth_edges: List[Dict[str, Any]] = []
+        _fn_files = [
+            _ff for _ff in current_app_tree.flat_files
+            if _ff.elements and (not filepath or _ff.filepath == filepath or len(current_app_tree.flat_files) > 0)
+        ][:18]
+        _prev_fn_id: Optional[str] = None
+        for _f_i, _ff in enumerate(_fn_files):
+            _mod_id = f"cg-mod:{_ff.filepath}"
+            _synth_nodes.append({
+                "id": _mod_id,
+                "label": "Module",
+                "ast_type": "module",
+                "name": _ff.filename,
+                "code": _ff.purpose or _ff.filepath,
+                "filepath": _ff.filepath,
+                "start_line": 1,
+                "end_line": max(1, _ff.line_count),
+                "start_col": 0,
+                "end_col": 20,
+                "scope_id": _ff.filepath,
+                "is_source": _ff.category == "API_ROUTER",
+                "is_sink": False,
+                "is_sanitizer": False,
+            })
+            for _e_i, _el in enumerate(_ff.elements[:4]):
+                _el_id = f"cg-fn:{_ff.filepath}:{_el.name}:{_el.line_number}:{_e_i}"
+                _synth_nodes.append({
+                    "id": _el_id,
+                    "label": "Function" if _el.element_type in ("FUNCTION", "ROUTE", "CLASS") else "Call",
+                    "ast_type": _el.element_type.lower(),
+                    "name": f"{_el.name}()",
+                    "code": _el.signature or _el.details or _el.name,
+                    "filepath": _ff.filepath,
+                    "start_line": max(1, _el.line_number),
+                    "end_line": max(1, _el.line_number),
+                    "start_col": 0,
+                    "end_col": 30,
+                    "scope_id": _ff.filepath,
+                    "is_source": _el.element_type == "ROUTE",
+                    "is_sink": False,
+                    "is_sanitizer": False,
+                })
+                _synth_edges.append({
+                    "id": f"cg-edge-mod-{_f_i}-{_e_i}",
+                    "source": _mod_id,
+                    "target": _el_id,
+                    "type": "CALLS" if view_mode == "CALL_GRAPH" else "CFG_NEXT",
+                    "var_name": "invokes" if view_mode == "CALL_GRAPH" else None,
+                })
+                if _prev_fn_id and _e_i == 0:
+                    _synth_edges.append({
+                        "id": f"cg-edge-cross-{_f_i}",
+                        "source": _prev_fn_id,
+                        "target": _el_id,
+                        "type": "CALLS",
+                        "var_name": "calls",
+                    })
+                _prev_fn_id = _el_id
+        return {"nodes": _synth_nodes, "edges": _humanize_graph_edges(_synth_edges)}
+
+    return {
+        "nodes": list(unique_nodes.values()),
+        "edges": _humanize_graph_edges(list(unique_edges.values()))
+    }
 
 
 # ===========================================================================

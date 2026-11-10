@@ -223,6 +223,14 @@ class DiscoveredElement(BaseModel):
     details: str = ""
 
 
+class CrossFileEdge(BaseModel):
+    source_filepath: str
+    target_filepath: str
+    edge_type: str = "IMPORTS"
+    symbols: List[str] = Field(default_factory=list)
+    flow_label: str = "IMPORTS"
+
+
 class FilePurposeInfo(BaseModel):
     filepath: str
     filename: str
@@ -236,6 +244,7 @@ class FilePurposeInfo(BaseModel):
     elements: List[DiscoveredElement] = Field(default_factory=list)
     is_cpg_supported: bool = False
     security_tags: List[str] = Field(default_factory=list)
+    imports_files: List[str] = Field(default_factory=list)
 
 
 class DirectoryTreeNode(BaseModel):
@@ -255,6 +264,7 @@ class AppTreeSummary(BaseModel):
     detected_tech_stack: List[str]
     tree: DirectoryTreeNode
     flat_files: List[FilePurposeInfo]
+    cross_file_edges: List[CrossFileEdge] = Field(default_factory=list)
 
 
 class ScanResponse(BaseModel):
@@ -555,6 +565,23 @@ class RemediateUndoResponse(BaseModel):
     restored_sha256: str
     active_findings_count: int
     message: str
+
+
+class BatchRemediateRequest(BaseModel):
+    finding_ids: List[str] = Field(default_factory=list)
+
+
+class BatchRemediateResponse(BaseModel):
+    status: str
+    applied_count: int
+    skipped_count: int
+    applied_patch_ids: List[str] = Field(default_factory=list)
+    patched_files: List[str] = Field(default_factory=list)
+    applied_finding_ids: List[str] = Field(default_factory=list)
+    verified_severed_count: int = 0
+    remaining_findings_count: int = 0
+    unified_diff: str = ""
+    message: str = ""
 
 
 # ---------------------------------------------------------------------------

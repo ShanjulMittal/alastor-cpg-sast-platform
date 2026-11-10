@@ -11,6 +11,7 @@ Security Invariants:
 """
 import ast
 import base64
+import difflib
 import hashlib
 import json
 import os
@@ -1514,4 +1515,412 @@ def undo_workspace_patch(
         ),
         "resolved_filepath": restored_target,
         "restored_sha256": restored_sha,
+    }
+
+
+_CIRCLED_STEP_BADGES = ("①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩")
+
+
+def _format_step_badge(step_index: int) -> str:
+    if 1 <= step_index <= len(_CIRCLED_STEP_BADGES):
+        return _CIRCLED_STEP_BADGES[step_index - 1]
+    return f"({step_index})"
+
+
+def _edge_flow_phrase(edge_type: str, var_name: Optional[str] = None) -> str:
+    et = (edge_type or "DFG_FLOWS_TO").upper()
+    clean_var = (str(var_name).strip() if var_name is not None else "")
+    if et == "DFG_FLOWS_TO":
+        return f"TAINT ({clean_var}) ▶" if clean_var else "FLOWS TO ▶"
+    if et == "CALLS":
+        return "CALLS ▶"
+    if et == "CFG_TRUE":
+        return "TRUE BRANCH ▶"
+    if et == "CFG_FALSE":
+        return "FALSE BRANCH ▶"
+    if et == "CFG_LOOP_BACK":
+        return "LOOP BACK ↺"
+    if et == "CFG_BREAK":
+        return "BREAK ▶"
+    if et == "CFG_NEXT":
+        return "NEXT ▶"
+    if et == "CONTAINS":
+        return "CONTAINS ▶"
+    if et == "IMPORTS":
+        return f"IMPORTS ({clean_var}) ▶" if clean_var else "IMPORTS ▶"
+    return f"{et} ▶"
+
+
+def _coerce_dict(obj: Any) -> Dict[str, Any]:
+    if isinstance(obj, dict):
+        return dict(obj)
+    if hasattr(obj, "model_dump"):
+        return dict(obj.model_dump())
+    return {}
+
+
+def synthesize_single_node_context_graph(finding: Any) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Synthesizes a 3-node, 2-edge directional context chain (`Origin -> Vulnerable Chokepoint [BFL] -> Security Impact`)
+    whenever a finding has `<= 1` `path_nodes` or `0` `path_edges`. When a finding already has `>= 2` nodes and
+    `>= 1` edges, enriches each edge with `step_index` (`1..N`) and `flow_label`, and marks the BFL node (`is_bfl=True`).
+    """
+    raw_nodes = [_coerce_dict(n) for n in (getattr(finding, "path_nodes", None) or [])]
+    raw_edges = [_coerce_dict(e) for e in (getattr(finding, "path_edges", None) or [])]
+    bfl = getattr(finding, "best_fix_location", None)
+    finding_id = str(getattr(finding, "id", "") or "finding")
+    rule_id = str(getattr(finding, "rule_id", "") or "")
+    rule_up = rule_id.upper()
+    engine_up = str(getattr(finding, "scan_engine", "SAST") or "SAST").upper()
+    cwe_id = str(getattr(finding, "cwe_id", "") or "CWE-703")
+    severity = str(getattr(finding, "severity", "HIGH") or "HIGH")
+    title = str(getattr(finding, "title", "") or "Security Vulnerability")
+    is_cred_leak = bool(getattr(finding, "is_secret_finding", False))
+
+    if len(raw_nodes) >= 2 and len(raw_edges) >= 1:
+        bfl_node_id = str(getattr(bfl, "node_id", "") or "") if bfl else ""
+        bfl_fp = (str(getattr(bfl, "filepath", "") or "").replace("\\", "/").lstrip("/") if bfl else "")
+        bfl_line = int(getattr(bfl, "line", 0) or 0) if bfl else 0
+
+        enriched_nodes: List[Dict[str, Any]] = []
+        matched_any_bfl = False
+        for node in raw_nodes:
+            nd = dict(node)
+            n_fp = str(nd.get("filepath") or "").replace("\\", "/").lstrip("/")
+            n_ln = int(nd.get("start_line") or 0)
+            is_match = bool(
+                (bfl_node_id and nd.get("id") == bfl_node_id)
+                or (
+                    bfl_fp
+                    and bfl_line > 0
+                    and n_ln == bfl_line
+                    and (n_fp == bfl_fp or n_fp.endswith("/" + bfl_fp) or bfl_fp.endswith("/" + n_fp))
+                )
+            )
+            if is_match:
+                nd["is_bfl"] = True
+                matched_any_bfl = True
+            else:
+                nd.setdefault("is_bfl", False)
+            nd.setdefault("is_synthesized_context", False)
+            enriched_nodes.append(nd)
+
+        if not matched_any_bfl and enriched_nodes:
+            enriched_nodes[-1]["is_bfl"] = True
+
+        enriched_edges: List[Dict[str, Any]] = []
+        for idx, edge in enumerate(raw_edges, start=1):
+            ed = dict(edge)
+            src_id = ed.get("source") or ed.get("source_id") or ""
+            tgt_id = ed.get("target") or ed.get("target_id") or ""
+            e_type = str(ed.get("type") or ed.get("edge_type") or "DFG_FLOWS_TO")
+            ed["source"] = src_id
+            ed["target"] = tgt_id
+            ed["type"] = e_type
+            ed["step_index"] = idx
+            badge = _format_step_badge(idx)
+            ed["flow_label"] = f"{badge} {_edge_flow_phrase(e_type, ed.get('var_name'))}"
+            enriched_edges.append(ed)
+
+        return {"nodes": enriched_nodes, "edges": enriched_edges}
+
+    # Single-node or edgeless finding: build 3-step directional context chain
+    if raw_nodes:
+        chokepoint = dict(raw_nodes[0])
+        chokepoint["id"] = str(chokepoint.get("id") or f"bfl:{finding_id}")
+        chokepoint["is_bfl"] = True
+        chokepoint["is_source"] = False
+        chokepoint["is_sink"] = False
+        chokepoint["is_synthesized_context"] = False
+    else:
+        fp_fallback = (str(getattr(bfl, "filepath", "") or "") if bfl else "") or "workspace"
+        ln_fallback = int(getattr(bfl, "line", 1) or 1) if bfl else 1
+        col_fallback = int(getattr(bfl, "column", 0) or 0) if bfl else 0
+        snip_fallback = (str(getattr(bfl, "code_snippet", "") or "") if bfl else "") or title
+        choke_id = (str(getattr(bfl, "node_id", "") or "") if bfl else "") or f"bfl:{finding_id}"
+        chokepoint = {
+            "id": choke_id,
+            "label": "Call",
+            "ast_type": "bfl_chokepoint",
+            "name": f"{os.path.basename(fp_fallback) or fp_fallback}:L{ln_fallback}",
+            "code": snip_fallback,
+            "filepath": fp_fallback,
+            "start_line": max(1, ln_fallback),
+            "end_line": max(1, ln_fallback),
+            "start_col": max(0, col_fallback),
+            "end_col": max(1, col_fallback + len(snip_fallback)),
+            "scope_id": fp_fallback,
+            "is_source": False,
+            "is_sink": False,
+            "is_sanitizer": False,
+            "is_bfl": True,
+            "is_synthesized_context": False,
+        }
+
+    choke_fp = str(
+        chokepoint.get("filepath")
+        or (getattr(bfl, "filepath", "") if bfl else "")
+        or "workspace"
+    )
+    choke_line = max(1, int(chokepoint.get("start_line") or 1))
+    choke_scope = str(chokepoint.get("scope_id") or choke_fp)
+    short_file = os.path.basename(choke_fp.replace("\\", "/")) or choke_fp
+
+    if engine_up == "SCA" or rule_up.startswith("SCA-"):
+        origin_name = f"Dependency Manifest ({short_file})"
+        origin_code = f"Supply-chain dependency resolution in {choke_fp}"
+        origin_ast = "dependency_manifest"
+        edge1_label = "① LOADS PKG ▶"
+        edge2_label = "② RUNTIME IMPACT ▶"
+    elif engine_up == "IAC" or rule_up.startswith("IAC-"):
+        origin_name = f"Deployment / Runtime Config ({short_file})"
+        origin_code = f"Infrastructure & container policy in {choke_fp}"
+        origin_ast = "iac_config"
+        edge1_label = "① CONFIGURES ▶"
+        edge2_label = "② EXPOSES SINK ▶"
+    elif is_cred_leak or "SECRET" in rule_up or "RULE-8" in rule_up or cwe_id.upper() == "CWE-798":
+        origin_name = f"Secret / Credential Exposure ({short_file})"
+        origin_code = f"Embedded credential material in {choke_fp}:L{choke_line}"
+        origin_ast = "secret_origin"
+        edge1_label = "① EMBEDS SECRET ▶"
+        edge2_label = "② CREDENTIAL COMPROMISE ▶"
+    else:
+        origin_name = f"Application Caller ({choke_scope})"
+        origin_code = f"Execution reaches {choke_fp}:L{choke_line}"
+        origin_ast = "application_caller"
+        edge1_label = "① REACHES BFL ▶"
+        edge2_label = "② EXPOSES SINK ▶"
+
+    origin_node: Dict[str, Any] = {
+        "id": f"ctx-origin:{finding_id}",
+        "label": "Entry",
+        "ast_type": origin_ast,
+        "name": origin_name,
+        "code": origin_code,
+        "filepath": choke_fp,
+        "start_line": choke_line,
+        "end_line": choke_line,
+        "start_col": 0,
+        "end_col": 20,
+        "scope_id": choke_scope,
+        "is_source": True,
+        "is_sink": False,
+        "is_sanitizer": False,
+        "is_bfl": False,
+        "is_synthesized_context": True,
+    }
+
+    impact_node: Dict[str, Any] = {
+        "id": f"ctx-impact:{finding_id}",
+        "label": "Exit",
+        "ast_type": "security_impact",
+        "name": f"Security Impact ({cwe_id})",
+        "code": f"[{severity}] {cwe_id}: {title}"[:240],
+        "filepath": choke_fp,
+        "start_line": choke_line,
+        "end_line": choke_line,
+        "start_col": 0,
+        "end_col": 20,
+        "scope_id": choke_scope,
+        "is_source": False,
+        "is_sink": True,
+        "is_sanitizer": False,
+        "is_bfl": False,
+        "is_synthesized_context": True,
+    }
+
+    edges = [
+        {
+            "id": f"ctx-edge-1:{finding_id}",
+            "source": origin_node["id"],
+            "target": chokepoint["id"],
+            "type": "DFG_FLOWS_TO",
+            "var_name": rule_id or "context",
+            "step_index": 1,
+            "flow_label": edge1_label,
+        },
+        {
+            "id": f"ctx-edge-2:{finding_id}",
+            "source": chokepoint["id"],
+            "target": impact_node["id"],
+            "type": "DFG_FLOWS_TO",
+            "var_name": cwe_id,
+            "step_index": 2,
+            "flow_label": edge2_label,
+        },
+    ]
+
+    return {"nodes": [origin_node, chokepoint, impact_node], "edges": edges}
+
+
+def preview_finding_remediation(
+    finding: Any,
+    allowed_roots: List[str],
+    target_line_override: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """Computes a confined remediation preview directly from a `Finding` instance."""
+    bfl = getattr(finding, "best_fix_location", None)
+    p_nodes = [_coerce_dict(n) for n in (getattr(finding, "path_nodes", None) or [])]
+
+    raw_filepath = ""
+    if bfl and getattr(bfl, "filepath", ""):
+        raw_filepath = str(bfl.filepath)
+    elif p_nodes:
+        raw_filepath = str(p_nodes[-1].get("filepath") or "")
+
+    if not raw_filepath:
+        return None
+
+    if target_line_override is not None:
+        target_line = int(target_line_override)
+    elif bfl and getattr(bfl, "line", 0):
+        target_line = int(bfl.line)
+    elif p_nodes:
+        target_line = int(p_nodes[-1].get("start_line") or 1)
+    else:
+        target_line = 1
+
+    recommended_fix = (
+        getattr(bfl, "recommended_fix", None) if bfl and getattr(bfl, "recommended_fix", None) else None
+    ) or getattr(finding, "remediation", None)
+
+    rule_part = str(getattr(finding, "rule_id", "") or "").strip()
+    cwe_part = str(getattr(finding, "cwe_id", "") or "").strip()
+    effective_rule = f"{rule_part} {cwe_part}".strip()
+
+    return generate_remediation_preview(
+        raw_filepath=raw_filepath,
+        allowed_roots=allowed_roots,
+        rule_id=effective_rule,
+        target_line=target_line,
+        recommended_fix=recommended_fix,
+    )
+
+
+def batch_apply_workspace_patches(
+    findings: List[Any],
+    allowed_roots: List[str],
+    patch_vault_root: str,
+) -> Dict[str, Any]:
+    """
+    Applies deterministic BFL patches across multiple findings safely:
+    - Skips findings that are already `RESOLVED` or have `can_auto_patch == False`.
+    - Groups findings per canonical file and applies bottom-up (descending target line) while
+      re-running `preview_finding_remediation` against the latest file on disk so multi-finding
+      edits and top-of-file `import` insertions compose cleanly without corrupting line offsets.
+    - Records an individual SHA-256 `.alastor_patches` undo journal entry for every applied patch.
+    """
+    skipped_count = 0
+    initial_contents: Dict[str, str] = {}
+    final_contents: Dict[str, str] = {}
+    display_paths: Dict[str, str] = {}
+    grouped: Dict[str, List[Tuple[int, str, Any, str]]] = {}
+
+    for f in findings or []:
+        triage_st = str(getattr(f, "triage_status", "TO_VERIFY") or "TO_VERIFY").upper()
+        if triage_st == "RESOLVED":
+            skipped_count += 1
+            continue
+
+        init_prev = preview_finding_remediation(f, allowed_roots)
+        if (
+            init_prev is None
+            or not init_prev.get("can_auto_patch")
+            or init_prev.get("patched_content") == init_prev.get("original_content")
+        ):
+            skipped_count += 1
+            continue
+
+        disp_fp = str(init_prev["filepath"])
+        resolved_entry = _locate_enumerated_workspace_file(disp_fp, allowed_roots)
+        if resolved_entry is None:
+            skipped_count += 1
+            continue
+
+        norm_key = os.path.normcase(resolved_entry)
+        orig_text = str(init_prev["original_content"])
+        initial_contents.setdefault(norm_key, orig_text)
+        display_paths.setdefault(norm_key, disp_fp)
+
+        orig_lines = orig_text.splitlines()
+        t_line = int(init_prev["target_line"])
+        anchor_line = orig_lines[t_line - 1] if 1 <= t_line <= len(orig_lines) else ""
+        grouped.setdefault(norm_key, []).append((t_line, anchor_line, f, disp_fp))
+
+    applied_patch_ids: List[str] = []
+    applied_finding_ids: List[str] = []
+    patched_files: List[str] = []
+    seen_patched_files = set()
+
+    offset_probes = (0, 1, 2, 3, 4, 5, -1, -2, 6, 7, 8, 9, 10, -3)
+
+    for norm_key, items in grouped.items():
+        items.sort(key=lambda item: item[0], reverse=True)
+        latest_text = initial_contents[norm_key]
+
+        for orig_line_no, anchor_text, finding_obj, disp_fp in items:
+            cur_lines = latest_text.splitlines()
+            eff_line = orig_line_no
+            if anchor_text and (eff_line > len(cur_lines) or cur_lines[eff_line - 1] != anchor_text):
+                for delta in offset_probes:
+                    cand_ln = orig_line_no + delta
+                    if 1 <= cand_ln <= len(cur_lines) and cur_lines[cand_ln - 1] == anchor_text:
+                        eff_line = cand_ln
+                        break
+
+            fresh_prev = preview_finding_remediation(
+                finding_obj, allowed_roots, target_line_override=eff_line
+            )
+            if (
+                fresh_prev is None
+                or not fresh_prev.get("can_auto_patch")
+                or fresh_prev.get("patched_content") == fresh_prev.get("original_content")
+            ):
+                skipped_count += 1
+                continue
+
+            f_id = str(getattr(finding_obj, "id", "") or "")
+            r_id = str(getattr(finding_obj, "rule_id", "") or "")
+            applied = apply_workspace_patch(
+                raw_filepath=disp_fp,
+                allowed_roots=allowed_roots,
+                patch_vault_root=patch_vault_root,
+                expected_sha256=str(fresh_prev["expected_sha256"]),
+                patched_content=str(fresh_prev["patched_content"]),
+                finding_id=f_id,
+                rule_id=r_id,
+            )
+            latest_text = str(fresh_prev["patched_content"])
+            final_contents[norm_key] = latest_text
+            applied_patch_ids.append(str(applied["patch_id"]))
+            if f_id:
+                applied_finding_ids.append(f_id)
+            clean_disp = str(applied["filepath"])
+            if clean_disp not in seen_patched_files:
+                seen_patched_files.add(clean_disp)
+                patched_files.append(clean_disp)
+
+    diff_chunks: List[str] = []
+    for norm_key, after_text in final_contents.items():
+        before_text = initial_contents.get(norm_key, "")
+        disp_name = display_paths.get(norm_key, "file").replace("\\", "/").lstrip("/")
+        diff_lines = list(
+            difflib.unified_diff(
+                before_text.splitlines(keepends=True),
+                after_text.splitlines(keepends=True),
+                fromfile=f"a/{disp_name}",
+                tofile=f"b/{disp_name}",
+            )
+        )
+        if diff_lines:
+            diff_chunks.append("".join(diff_lines))
+
+    return {
+        "status": "BATCH_APPLIED",
+        "applied_count": len(applied_patch_ids),
+        "skipped_count": skipped_count,
+        "applied_patch_ids": applied_patch_ids,
+        "patched_files": patched_files,
+        "applied_finding_ids": applied_finding_ids,
+        "unified_diff": "".join(diff_chunks),
     }

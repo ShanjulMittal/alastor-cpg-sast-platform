@@ -3,7 +3,9 @@ Application Tree & Architecture Purpose Analyzer.
 Recursively inspects the entire codebase, classifies the purpose and role of every file,
 and extracts structural elements (classes, functions, endpoints, dependencies, configs, services).
 """
+import ast
 import os
+import posixpath
 import re
 import json
 from typing import List, Dict, Any, Optional, Set, Tuple
@@ -25,6 +27,14 @@ class DiscoveredElement(BaseModel):
     details: str = ""
 
 
+class CrossFileEdge(BaseModel):
+    source_filepath: str
+    target_filepath: str
+    edge_type: str = "IMPORTS"
+    symbols: List[str] = Field(default_factory=list)
+    flow_label: str = "IMPORTS"
+
+
 class FilePurposeInfo(BaseModel):
     filepath: str           # Relative path from project root (forward slashes)
     filename: str
@@ -38,6 +48,7 @@ class FilePurposeInfo(BaseModel):
     elements: List[DiscoveredElement] = Field(default_factory=list)
     is_cpg_supported: bool = False
     security_tags: List[str] = Field(default_factory=list)
+    imports_files: List[str] = Field(default_factory=list)
 
 
 class DirectoryTreeNode(BaseModel):
@@ -57,6 +68,7 @@ class AppTreeSummary(BaseModel):
     detected_tech_stack: List[str]
     tree: DirectoryTreeNode
     flat_files: List[FilePurposeInfo]
+    cross_file_edges: List[CrossFileEdge] = Field(default_factory=list)
 
 
 class AppTreeAnalyzer:
@@ -72,6 +84,7 @@ class AppTreeAnalyzer:
         self.flat_files: List[FilePurposeInfo] = []
         self.tech_stack: Set[str] = set()
         self.category_counts: Dict[str, int] = {}
+        self._file_contents: Dict[str, str] = {}
 
     def analyze(self) -> AppTreeSummary:
         """Executes full architectural analysis and returns tree summary."""
@@ -95,6 +108,9 @@ class AppTreeAnalyzer:
         # Sort flat files deterministically
         self.flat_files.sort(key=lambda f: f.filepath)
 
+        # Resolve 360-degree intra-repo cross-file IMPORTS edges
+        cross_file_edges = self._resolve_cross_file_imports()
+
         # Detect high-level tech stack
         detected = sorted(list(self.tech_stack))
 
@@ -106,7 +122,8 @@ class AppTreeAnalyzer:
             category_counts=self.category_counts,
             detected_tech_stack=detected,
             tree=tree,
-            flat_files=self.flat_files
+            flat_files=self.flat_files,
+            cross_file_edges=cross_file_edges,
         )
 
     def _count_dirs(self, node: DirectoryTreeNode) -> int:
@@ -219,6 +236,9 @@ class AppTreeAnalyzer:
 
         # Update tech stack detection
         self._update_tech_stack(filename, ext, content)
+
+        if ext in (".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"):
+            self._file_contents[rel_path] = content
 
         return FilePurposeInfo(
             filepath=rel_path,
@@ -575,3 +595,265 @@ class AppTreeAnalyzer:
             self.tech_stack.add("TypeScript")
         if ext in (".js", ".jsx", ".mjs"):
             self.tech_stack.add("JavaScript")
+
+    @staticmethod
+    def _parse_js_import_symbols(clause: str) -> List[str]:
+        """Extracts imported symbol identifiers from a JS/TS import/export/require binding clause."""
+        syms: List[str] = []
+        for brace_m in re.finditer(r"\{([^}]*)\}", clause):
+            for tok in brace_m.group(1).split(","):
+                cleaned = re.sub(r"^\s*type\s+", "", tok.strip())
+                orig_sym = re.split(r"\s+(?:as|:)\s+", cleaned)[0].strip()
+                if orig_sym and re.match(r"^[A-Za-z_$][A-Za-z0-9_$]*$", orig_sym):
+                    syms.append(orig_sym)
+
+        rem = re.sub(r"\{[^}]*\}", " ", clause)
+        for ns_m in re.finditer(r"\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)", rem):
+            syms.append(ns_m.group(1))
+
+        rem_plain = re.sub(r"\*\s+as\s+[A-Za-z_$][A-Za-z0-9_$]*", " ", rem)
+        for part in rem_plain.split(","):
+            p_clean = re.sub(r"^\s*type\s+", "", part.strip())
+            if p_clean and p_clean != "*" and re.match(r"^[A-Za-z_$][A-Za-z0-9_$]*$", p_clean):
+                syms.append(p_clean)
+        return syms
+
+    def _resolve_cross_file_imports(self) -> List[CrossFileEdge]:
+        """
+        Resolves intra-repository imports across Python and JS/TS files against `self.flat_files`,
+        populating `FilePurposeInfo.imports_files` and deduplicated `CrossFileEdge` records.
+        """
+        if not self.flat_files:
+            return []
+
+        exact_map: Dict[str, str] = {f.filepath: f.filepath for f in self.flat_files}
+        lower_map: Dict[str, str] = {f.filepath.lower(): f.filepath for f in self.flat_files}
+
+        def _match_known(cand: str) -> Optional[str]:
+            if not cand:
+                return None
+            norm = posixpath.normpath(cand.replace("\\", "/")).lstrip("/")
+            if not norm or norm == "." or norm.startswith(".."):
+                return None
+            if norm in exact_map:
+                return exact_map[norm]
+            return lower_map.get(norm.lower())
+
+        def _probe_js_target(base_cand: str) -> Optional[str]:
+            direct = _match_known(base_cand)
+            if direct:
+                return direct
+            for ext_cand in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json"):
+                hit = _match_known(f"{base_cand}{ext_cand}")
+                if hit:
+                    return hit
+            if base_cand.endswith(".js"):
+                for ts_ext in (".ts", ".tsx"):
+                    hit = _match_known(base_cand[:-3] + ts_ext)
+                    if hit:
+                        return hit
+            for idx_sfx in ("/index.ts", "/index.tsx", "/index.js", "/index.jsx", "/index.mjs"):
+                hit = _match_known(f"{base_cand}{idx_sfx}")
+                if hit:
+                    return hit
+            return None
+
+        def _resolve_js_specifier(source_fp: str, raw_spec: str) -> Optional[str]:
+            spec = raw_spec.strip().split("?", 1)[0].split("#", 1)[0]
+            if not spec or spec.startswith(("http://", "https://", "data:", "node:")):
+                return None
+            src_dir = posixpath.dirname(source_fp)
+            candidates: List[str] = []
+            if spec.startswith(("./", "../")) or spec in (".", ".."):
+                joined = posixpath.normpath(posixpath.join(src_dir, spec)) if src_dir else posixpath.normpath(spec)
+                if not joined.startswith(".."):
+                    candidates.append(joined)
+            elif spec.startswith(("@/", "~/")):
+                tail = spec[2:].lstrip("/")
+                parts = source_fp.split("/")
+                if "src" in parts[:-1]:
+                    src_idx = parts.index("src")
+                    enclosing_src = "/".join(parts[: src_idx + 1])
+                    candidates.append(f"{enclosing_src}/{tail}")
+                candidates.extend([f"src/{tail}", f"frontend/src/{tail}", tail, f"frontend/{tail}"])
+            elif not spec.startswith("@"):
+                candidates.extend([spec, f"src/{spec}", f"frontend/src/{spec}"])
+                if src_dir:
+                    candidates.append(f"{src_dir}/{spec}")
+
+            for cand in candidates:
+                resolved = _probe_js_target(cand)
+                if resolved and resolved != source_fp:
+                    return resolved
+            return None
+
+        def _probe_py_module(source_fp: str, base_dir: str, mod_rel: str) -> Optional[str]:
+            prefix = f"{base_dir}/{mod_rel}" if base_dir else mod_rel
+            for py_cand in (f"{prefix}.py", f"{prefix}/__init__.py"):
+                hit = _match_known(py_cand)
+                if hit and hit != source_fp:
+                    return hit
+            return None
+
+        def _extract_py_file_imports(source_fp: str, src_text: str) -> List[Tuple[str, List[str]]]:
+            found: List[Tuple[str, List[str]]] = []
+            src_dir = posixpath.dirname(source_fp)
+            abs_bases: List[str] = []
+            cur_dir = src_dir
+            while cur_dir:
+                abs_bases.append(cur_dir)
+                cur_dir = posixpath.dirname(cur_dir)
+            abs_bases.append("")
+            for extra_root in ("src", "backend"):
+                if extra_root not in abs_bases:
+                    abs_bases.append(extra_root)
+
+            try:
+                tree = ast.parse(src_text)
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        for alias in node.names:
+                            mod_rel = alias.name.replace(".", "/")
+                            for b_dir in abs_bases:
+                                hit = _probe_py_module(source_fp, b_dir, mod_rel)
+                                if hit:
+                                    sym_lbl = alias.asname or alias.name.split(".")[-1]
+                                    found.append((hit, [sym_lbl] if sym_lbl else []))
+                                    break
+                    elif isinstance(node, ast.ImportFrom):
+                        alias_names = [a.name for a in node.names if a.name and a.name != "*"]
+                        if node.level and node.level > 0:
+                            src_parts = [p for p in src_dir.split("/") if p]
+                            up_levels = node.level - 1
+                            if up_levels <= len(src_parts):
+                                rel_base = "/".join(src_parts[: len(src_parts) - up_levels])
+                                mod_rel = (node.module or "").replace(".", "/")
+                                unmatched: List[str] = []
+                                for sym_name in alias_names:
+                                    sub_mod = f"{mod_rel}/{sym_name}" if mod_rel else sym_name
+                                    sub_hit = _probe_py_module(source_fp, rel_base, sub_mod)
+                                    if sub_hit:
+                                        found.append((sub_hit, [sym_name]))
+                                    else:
+                                        unmatched.append(sym_name)
+                                if mod_rel and (unmatched or not alias_names):
+                                    mod_hit = _probe_py_module(source_fp, rel_base, mod_rel)
+                                    if mod_hit:
+                                        found.append((mod_hit, unmatched))
+                        else:
+                            mod_rel = (node.module or "").replace(".", "/")
+                            if mod_rel:
+                                resolved_sub = False
+                                unmatched = []
+                                for sym_name in alias_names:
+                                    sub_hit_any: Optional[str] = None
+                                    for b_dir in abs_bases:
+                                        sub_hit_any = _probe_py_module(source_fp, b_dir, f"{mod_rel}/{sym_name}")
+                                        if sub_hit_any:
+                                            break
+                                    if sub_hit_any:
+                                        resolved_sub = True
+                                        found.append((sub_hit_any, [sym_name]))
+                                    else:
+                                        unmatched.append(sym_name)
+                                if unmatched or not resolved_sub:
+                                    for b_dir in abs_bases:
+                                        mod_hit = _probe_py_module(source_fp, b_dir, mod_rel)
+                                        if mod_hit:
+                                            found.append((mod_hit, unmatched))
+                                            break
+            except SyntaxError:
+                for line in src_text.splitlines():
+                    s_line = line.strip()
+                    from_m = re.match(r"^from\s+(\.*[A-Za-z0-9_.]+)\s+import\s+(.+)$", s_line)
+                    if from_m:
+                        raw_mod, raw_syms = from_m.group(1), from_m.group(2)
+                        syms = [t.strip().split(" as ")[0].strip() for t in raw_syms.split(",") if t.strip()]
+                        clean_mod = raw_mod.lstrip(".").replace(".", "/")
+                        if clean_mod:
+                            for b_dir in abs_bases:
+                                hit = _probe_py_module(source_fp, b_dir, clean_mod)
+                                if hit:
+                                    found.append((hit, syms))
+                                    break
+                        continue
+                    imp_m = re.match(r"^import\s+([A-Za-z0-9_.,\s]+)$", s_line)
+                    if imp_m:
+                        for part in imp_m.group(1).split(","):
+                            mod_tok = part.strip().split(" as ")[0].strip()
+                            if mod_tok:
+                                for b_dir in abs_bases:
+                                    hit = _probe_py_module(source_fp, b_dir, mod_tok.replace(".", "/"))
+                                    if hit:
+                                        found.append((hit, [mod_tok.split(".")[-1]]))
+                                        break
+            return found
+
+        edge_accum: Dict[Tuple[str, str], Set[str]] = {}
+
+        for file_info in self.flat_files:
+            src_fp = file_info.filepath
+            content = self._file_contents.get(src_fp, "")
+            if not content:
+                continue
+
+            file_targets: Set[str] = set()
+            if file_info.extension == ".py":
+                for tgt_fp, syms in _extract_py_file_imports(src_fp, content):
+                    file_targets.add(tgt_fp)
+                    bucket = edge_accum.setdefault((src_fp, tgt_fp), set())
+                    bucket.update(s for s in syms if s)
+            elif file_info.extension in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"):
+                for m_from in re.finditer(
+                    r"""\b(?:import|export)\s+(?:type\s+)?([^;'"`]+?)\s+from\s*['"]([^'"]+)['"]""",
+                    content,
+                ):
+                    clause, spec = m_from.group(1), m_from.group(2)
+                    tgt_fp = _resolve_js_specifier(src_fp, spec)
+                    if tgt_fp:
+                        file_targets.add(tgt_fp)
+                        bucket = edge_accum.setdefault((src_fp, tgt_fp), set())
+                        bucket.update(self._parse_js_import_symbols(clause))
+
+                for m_side in re.finditer(r"""\bimport\s*['"]([^'"]+)['"]""", content):
+                    tgt_fp = _resolve_js_specifier(src_fp, m_side.group(1))
+                    if tgt_fp:
+                        file_targets.add(tgt_fp)
+                        edge_accum.setdefault((src_fp, tgt_fp), set())
+
+                for m_req_bind in re.finditer(
+                    r"""(?:const|let|var)\s+(\{[^}]+\}|[A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)""",
+                    content,
+                ):
+                    lhs_clause, spec = m_req_bind.group(1), m_req_bind.group(2)
+                    tgt_fp = _resolve_js_specifier(src_fp, spec)
+                    if tgt_fp:
+                        file_targets.add(tgt_fp)
+                        bucket = edge_accum.setdefault((src_fp, tgt_fp), set())
+                        bucket.update(self._parse_js_import_symbols(lhs_clause))
+
+                for m_req_bare in re.finditer(
+                    r"""\b(?:require|import)\s*\(\s*['"]([^'"]+)['"]\s*\)""",
+                    content,
+                ):
+                    tgt_fp = _resolve_js_specifier(src_fp, m_req_bare.group(1))
+                    if tgt_fp:
+                        file_targets.add(tgt_fp)
+                        edge_accum.setdefault((src_fp, tgt_fp), set())
+
+            file_info.imports_files = sorted(file_targets)
+
+        edges: List[CrossFileEdge] = []
+        for (src_fp, tgt_fp), sym_set in sorted(edge_accum.items()):
+            sorted_syms = sorted(sym_set)
+            lbl = f"IMPORTS ({', '.join(sorted_syms[:3])}) ▶" if sorted_syms else "IMPORTS ▶"
+            edges.append(
+                CrossFileEdge(
+                    source_filepath=src_fp,
+                    target_filepath=tgt_fp,
+                    edge_type="IMPORTS",
+                    symbols=sorted_syms,
+                    flow_label=lbl,
+                )
+            )
+        return edges
