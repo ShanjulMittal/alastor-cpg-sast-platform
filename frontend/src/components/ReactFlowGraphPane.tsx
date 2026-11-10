@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useMemo, useCallback } from "react";
+import React, { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import ReactFlow, {
   Background,
   Controls,
@@ -15,10 +15,20 @@ import "reactflow/dist/style.css";
 import dagre from "@dagrejs/dagre";
 
 import { useAuditStore } from "@/store/useAuditStore";
-import { CustomGraphNode } from "./CustomGraphNode";
-import { isLightAppTheme } from "./AlastorBranding";
+import { fetchGraphData } from "@/lib/api";
+import { CustomGraphNode, NodeBlastRole } from "./CustomGraphNode";
+import {
+  DirectionalFlowEdge,
+  DirectionalFlowEdgeData,
+  EdgeBlastState,
+  formatCircledStep,
+  resolveDirectionalEdgeMeta,
+} from "./DirectionalFlowEdge";
 import {
   CPGNode,
+  CrossFileEdge,
+  Finding,
+  GraphEdgeItem,
   GraphViewMode,
   DirectoryTreeNode,
   FilePurposeInfo,
@@ -42,11 +52,11 @@ import {
   Code2,
   X,
   Sparkles,
-  ExternalLink,
   Play,
   Pause,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   Download,
   Info,
   ArrowRight,
@@ -55,78 +65,91 @@ import {
   Map as MapIcon,
   ShieldCheck,
   RotateCcw,
+  Loader2,
 } from "lucide-react";
 
-const NODE_WIDTH = 260;
-const NODE_HEIGHT = 120;
+const NODE_WIDTH = 264;
+const NODE_HEIGHT = 132;
 
 const nodeTypes = {
   cpgNode: CustomGraphNode,
 };
 
+const edgeTypes = {
+  directionalFlow: DirectionalFlowEdge,
+};
+
 type AppTreeLayoutStyle = "SPIDER_WEB" | "MIND_MAP" | "HIERARCHY";
 
-function getEdgeStyle(edgeType: string, isSpider = false, isSevered = false) {
-  if (isSevered) {
-    return {
-      stroke: "#10b981",
-      strokeWidth: 2.4,
-      strokeDasharray: "6 4",
-      animated: false,
-    };
+interface EdgeLayerFilterState {
+  dfg: boolean;
+  cfg: boolean;
+  calls: boolean;
+  ast: boolean;
+}
+
+function getNodeDimensions(node: Node): { w: number; h: number } {
+  const lbl = node.data?.label;
+  if (lbl === "SpiderHub") return { w: 208, h: 208 };
+  if (lbl === "AppElement") return { w: 192, h: 36 };
+  if (lbl === "AppDirectory") return { w: node.data?.isSpiderMode ? 208 : 256, h: 112 };
+  if (lbl === "AppFile") return { w: node.data?.isSpiderMode ? 224 : 256, h: 132 };
+  return { w: NODE_WIDTH, h: NODE_HEIGHT };
+}
+
+/**
+ * Computes outer-perimeter sourceHandle & targetHandle pairs so 100% of arrowheads
+ * dock cleanly outside node card borders in LR, TB, Mind-Map, and 360° Spider layouts.
+ */
+function computePerimeterHandles(
+  layoutMode: "LR" | "TB" | "SPIDER_360",
+  sourceNode?: Node,
+  targetNode?: Node,
+  isCrossFileInTree = false
+): { sourceHandle: string; targetHandle: string } {
+  if (layoutMode === "SPIDER_360" && sourceNode && targetNode) {
+    const sDim = getNodeDimensions(sourceNode);
+    const tDim = getNodeDimensions(targetNode);
+    const sx = sourceNode.position.x + sDim.w / 2;
+    const sy = sourceNode.position.y + sDim.h / 2;
+    const tx = targetNode.position.x + tDim.w / 2;
+    const ty = targetNode.position.y + tDim.h / 2;
+    const dx = tx - sx;
+    const dy = ty - sy;
+
+    if (Math.abs(dx) >= Math.abs(dy)) {
+      return dx >= 0
+        ? { sourceHandle: "right-src", targetHandle: "left-tgt" }
+        : { sourceHandle: "left-src", targetHandle: "right-tgt" };
+    }
+    return dy >= 0
+      ? { sourceHandle: "bottom-src", targetHandle: "top-tgt" }
+      : { sourceHandle: "top-src", targetHandle: "bottom-tgt" };
   }
-  switch (edgeType) {
-    case "DFG_FLOWS_TO":
-      return {
-        stroke: "#e11d48",
-        strokeWidth: 2.2,
-        strokeDasharray: "5 5",
-        animated: true,
-      };
-    case "CFG_NEXT":
-    case "CFG_TRUE":
-    case "CFG_FALSE":
-    case "CFG_LOOP_BACK":
-    case "CFG_BREAK":
-      return {
-        stroke: "#06b6d4",
-        strokeWidth: 1.8,
-        animated: false,
-      };
-    case "CALLS":
-      return {
-        stroke: "#f59e0b",
-        strokeWidth: 2,
-        animated: false,
-      };
-    case "CONTAINS":
-      return {
-        stroke: isSpider ? "#22d3ee" : "#10b981",
-        strokeWidth: isSpider ? 2 : 2,
-        animated: false,
-      };
-    case "DECLARES":
-      return {
-        stroke: "#f59e0b",
-        strokeWidth: 1.6,
-        strokeDasharray: "4 4",
-        animated: true,
-      };
-    case "AST_CHILD":
-    default:
-      return {
-        stroke: "#64748b",
-        strokeWidth: 1.2,
-        strokeDasharray: "2 2",
-        animated: false,
-      };
+
+  if (isCrossFileInTree && sourceNode && targetNode) {
+    const dx = targetNode.position.x - sourceNode.position.x;
+    const dy = targetNode.position.y - sourceNode.position.y;
+    if (Math.abs(dx) < 30 && Math.abs(dy) > 20) {
+      return dy >= 0
+        ? { sourceHandle: "bottom-src", targetHandle: "top-tgt" }
+        : { sourceHandle: "top-src", targetHandle: "bottom-tgt" };
+    }
+    if (layoutMode === "LR" && dx < -30) {
+      return { sourceHandle: "left-src", targetHandle: "right-tgt" };
+    }
   }
+
+  if (layoutMode === "LR") {
+    return { sourceHandle: "right-src", targetHandle: "left-tgt" };
+  }
+  return { sourceHandle: "bottom-src", targetHandle: "top-tgt" };
 }
 
 function computeDagreLayout(
   nodes: Node[],
   edges: Edge[],
-  rankdir: "TB" | "LR" = "TB"
+  rankdir: "TB" | "LR" = "LR"
 ): { nodes: Node[]; edges: Edge[] } {
   const safeNodes = nodes.length > 180 ? nodes.slice(0, 180) : nodes;
   const safeNodeIds = new Set(safeNodes.map((n) => n.id));
@@ -138,12 +161,13 @@ function computeDagreLayout(
   dagreGraph.setDefaultEdgeLabel(() => ({}));
   dagreGraph.setGraph({
     rankdir,
-    nodesep: rankdir === "LR" ? 55 : 80,
-    ranksep: rankdir === "LR" ? 140 : 100,
+    nodesep: rankdir === "LR" ? 64 : 84,
+    ranksep: rankdir === "LR" ? 165 : 118,
   });
 
   safeNodes.forEach((node) => {
-    dagreGraph.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
+    const dim = getNodeDimensions(node);
+    dagreGraph.setNode(node.id, { width: dim.w, height: dim.h });
   });
 
   safeEdges.forEach((edge) => {
@@ -152,18 +176,34 @@ function computeDagreLayout(
 
   dagre.layout(dagreGraph);
 
+  const posMap = new Map<string, Node>();
   const layoutedNodes = safeNodes.map((node) => {
+    const dim = getNodeDimensions(node);
     const nodeWithPosition = dagreGraph.node(node.id);
-    return {
+    const positioned: Node = {
       ...node,
       position: {
-        x: nodeWithPosition ? nodeWithPosition.x - NODE_WIDTH / 2 : 0,
-        y: nodeWithPosition ? nodeWithPosition.y - NODE_HEIGHT / 2 : 0,
+        x: nodeWithPosition ? nodeWithPosition.x - dim.w / 2 : 0,
+        y: nodeWithPosition ? nodeWithPosition.y - dim.h / 2 : 0,
       },
+    };
+    posMap.set(positioned.id, positioned);
+    return positioned;
+  });
+
+  const handlesMode = rankdir === "LR" ? "LR" : "TB";
+  const routedEdges = safeEdges.map((edge) => {
+    const sNode = posMap.get(edge.source);
+    const tNode = posMap.get(edge.target);
+    const handles = computePerimeterHandles(handlesMode, sNode, tNode);
+    return {
+      ...edge,
+      sourceHandle: handles.sourceHandle,
+      targetHandle: handles.targetHandle,
     };
   });
 
-  return { nodes: layoutedNodes, edges: safeEdges };
+  return { nodes: layoutedNodes, edges: routedEdges };
 }
 
 /**
@@ -183,6 +223,250 @@ function countSubtreeWeight(
   return Math.max(1, weight);
 }
 
+function basenameOf(fp?: string | null): string {
+  if (!fp) return "workspace";
+  const norm = fp.replace(/\\/g, "/");
+  const parts = norm.split("/").filter(Boolean);
+  return parts[parts.length - 1] || fp;
+}
+
+/**
+ * Client-side 3-step context synthesis for single-node or edgeless findings so
+ * NO finding ever renders as an isolated single card without directional flow.
+ */
+function buildClientFindingFlowGraph(finding: Finding): {
+  nodes: CPGNode[];
+  edges: GraphEdgeItem[];
+} {
+  const rawNodes = finding.path_nodes || [];
+  const rawEdges = finding.path_edges || [];
+  const bfl = finding.best_fix_location;
+  const findingId = finding.id || "finding";
+  const ruleId = finding.rule_id || "";
+  const ruleUp = ruleId.toUpperCase();
+  const engineUp = (finding.scan_engine || "SAST").toUpperCase();
+  const cweId = finding.cwe_id || "CWE-703";
+  const severity = finding.severity || "HIGH";
+  const title = finding.title || "Security Vulnerability";
+  const isSecret =
+    Boolean(finding.is_secret_finding) ||
+    ruleUp.includes("SECRET") ||
+    ruleUp.includes("RULE-8") ||
+    cweId.toUpperCase() === "CWE-798";
+
+  if (rawNodes.length >= 2 && rawEdges.length >= 1) {
+    const bflNodeId = bfl?.node_id || "";
+    const bflFp = (bfl?.filepath || "").replace(/\\/g, "/").replace(/^\/+/, "");
+    const bflLine = bfl?.line || 0;
+
+    let matchedBfl = false;
+    const enrichedNodes: CPGNode[] = rawNodes.map((n) => {
+      const nFp = (n.filepath || "").replace(/\\/g, "/").replace(/^\/+/, "");
+      const isMatch = Boolean(
+        (bflNodeId && n.id === bflNodeId) ||
+          (bflFp &&
+            bflLine > 0 &&
+            n.start_line === bflLine &&
+            (nFp === bflFp ||
+              nFp.endsWith(`/${bflFp}`) ||
+              bflFp.endsWith(`/${nFp}`)))
+      );
+      if (isMatch) matchedBfl = true;
+      return {
+        ...n,
+        is_bfl: Boolean(n.is_bfl || isMatch),
+        is_synthesized_context: Boolean(n.is_synthesized_context),
+      };
+    });
+
+    if (!matchedBfl && enrichedNodes.length > 0) {
+      const fallbackIdx =
+        enrichedNodes.length >= 3
+          ? enrichedNodes.length - 2
+          : enrichedNodes.length - 1;
+      enrichedNodes[fallbackIdx] = {
+        ...enrichedNodes[fallbackIdx],
+        is_bfl: true,
+      };
+    }
+
+    const sinkIds = new Set(
+      enrichedNodes.filter((n) => n.is_sink).map((n) => String(n.id))
+    );
+
+    const enrichedEdges: GraphEdgeItem[] = rawEdges.map((e, idx) => {
+      const stepIdx = e.step_index ?? idx + 1;
+      const eType = e.type || "DFG_FLOWS_TO";
+      const meta = resolveDirectionalEdgeMeta(eType, {
+        varName: e.var_name,
+        flowLabel: e.flow_label,
+        stepIndex: stepIdx,
+        isSinkTarget: sinkIds.has(String(e.target)),
+      });
+      return {
+        id: String(e.id || `edge-${findingId}-${idx}`),
+        source: String(e.source),
+        target: String(e.target),
+        type: eType,
+        var_name: e.var_name ?? null,
+        step_index: stepIdx,
+        flow_label: meta.flowLabel,
+      };
+    });
+
+    return { nodes: enrichedNodes, edges: enrichedEdges };
+  }
+
+  // Synthesize 3-node directional chain: ① Origin ──▶ ② BFL Chokepoint ──▶ ③ Security Impact
+  let chokepoint: CPGNode;
+  if (rawNodes.length >= 1) {
+    const first = rawNodes[0];
+    chokepoint = {
+      ...first,
+      id: String(first.id || `bfl:${findingId}`),
+      is_bfl: true,
+      is_source: false,
+      is_sink: false,
+      is_synthesized_context: false,
+    };
+  } else {
+    const fpFallback = bfl?.filepath || "workspace";
+    const lnFallback = Math.max(1, bfl?.line || 1);
+    const colFallback = Math.max(0, bfl?.column || 0);
+    const snipFallback = bfl?.code_snippet || title;
+    chokepoint = {
+      id: bfl?.node_id || `bfl:${findingId}`,
+      label: "Call",
+      ast_type: "bfl_chokepoint",
+      name: `${basenameOf(fpFallback)}:L${lnFallback}`,
+      code: snipFallback,
+      filepath: fpFallback,
+      start_line: lnFallback,
+      end_line: lnFallback,
+      start_col: colFallback,
+      end_col: colFallback + Math.max(1, snipFallback.length),
+      scope_id: fpFallback,
+      is_source: false,
+      is_sink: false,
+      is_sanitizer: false,
+      is_bfl: true,
+      is_synthesized_context: false,
+    };
+  }
+
+  const chokeFp = chokepoint.filepath || bfl?.filepath || "workspace";
+  const chokeLine = Math.max(1, chokepoint.start_line || 1);
+  const chokeScope = chokepoint.scope_id || chokeFp;
+  const shortFile = basenameOf(chokeFp);
+
+  let originName = `Application Caller (${basenameOf(chokeScope)})`;
+  let originCode = `Execution reaches ${shortFile}:L${chokeLine}`;
+  let originAst = "application_caller";
+  let edge1Label = "① REACHES BFL ▶";
+  let edge2Label = "② EXPOSES SINK ▶";
+
+  if (engineUp === "SCA" || ruleUp.startsWith("SCA-")) {
+    originName = `Dependency Manifest (${shortFile})`;
+    originCode = `Supply-chain dependency resolution in ${chokeFp}`;
+    originAst = "dependency_manifest";
+    edge1Label = "① LOADS PKG ▶";
+    edge2Label = "② RUNTIME IMPACT ▶";
+  } else if (engineUp === "IAC" || ruleUp.startsWith("IAC-")) {
+    originName = `Deployment / Runtime Config (${shortFile})`;
+    originCode = `Infrastructure & container policy in ${chokeFp}`;
+    originAst = "iac_config";
+    edge1Label = "① CONFIGURES ▶";
+    edge2Label = "② EXPOSES SINK ▶";
+  } else if (isSecret) {
+    originName = `Secret / Credential Exposure (${shortFile})`;
+    originCode = `Embedded credential material in ${shortFile}:L${chokeLine}`;
+    originAst = "secret_origin";
+    edge1Label = "① EMBEDS SECRET ▶";
+    edge2Label = "② CREDENTIAL COMPROMISE ▶";
+  }
+
+  const originNode: CPGNode = {
+    id: `ctx-origin:${findingId}`,
+    label: "Entry",
+    ast_type: originAst,
+    name: originName,
+    code: originCode,
+    filepath: chokeFp,
+    start_line: chokeLine,
+    end_line: chokeLine,
+    start_col: 0,
+    end_col: 20,
+    scope_id: chokeScope,
+    is_source: true,
+    is_sink: false,
+    is_sanitizer: false,
+    is_bfl: false,
+    is_synthesized_context: true,
+  };
+
+  const impactNode: CPGNode = {
+    id: `ctx-impact:${findingId}`,
+    label: "Exit",
+    ast_type: "security_impact",
+    name: `Security Impact (${cweId})`,
+    code: `[${severity}] ${cweId}: ${title}`.slice(0, 220),
+    filepath: chokeFp,
+    start_line: chokeLine,
+    end_line: chokeLine,
+    start_col: 0,
+    end_col: 20,
+    scope_id: chokeScope,
+    is_source: false,
+    is_sink: true,
+    is_sanitizer: false,
+    is_bfl: false,
+    is_synthesized_context: true,
+  };
+
+  const edges: GraphEdgeItem[] = [
+    {
+      id: `ctx-edge-1:${findingId}`,
+      source: originNode.id,
+      target: chokepoint.id,
+      type: "DFG_FLOWS_TO",
+      var_name: ruleId || "context",
+      step_index: 1,
+      flow_label: edge1Label,
+    },
+    {
+      id: `ctx-edge-2:${findingId}`,
+      source: chokepoint.id,
+      target: impactNode.id,
+      type: "DFG_FLOWS_TO",
+      var_name: cweId,
+      step_index: 2,
+      flow_label: edge2Label,
+    },
+  ];
+
+  return {
+    nodes: [originNode, chokepoint, impactNode],
+    edges,
+  };
+}
+
+function edgeMatchesLayerFilter(
+  edgeTypeRaw: string | undefined,
+  layers: EdgeLayerFilterState
+): boolean {
+  const et = (edgeTypeRaw || "").toUpperCase();
+  if (et === "DFG_FLOWS_TO" || et === "UNGUARDED" || et === "SANITIZED") {
+    return layers.dfg;
+  }
+  if (et.startsWith("CFG_")) {
+    return layers.cfg;
+  }
+  if (et === "CALLS" || et === "IMPORTS" || et === "CONFIGURES") {
+    return layers.calls;
+  }
+  return layers.ast;
+}
+
 export function ReactFlowGraphPane() {
   const projectPath = useAuditStore((s) => s.projectPath);
   const selectedFinding = useAuditStore((s) => s.selectedFinding);
@@ -196,14 +480,18 @@ export function ReactFlowGraphPane() {
   const reactFlowInstance = useAuditStore((s) => s.reactFlowInstance);
   const isGraphFullscreen = useAuditStore((s) => s.isGraphFullscreen);
   const setGraphFullscreen = useAuditStore((s) => s.setGraphFullscreen);
-  const selectTreeFile = useAuditStore((s) => s.selectTreeFile);
   const selectFinding = useAuditStore((s) => s.selectFinding);
   const selectGraphNode = useAuditStore((s) => s.selectGraphNode);
   const lastAppliedPatch = useAuditStore((s) => s.lastAppliedPatch);
   const isApplyingPatch = useAuditStore((s) => s.isApplyingPatch);
-  const undoLastRemediationPatch = useAuditStore((s) => s.undoLastRemediationPatch);
-  const appTheme = useAuditStore((s) => s.appTheme);
-  const isLightTheme = isLightAppTheme(appTheme);
+  const undoLastRemediationPatch = useAuditStore(
+    (s) => s.undoLastRemediationPatch
+  );
+  const setAiDrawerOpen = useAuditStore((s) => s.setAiDrawerOpen);
+  const explainCurrentGraphWithAi = useAuditStore(
+    (s) => s.explainCurrentGraphWithAi
+  );
+  const aiIsBusy = useAuditStore((s) => s.aiIsBusy);
 
   const isCurrentFindingSevered = Boolean(
     lastAppliedPatch?.verifiedSevered &&
@@ -219,7 +507,7 @@ export function ReactFlowGraphPane() {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
-  // Spider App Tree & CPG Presentation interactive controls state
+  // Layout, Cross-File Flow & Layer Controls
   const [treeLayoutStyle, setTreeLayoutStyle] =
     useState<AppTreeLayoutStyle>("SPIDER_WEB");
   const [spiderDeclutterMode, setSpiderDeclutterMode] = useState<
@@ -228,14 +516,30 @@ export function ReactFlowGraphPane() {
   const [callGraphScope, setCallGraphScope] = useState<
     "WHOLE_APP" | "CURRENT_FILE"
   >("WHOLE_APP");
-  const [cpgLayoutDirection, setCpgLayoutDirection] = useState<"TB" | "LR">("TB");
+  const [cpgLayoutDirection, setCpgLayoutDirection] = useState<"TB" | "LR">("LR");
+  const [showCrossFileFlows, setShowCrossFileFlows] = useState<boolean>(true);
+  const [edgeLayers, setEdgeLayers] = useState<EdgeLayerFilterState>({
+    dfg: true,
+    cfg: true,
+    calls: true,
+    ast: true,
+  });
+
+  // Blast-Radius Upstream / Downstream Highlighting State
+  const [isBlastRadiusEnabled, setIsBlastRadiusEnabled] = useState<boolean>(true);
+  const [lockedBlastNodeId, setLockedBlastNodeId] = useState<string | null>(null);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
+
+  // Overlays & Popovers
+  const [showLayersPopover, setShowLayersPopover] = useState<boolean>(false);
   const [collapsedDirs, setCollapsedDirs] = useState<Record<string, boolean>>({});
   const [expandedFileElements, setExpandedFileElements] = useState<
     Record<string, boolean>
   >({});
   const [spiderSearch, setSpiderSearch] = useState<string>("");
   const [categoryFilter, setCategoryFilter] = useState<string>("ALL");
-  const [showRadarChart, setShowRadarChart] = useState<boolean>(true);
+  const [showRadarChart, setShowRadarChart] = useState<boolean>(false);
   const [showLegend, setShowLegend] = useState<boolean>(false);
   const [showMiniMap, setShowMiniMap] = useState<boolean>(true);
   const [inspectedNodeData, setInspectedNodeData] = useState<any | null>(null);
@@ -245,6 +549,55 @@ export function ReactFlowGraphPane() {
   const [activeTourStepIdx, setActiveTourStepIdx] = useState<number>(0);
   const [isAutoPlayingTour, setIsAutoPlayingTour] = useState<boolean>(false);
   const [isNativeFullscreen, setIsNativeFullscreen] = useState<boolean>(false);
+
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+
+  // Close Layers & Layout popover on outside click
+  useEffect(() => {
+    if (!showLayersPopover) return;
+    const onDocClick = (ev: MouseEvent) => {
+      if (
+        popoverRef.current &&
+        !popoverRef.current.contains(ev.target as globalThis.Node)
+      ) {
+        setShowLayersPopover(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [showLayersPopover]);
+
+  // Synthesized 3+ step finding flow graph (guarantees >= 3 steps even on single-node findings)
+  const activeFindingFlow = useMemo(() => {
+    if (!selectedFinding) return null;
+    return buildClientFindingFlowGraph(selectedFinding);
+  }, [selectedFinding]);
+
+  // Extract cross-file IMPORTS/CALLS edges from appTree (with fallback to imports_files)
+  const allCrossFileEdges = useMemo<CrossFileEdge[]>(() => {
+    if (!appTree) return [];
+    if (appTree.cross_file_edges && appTree.cross_file_edges.length > 0) {
+      return appTree.cross_file_edges;
+    }
+    const derived: CrossFileEdge[] = [];
+    const seen = new Set<string>();
+    for (const f of appTree.flat_files || []) {
+      for (const imp of f.imports_files || []) {
+        const key = `${f.filepath}->${imp}`;
+        if (!seen.has(key) && f.filepath !== imp) {
+          seen.add(key);
+          derived.push({
+            source_filepath: f.filepath,
+            target_filepath: imp,
+            edge_type: "IMPORTS",
+            symbols: [],
+            flow_label: "IMPORTS ▶",
+          });
+        }
+      }
+    }
+    return derived;
+  }, [appTree]);
 
   const handleToggleCollapseDir = useCallback((dirPath: string) => {
     setCollapsedDirs((prev) => ({ ...prev, [dirPath]: !prev[dirPath] }));
@@ -265,17 +618,16 @@ export function ReactFlowGraphPane() {
     }
   };
 
-  // Reset tour step when selectedFinding changes
+  // Clear blast focus & tour index on context switch
   useEffect(() => {
     setActiveTourStepIdx(0);
     setIsAutoPlayingTour(false);
-  }, [selectedFinding?.id]);
+    setLockedBlastNodeId(null);
+    setHoveredNodeId(null);
+  }, [selectedFinding?.id, graphViewMode]);
 
-  // Auto-enable legend and fit view when toggling Full-Screen Presentation Mode
+  // Auto-fit view when toggling Full-Screen Presentation Mode
   useEffect(() => {
-    if (isGraphFullscreen) {
-      setShowLegend(true);
-    }
     const timer = setTimeout(() => {
       if (reactFlowInstance) {
         reactFlowInstance.fitView({
@@ -287,12 +639,27 @@ export function ReactFlowGraphPane() {
     return () => clearTimeout(timer);
   }, [isGraphFullscreen, reactFlowInstance]);
 
-  // Keyboard shortcuts for Full-Screen Presentation Mode (Escape to exit)
+  // Escape key clears Blast-Radius Focus, popovers, or Fullscreen
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && isGraphFullscreen) {
-        setGraphFullscreen(false);
-        setIsAutoPlayingTour(false);
+      if (e.key === "Escape") {
+        if (lockedBlastNodeId || hoveredNodeId) {
+          setLockedBlastNodeId(null);
+          setHoveredNodeId(null);
+          return;
+        }
+        if (showLayersPopover) {
+          setShowLayersPopover(false);
+          return;
+        }
+        if (showLegend) {
+          setShowLegend(false);
+          return;
+        }
+        if (isGraphFullscreen) {
+          setGraphFullscreen(false);
+          setIsAutoPlayingTour(false);
+        }
       }
     };
     const onFsChange = () => {
@@ -304,7 +671,14 @@ export function ReactFlowGraphPane() {
       window.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("fullscreenchange", onFsChange);
     };
-  }, [isGraphFullscreen, setGraphFullscreen]);
+  }, [
+    lockedBlastNodeId,
+    hoveredNodeId,
+    showLayersPopover,
+    showLegend,
+    isGraphFullscreen,
+    setGraphFullscreen,
+  ]);
 
   const handleToggleBrowserFullscreen = async () => {
     try {
@@ -345,7 +719,7 @@ export function ReactFlowGraphPane() {
         id: e.id,
         source: e.source,
         target: e.target,
-        label: e.label,
+        label: e.data?.flowLabel || e.label,
       })),
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
@@ -354,7 +728,7 @@ export function ReactFlowGraphPane() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `argon-graph-${graphViewMode.toLowerCase()}.json`;
+    a.download = `alastor-graph-${graphViewMode.toLowerCase()}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -441,17 +815,30 @@ export function ReactFlowGraphPane() {
     ];
   }, [appTree, findings]);
 
-  // Build Concentric 360° Spider-Web / Mind-Map / Hierarchy Graph for APP_TREE
+  // Primary Graph Builder Effect (APP_TREE + FINDING_PATH + CPG Backend Views)
   useEffect(() => {
     let isCancelled = false;
 
     async function loadGraph() {
-      // CASE 1: Interactive Spider-Web / Mind-Map App Tree built directly from rich AppTreeSummary
+      // CASE 1: Interactive 360° Spider-Web / Mind-Map / Hierarchy App Tree
       if (graphViewMode === "APP_TREE" && appTree) {
         const spiderNodes: Node[] = [];
-        const spiderEdges: Edge[] = [];
+        const spiderTreeEdges: Edge[] = [];
         const isSpider = treeLayoutStyle === "SPIDER_WEB";
         const queryLower = spiderSearch.trim().toLowerCase();
+
+        // Count cross-file links per file for card badges & declutter priority
+        const crossCountByFile = new Map<string, number>();
+        for (const ce of allCrossFileEdges) {
+          crossCountByFile.set(
+            ce.source_filepath,
+            (crossCountByFile.get(ce.source_filepath) || 0) + 1
+          );
+          crossCountByFile.set(
+            ce.target_filepath,
+            (crossCountByFile.get(ce.target_filepath) || 0) + 1
+          );
+        }
 
         const getFlawCountForFile = (fp: string) =>
           findings.filter((f) =>
@@ -464,7 +851,6 @@ export function ReactFlowGraphPane() {
           ).length;
 
         const matchesFilter = (
-          label: string,
           name: string,
           purpose: string,
           category?: string,
@@ -487,7 +873,7 @@ export function ReactFlowGraphPane() {
             }
           }
           if (!queryLower) return true;
-          const matchText =
+          return (
             name.toLowerCase().includes(queryLower) ||
             purpose.toLowerCase().includes(queryLower) ||
             (category || "").toLowerCase().includes(queryLower) ||
@@ -495,11 +881,11 @@ export function ReactFlowGraphPane() {
               (el) =>
                 el.name.toLowerCase().includes(queryLower) ||
                 el.signature.toLowerCase().includes(queryLower)
-            );
-          return matchText;
+            )
+          );
         };
 
-        // Create Central Spider Root Hub at (0, 0)
+        // Central Workspace Root Hub
         const rootId = "dir:root";
         const rootName = appTree.tree.name || "Workspace Root";
         spiderNodes.push({
@@ -521,8 +907,7 @@ export function ReactFlowGraphPane() {
           },
         });
 
-        // Recursive radial sector layout for Spider-Web mode with Smart Decluttering
-        const RING_STEP = appTree.total_files > 40 ? 440 : 380;
+        const RING_STEP = appTree.total_files > 40 ? 450 : 390;
         const isLargeApp = appTree.total_files > 18;
 
         const getSubtreeFlawCount = (d: DirectoryTreeNode): number => {
@@ -532,6 +917,17 @@ export function ReactFlowGraphPane() {
           );
           for (const sub of d.subdirectories || []) {
             total += getSubtreeFlawCount(sub);
+          }
+          return total;
+        };
+
+        const getSubtreeCrossCount = (d: DirectoryTreeNode): number => {
+          let total = (d.files || []).reduce(
+            (acc, f) => acc + (crossCountByFile.get(f.filepath) || 0),
+            0
+          );
+          for (const sub of d.subdirectories || []) {
+            total += getSubtreeCrossCount(sub);
           }
           return total;
         };
@@ -560,25 +956,29 @@ export function ReactFlowGraphPane() {
                 )
               : rawFiles;
 
-          // In SMART_SIMPLIFIED mode on large repositories, cap clean files per directory so rings stay legible
-          const maxCleanFilesPerFolder = isLargeApp ? 4 : 14;
+          const maxCleanFilesPerFolder = isLargeApp ? 6 : 16;
           if (
             spiderDeclutterMode === "SMART_SIMPLIFIED" &&
             files.length > maxCleanFilesPerFolder + 2
           ) {
-            const vulnOrActive = files.filter(
+            const priorityFiles = files.filter(
               (f) =>
                 getFlawCountForFile(f.filepath) > 0 ||
-                f.filepath === activeFilepath
+                f.filepath === activeFilepath ||
+                (crossCountByFile.get(f.filepath) || 0) > 0
             );
             const cleanRest = files.filter(
               (f) =>
                 getFlawCountForFile(f.filepath) === 0 &&
-                f.filepath !== activeFilepath
+                f.filepath !== activeFilepath &&
+                (crossCountByFile.get(f.filepath) || 0) === 0
             );
             files = [
-              ...vulnOrActive,
-              ...cleanRest.slice(0, maxCleanFilesPerFolder),
+              ...priorityFiles.slice(0, maxCleanFilesPerFolder + 6),
+              ...cleanRest.slice(
+                0,
+                Math.max(2, maxCleanFilesPerFolder - priorityFiles.length)
+              ),
             ];
           }
 
@@ -605,12 +1005,11 @@ export function ReactFlowGraphPane() {
 
           const totalWeight = items.reduce((acc, it) => acc + it.weight, 0);
           let currentAngle = startAngle;
-          // Dynamic circumference scaling: ensure cards never overlap on dense rings
           const sectorSpan = Math.max(0.35, endAngle - startAngle);
-          const minRadiusForNoOverlap = (items.length * 235) / sectorSpan;
+          const minRadiusForNoOverlap = (items.length * 240) / sectorSpan;
           const radius = Math.max(
             depth * RING_STEP,
-            Math.min(depth * RING_STEP + 950, minRadiusForNoOverlap)
+            Math.min(depth * RING_STEP + 980, minRadiusForNoOverlap)
           );
 
           items.forEach((item, idx) => {
@@ -619,7 +1018,6 @@ export function ReactFlowGraphPane() {
             const midAngle = currentAngle + angleSpan / 2;
             currentAngle += angleSpan;
 
-            // Radial stagger on dense rings so adjacent cards never collide
             const stagger = items.length > 5 ? (idx % 3) * 95 : 0;
             const r = radius + stagger;
             const cx = Math.cos(midAngle) * r;
@@ -629,12 +1027,13 @@ export function ReactFlowGraphPane() {
               const d = item.dir;
               const dId = `dir:${d.path}`;
               const dirFlaws = getSubtreeFlawCount(d);
-              // Smart auto-collapse deep clean directories on large apps unless explicitly toggled
+              const dirCross = getSubtreeCrossCount(d);
               const autoCollapseDeepClean =
                 spiderDeclutterMode === "SMART_SIMPLIFIED" &&
                 isLargeApp &&
-                depth >= 1 &&
+                depth >= 2 &&
                 dirFlaws === 0 &&
+                dirCross === 0 &&
                 collapsedDirs[d.path] === undefined;
               const isCollapsed = autoCollapseDeepClean
                 ? true
@@ -642,12 +1041,12 @@ export function ReactFlowGraphPane() {
               const isMatch =
                 spiderSearch === "" && categoryFilter === "ALL"
                   ? true
-                  : matchesFilter("AppDirectory", d.name, d.purpose);
+                  : matchesFilter(d.name, d.purpose);
 
               spiderNodes.push({
                 id: dId,
                 type: "cpgNode",
-                position: { x: cx - 104, y: cy - 55 },
+                position: { x: cx - 104, y: cy - 56 },
                 data: {
                   id: dId,
                   label: "AppDirectory",
@@ -664,18 +1063,29 @@ export function ReactFlowGraphPane() {
                 },
               });
 
-              spiderEdges.push({
+              const containsMeta = resolveDirectionalEdgeMeta("CONTAINS", {
+                isSpider,
+              });
+              spiderTreeEdges.push({
                 id: `edge:${parentNodeId}->${dId}`,
                 source: parentNodeId,
                 target: dId,
-                type: isSpider ? "straight" : "smoothstep",
-                style: getEdgeStyle("CONTAINS", isSpider),
+                type: "directionalFlow",
                 markerEnd: {
                   type: MarkerType.ArrowClosed,
-                  color: isSpider ? "#22d3ee" : "#10b981",
-                  width: 14,
-                  height: 14,
+                  color: containsMeta.strokeColor,
+                  width: 16,
+                  height: 16,
                 },
+                data: {
+                  edgeType: "CONTAINS",
+                  flowLabel: "CONTAINS ▶",
+                  pathShape: isSpider ? "straight" : "smoothstep",
+                  isSpider,
+                  strokeColor: containsMeta.strokeColor,
+                  badgeTone: containsMeta.badgeTone,
+                  isAnimatedPulse: false,
+                } satisfies DirectionalFlowEdgeData,
               });
 
               if (!isCollapsed) {
@@ -691,8 +1101,8 @@ export function ReactFlowGraphPane() {
               const f = item.file;
               const fId = `file:${f.filepath}`;
               const flawCount = getFlawCountForFile(f.filepath);
+              const crossEdgeCount = crossCountByFile.get(f.filepath) || 0;
               const isMatch = matchesFilter(
-                "AppFile",
                 f.filename,
                 f.purpose,
                 f.category,
@@ -707,7 +1117,7 @@ export function ReactFlowGraphPane() {
               spiderNodes.push({
                 id: fId,
                 type: "cpgNode",
-                position: { x: cx - 112, y: cy - 64 },
+                position: { x: cx - 112, y: cy - 66 },
                 data: {
                   ...f,
                   id: fId,
@@ -717,6 +1127,7 @@ export function ReactFlowGraphPane() {
                   start_line: 1,
                   end_line: f.line_count,
                   flawCount,
+                  crossEdgeCount,
                   isSpiderMode: isSpider,
                   isExpandedElements,
                   isDimmed:
@@ -726,24 +1137,38 @@ export function ReactFlowGraphPane() {
                 },
               });
 
-              spiderEdges.push({
+              const containsMeta = resolveDirectionalEdgeMeta("CONTAINS", {
+                isSpider,
+              });
+              spiderTreeEdges.push({
                 id: `edge:${parentNodeId}->${fId}`,
                 source: parentNodeId,
                 target: fId,
-                type: isSpider ? "straight" : "smoothstep",
-                style: getEdgeStyle("CONTAINS", isSpider),
+                type: "directionalFlow",
                 markerEnd: {
                   type: MarkerType.ArrowClosed,
-                  color: isSpider ? "#22d3ee" : "#10b981",
-                  width: 14,
-                  height: 14,
+                  color: containsMeta.strokeColor,
+                  width: 16,
+                  height: 16,
                 },
+                data: {
+                  edgeType: "CONTAINS",
+                  flowLabel: "CONTAINS ▶",
+                  pathShape: isSpider ? "straight" : "smoothstep",
+                  isSpider,
+                  strokeColor: containsMeta.strokeColor,
+                  badgeTone: containsMeta.badgeTone,
+                  isAnimatedPulse: false,
+                } satisfies DirectionalFlowEdgeData,
               });
 
-              // Satellite Reference Nodes (Functions, Routes, Classes, Dependencies)
+              // Satellite Reference Nodes
               if (isExpandedElements && f.elements && f.elements.length > 0) {
                 const maxSatellites = f.elements.slice(0, 10);
-                const satSpread = Math.min(Math.PI * 0.75, Math.max(0.45, angleSpan * 0.9));
+                const satSpread = Math.min(
+                  Math.PI * 0.75,
+                  Math.max(0.45, angleSpan * 0.9)
+                );
                 const satStart = midAngle - satSpread / 2;
                 const satRadius = r + 290;
 
@@ -774,19 +1199,26 @@ export function ReactFlowGraphPane() {
                     },
                   });
 
-                  spiderEdges.push({
+                  spiderTreeEdges.push({
                     id: `edge:${fId}->${elemId}`,
                     source: fId,
                     target: elemId,
-                    type: isSpider ? "straight" : "smoothstep",
-                    style: getEdgeStyle("DECLARES", isSpider),
-                    animated: true,
+                    type: "directionalFlow",
                     markerEnd: {
                       type: MarkerType.ArrowClosed,
-                      color: "#f59e0b",
-                      width: 12,
-                      height: 12,
+                      color: "#b45309",
+                      width: 15,
+                      height: 15,
                     },
+                    data: {
+                      edgeType: "DECLARES",
+                      flowLabel: "DECLARES ▶",
+                      pathShape: isSpider ? "straight" : "smoothstep",
+                      isSpider,
+                      strokeColor: "#b45309",
+                      badgeTone: "AMBER",
+                      isAnimatedPulse: false,
+                    } satisfies DirectionalFlowEdgeData,
                   });
                 });
               }
@@ -802,32 +1234,122 @@ export function ReactFlowGraphPane() {
           (3 * Math.PI) / 2
         );
 
-        if (isSpider) {
-          setNodes(spiderNodes);
-          setEdges(spiderEdges);
-        } else {
+        let positionedNodes = spiderNodes;
+        let positionedEdges = spiderTreeEdges;
+
+        if (!isSpider) {
           const rankdir = treeLayoutStyle === "MIND_MAP" ? "LR" : "TB";
-          const layouted = computeDagreLayout(spiderNodes, spiderEdges, rankdir);
-          setNodes(layouted.nodes);
-          setEdges(layouted.edges);
+          const layouted = computeDagreLayout(
+            spiderNodes,
+            spiderTreeEdges,
+            rankdir
+          );
+          positionedNodes = layouted.nodes;
+          positionedEdges = layouted.edges;
         }
 
-        setTimeout(() => {
-          if (reactFlowInstance) {
-            reactFlowInstance.fitView({ padding: 0.22, duration: 450 });
-          }
-        }, 60);
+        const nodeById = new Map<string, Node>(
+          positionedNodes.map((n) => [n.id, n])
+        );
+
+        // Route Spider radial tree edges with exact atan2/quadrant perimeter handles
+        if (isSpider) {
+          positionedEdges = positionedEdges.map((ed) => {
+            const sN = nodeById.get(ed.source);
+            const tN = nodeById.get(ed.target);
+            const handles = computePerimeterHandles("SPIDER_360", sN, tN);
+            return {
+              ...ed,
+              sourceHandle: handles.sourceHandle,
+              targetHandle: handles.targetHandle,
+            };
+          });
+        }
+
+        // Overlay Cross-File IMPORTS / CALLS edges in distinct violet (#6d28d9)
+        const crossEdgesToRender: Edge[] = [];
+        if (showCrossFileFlows && allCrossFileEdges.length > 0) {
+          const handleMode: "LR" | "TB" | "SPIDER_360" = isSpider
+            ? "SPIDER_360"
+            : treeLayoutStyle === "MIND_MAP"
+            ? "LR"
+            : "TB";
+
+          allCrossFileEdges.forEach((ce, idx) => {
+            const srcId = `file:${ce.source_filepath}`;
+            const tgtId = `file:${ce.target_filepath}`;
+            const sN = nodeById.get(srcId);
+            const tN = nodeById.get(tgtId);
+            if (!sN || !tN || srcId === tgtId) return;
+
+            const handles = computePerimeterHandles(handleMode, sN, tN, true);
+            const symList = (ce.symbols || []).slice(0, 2).join(", ");
+            const rawLbl = (ce.flow_label || "").trim();
+            const finalFlowLabel = rawLbl
+              ? rawLbl.includes("▶")
+                ? rawLbl
+                : `${rawLbl} ▶`
+              : symList
+              ? `IMPORTS (${symList}) ▶`
+              : "IMPORTS ▶";
+
+            crossEdgesToRender.push({
+              id: `xfile:${ce.source_filepath}->${ce.target_filepath}:${idx}`,
+              source: srcId,
+              target: tgtId,
+              sourceHandle: handles.sourceHandle,
+              targetHandle: handles.targetHandle,
+              type: "directionalFlow",
+              markerEnd: {
+                type: MarkerType.ArrowClosed,
+                color: "#6d28d9",
+                width: 18,
+                height: 18,
+              },
+              data: {
+                edgeType: ce.edge_type || "IMPORTS",
+                flowLabel: finalFlowLabel,
+                varName: symList || null,
+                pathShape: "bezier",
+                isSpider,
+                isAnimatedPulse: true,
+                strokeColor: "#6d28d9",
+                badgeTone: "VIOLET",
+              } satisfies DirectionalFlowEdgeData,
+            });
+          });
+        }
+
+        const combinedEdges = [...positionedEdges, ...crossEdgesToRender];
+        const isDense = combinedEdges.length > 45;
+        const densityTaggedEdges = combinedEdges.map((ed) => ({
+          ...ed,
+          data: {
+            ...ed.data,
+            isDenseGraph: isDense,
+          },
+        }));
+
+        if (!isCancelled) {
+          setNodes(positionedNodes);
+          setEdges(densityTaggedEdges);
+          setTimeout(() => {
+            if (reactFlowInstance) {
+              reactFlowInstance.fitView({ padding: 0.22, duration: 450 });
+            }
+          }, 60);
+        }
         return;
       }
 
-      // CASE 2: Standard CPG Views (FINDING_PATH, FULL_CPG, DFG_ONLY, CFG_ONLY, CALL_GRAPH)
+      // CASE 2: Standard CPG Views (FINDING_PATH, FULL_CPG, DFG_ONLY, CFG_ONLY, CALL_GRAPH, ENTRYPOINT_GRAPH)
       let rawNodes: CPGNode[] = [];
-      let rawEdges: any[] = [];
+      let rawEdges: GraphEdgeItem[] = [];
 
       if (graphViewMode === "FINDING_PATH") {
-        if (selectedFinding) {
-          rawNodes = selectedFinding.path_nodes || [];
-          rawEdges = selectedFinding.path_edges || [];
+        if (activeFindingFlow) {
+          rawNodes = activeFindingFlow.nodes;
+          rawEdges = activeFindingFlow.edges;
         } else {
           if (!isCancelled) {
             setNodes([]);
@@ -838,18 +1360,15 @@ export function ReactFlowGraphPane() {
       } else {
         try {
           const shouldPassFilepath =
-            activeFilepath &&
+            Boolean(activeFilepath) &&
             graphViewMode !== "APP_TREE" &&
             graphViewMode !== "ENTRYPOINT_GRAPH" &&
             !(graphViewMode === "CALL_GRAPH" && callGraphScope === "WHOLE_APP");
-          const url = shouldPassFilepath
-            ? `http://localhost:8000/api/graph?view_mode=${graphViewMode}&filepath=${encodeURIComponent(
-                activeFilepath!
-              )}`
-            : `http://localhost:8000/api/graph?view_mode=${graphViewMode}`;
-          const res = await fetch(url);
-          if (res.ok && !isCancelled) {
-            const data = await res.json();
+          const data = await fetchGraphData({
+            view_mode: graphViewMode,
+            filepath: shouldPassFilepath ? activeFilepath : null,
+          });
+          if (!isCancelled) {
             rawNodes = data.nodes || [];
             rawEdges = data.edges || [];
           }
@@ -862,44 +1381,70 @@ export function ReactFlowGraphPane() {
 
       const clampedRawNodes =
         rawNodes.length > 150 ? rawNodes.slice(0, 150) : rawNodes;
-      const validNodeIds = new Set(clampedRawNodes.map((n) => n.id));
+      const validNodeIds = new Set(clampedRawNodes.map((n) => String(n.id)));
       const clampedRawEdges = rawEdges.filter(
-        (e) => validNodeIds.has(e.source) && validNodeIds.has(e.target)
+        (e) =>
+          validNodeIds.has(String(e.source)) &&
+          validNodeIds.has(String(e.target))
       );
 
       const applySeveredStyle =
         graphViewMode === "FINDING_PATH" && isCurrentFindingSevered;
 
-      const flowNodes: Node[] = clampedRawNodes.map((n) => ({
+      const sinkNodeIdSet = new Set(
+        clampedRawNodes.filter((n) => n.is_sink).map((n) => String(n.id))
+      );
+
+      const flowNodes: Node[] = clampedRawNodes.map((n, idx) => ({
         id: String(n.id),
         type: "cpgNode",
         position: { x: 0, y: 0 },
         data: {
           ...n,
+          stepNumber: graphViewMode === "FINDING_PATH" ? idx + 1 : undefined,
           isSevered: applySeveredStyle,
+          onSelectInspect: setInspectedNodeData,
         },
       }));
 
-      const flowEdges: Edge[] = clampedRawEdges.map((e) => {
-        const edgeStyle = getEdgeStyle(e.type, false, applySeveredStyle);
+      const isDenseCpg =
+        graphViewMode === "FULL_CPG" && clampedRawEdges.length > 45;
+
+      const flowEdges: Edge[] = clampedRawEdges.map((e, idx) => {
+        const stepIdx =
+          graphViewMode === "FINDING_PATH" ? e.step_index ?? idx + 1 : undefined;
+        const meta = resolveDirectionalEdgeMeta(e.type, {
+          isSevered: applySeveredStyle,
+          varName: e.var_name,
+          flowLabel: e.flow_label,
+          stepIndex: stepIdx,
+          isSinkTarget: sinkNodeIdSet.has(String(e.target)),
+        });
+
         return {
-          id: String(e.id),
+          id: String(e.id || `cpg-edge-${idx}`),
           source: String(e.source),
           target: String(e.target),
-          type: "smoothstep",
-          label: applySeveredStyle
-            ? "✓ SEVERED"
-            : e.var_name
-            ? `(${e.var_name})`
-            : undefined,
-          style: edgeStyle,
-          animated: !applySeveredStyle && e.type === "DFG_FLOWS_TO",
+          type: "directionalFlow",
           markerEnd: {
             type: MarkerType.ArrowClosed,
-            color: edgeStyle.stroke,
-            width: 14,
-            height: 14,
+            color: meta.strokeColor,
+            width: 18,
+            height: 18,
           },
+          data: {
+            edgeType: e.type,
+            flowLabel: meta.flowLabel,
+            stepIndex: stepIdx,
+            varName: e.var_name ?? null,
+            pathShape: e.type === "CFG_LOOP_BACK" ? "bezier" : "smoothstep",
+            isSevered: applySeveredStyle,
+            isDenseGraph: isDenseCpg,
+            isAnimatedPulse: meta.isAnimatedPulse,
+            alwaysShowFullPill: graphViewMode === "FINDING_PATH",
+            strokeColor: meta.strokeColor,
+            badgeTone: meta.badgeTone,
+          } satisfies DirectionalFlowEdgeData,
         };
       });
 
@@ -915,7 +1460,7 @@ export function ReactFlowGraphPane() {
         setTimeout(() => {
           if (reactFlowInstance) {
             reactFlowInstance.fitView({
-              padding: isGraphFullscreen ? 0.18 : 0.25,
+              padding: isGraphFullscreen ? 0.18 : 0.24,
               duration: 400,
             });
           }
@@ -926,16 +1471,18 @@ export function ReactFlowGraphPane() {
       }
     }
 
-    loadGraph();
+    void loadGraph();
 
     return () => {
       isCancelled = true;
     };
   }, [
-    selectedFinding,
+    activeFindingFlow,
     graphViewMode,
     activeFilepath,
     appTree,
+    allCrossFileEdges,
+    showCrossFileFlows,
     findings,
     treeLayoutStyle,
     spiderDeclutterMode,
@@ -954,29 +1501,168 @@ export function ReactFlowGraphPane() {
     setEdges,
   ]);
 
+  // Filter edges by active Edge Layers (except FINDING_PATH keeps full path intact unless dfg toggled)
+  const layerFilteredEdges = useMemo(() => {
+    if (graphViewMode === "APP_TREE") {
+      return edges.filter((e) => {
+        const et = String(e.data?.edgeType || "").toUpperCase();
+        if (et === "IMPORTS" || et === "CALLS") {
+          return showCrossFileFlows && edgeLayers.calls;
+        }
+        return edgeLayers.ast;
+      });
+    }
+    return edges.filter((e) =>
+      edgeMatchesLayerFilter(e.data?.edgeType, edgeLayers)
+    );
+  }, [edges, edgeLayers, graphViewMode, showCrossFileFlows]);
+
+  // Transitive Upstream Predecessors & Downstream Reachable Blast-Radius Computation
+  const blastComputation = useMemo(() => {
+    const rawOriginId = isBlastRadiusEnabled
+      ? lockedBlastNodeId || hoveredNodeId
+      : null;
+    if (!rawOriginId || !nodes.some((n) => n.id === rawOriginId)) {
+      return {
+        isActive: false,
+        originId: null as string | null,
+        originName: "",
+        upstreamNodes: new Set<string>(),
+        downstreamNodes: new Set<string>(),
+        upstreamEdges: new Set<string>(),
+        downstreamEdges: new Set<string>(),
+      };
+    }
+
+    const fwdAdj = new Map<string, Array<{ target: string; edgeId: string }>>();
+    const revAdj = new Map<string, Array<{ source: string; edgeId: string }>>();
+
+    for (const e of layerFilteredEdges) {
+      if (!fwdAdj.has(e.source)) fwdAdj.set(e.source, []);
+      fwdAdj.get(e.source)!.push({ target: e.target, edgeId: e.id });
+
+      if (!revAdj.has(e.target)) revAdj.set(e.target, []);
+      revAdj.get(e.target)!.push({ source: e.source, edgeId: e.id });
+    }
+
+    const upstreamNodes = new Set<string>();
+    const upstreamEdges = new Set<string>();
+    const upQueue: string[] = [rawOriginId];
+    const visitedUp = new Set<string>([rawOriginId]);
+
+    while (upQueue.length > 0) {
+      const cur = upQueue.shift()!;
+      for (const prev of revAdj.get(cur) || []) {
+        upstreamEdges.add(prev.edgeId);
+        if (!visitedUp.has(prev.source)) {
+          visitedUp.add(prev.source);
+          if (prev.source !== rawOriginId) {
+            upstreamNodes.add(prev.source);
+          }
+          upQueue.push(prev.source);
+        }
+      }
+    }
+
+    const downstreamNodes = new Set<string>();
+    const downstreamEdges = new Set<string>();
+    const downQueue: string[] = [rawOriginId];
+    const visitedDown = new Set<string>([rawOriginId]);
+
+    while (downQueue.length > 0) {
+      const cur = downQueue.shift()!;
+      for (const nxt of fwdAdj.get(cur) || []) {
+        downstreamEdges.add(nxt.edgeId);
+        if (!visitedDown.has(nxt.target)) {
+          visitedDown.add(nxt.target);
+          if (nxt.target !== rawOriginId) {
+            downstreamNodes.add(nxt.target);
+          }
+          downQueue.push(nxt.target);
+        }
+      }
+    }
+
+    const originNode = nodes.find((n) => n.id === rawOriginId);
+    const originName =
+      originNode?.data?.filename ||
+      originNode?.data?.name ||
+      originNode?.data?.filepath ||
+      rawOriginId;
+
+    return {
+      isActive: true,
+      originId: rawOriginId,
+      originName: String(originName),
+      upstreamNodes,
+      downstreamNodes,
+      upstreamEdges,
+      downstreamEdges,
+    };
+  }, [isBlastRadiusEnabled, lockedBlastNodeId, hoveredNodeId, nodes, layerFilteredEdges]);
+
+  // Decorate nodes & edges with Blast-Radius roles & hover highlights without mutating base layout positions
+  const displayNodes = useMemo<Node[]>(() => {
+    if (!blastComputation.isActive) return nodes;
+    return nodes.map((n) => {
+      let blastRole: NodeBlastRole = "DIMMED";
+      if (n.id === blastComputation.originId) {
+        blastRole = "FOCUSED";
+      } else if (blastComputation.upstreamNodes.has(n.id)) {
+        blastRole = "UPSTREAM";
+      } else if (blastComputation.downstreamNodes.has(n.id)) {
+        blastRole = "DOWNSTREAM";
+      }
+      return {
+        ...n,
+        data: {
+          ...n.data,
+          blastRole,
+        },
+      };
+    });
+  }, [nodes, blastComputation]);
+
+  const displayEdges = useMemo<Edge[]>(() => {
+    return layerFilteredEdges.map((e) => {
+      let blastState: EdgeBlastState = "NONE";
+      if (blastComputation.isActive) {
+        if (blastComputation.upstreamEdges.has(e.id)) {
+          blastState = "UPSTREAM";
+        } else if (blastComputation.downstreamEdges.has(e.id)) {
+          blastState = "DOWNSTREAM";
+        } else {
+          blastState = "DIMMED";
+        }
+      }
+      return {
+        ...e,
+        data: {
+          ...e.data,
+          blastState,
+          isHovered: hoveredEdgeId === e.id,
+        },
+      };
+    });
+  }, [layerFilteredEdges, blastComputation, hoveredEdgeId]);
+
   const fitViewOnLoad = useCallback(
     (instance: any) => {
       setReactFlowInstance(instance);
       setTimeout(() => {
-        instance.fitView({ padding: 0.2, duration: 600 });
+        instance.fitView({ padding: 0.2, duration: 500 });
       }, 100);
     },
     [setReactFlowInstance]
   );
 
-  // Interactive Zoom & Camera Helpers
-  const handleZoomIn = () => {
-    reactFlowInstance?.zoomIn({ duration: 250 });
-  };
-
-  const handleZoomOut = () => {
-    reactFlowInstance?.zoomOut({ duration: 250 });
-  };
-
+  // Camera Helpers
+  const handleZoomIn = () => reactFlowInstance?.zoomIn({ duration: 220 });
+  const handleZoomOut = () => reactFlowInstance?.zoomOut({ duration: 220 });
   const handleFitAll = () => {
     reactFlowInstance?.fitView({
       padding: isGraphFullscreen ? 0.16 : 0.2,
-      duration: 450,
+      duration: 420,
     });
   };
 
@@ -987,38 +1673,39 @@ export function ReactFlowGraphPane() {
       reactFlowInstance.setCenter(
         rootNode.position.x + 104,
         rootNode.position.y + 104,
-        { zoom: 0.9, duration: 500 }
-      );
-    } else {
-      reactFlowInstance.fitView({ padding: 0.2, duration: 450 });
-    }
-  };
-
-  const handleFocusSelected = () => {
-    if (!reactFlowInstance) return;
-    const targetId =
-      selectedGraphNodeId ||
-      (activeFilepath ? `file:${activeFilepath}` : null);
-    const matchNode = nodes.find((n) => n.id === targetId);
-    if (matchNode) {
-      reactFlowInstance.setCenter(
-        matchNode.position.x + 110,
-        matchNode.position.y + 60,
-        { zoom: 1.35, duration: 500 }
+        { zoom: 0.9, duration: 480 }
       );
     } else {
       handleFitAll();
     }
   };
 
-  // Focus camera on a specific step in the finding path during Full-Screen Presentation Tour
+  const handleFocusSelected = () => {
+    if (!reactFlowInstance) return;
+    const targetId =
+      lockedBlastNodeId ||
+      selectedGraphNodeId ||
+      (activeFilepath ? `file:${activeFilepath}` : null);
+    const matchNode = nodes.find((n) => n.id === targetId);
+    if (matchNode) {
+      reactFlowInstance.setCenter(
+        matchNode.position.x + 115,
+        matchNode.position.y + 62,
+        { zoom: 1.3, duration: 450 }
+      );
+    } else {
+      handleFitAll();
+    }
+  };
+
+  // Focus camera on a specific step in the finding flow (works on both multi-node and synthesized 3-step flows)
   const focusTourStep = useCallback(
     (stepIndex: number) => {
-      const pathNodes = selectedFinding?.path_nodes || [];
-      if (pathNodes.length === 0) return;
-      const clampedIdx = Math.max(0, Math.min(stepIndex, pathNodes.length - 1));
+      const flowSteps = activeFindingFlow?.nodes || [];
+      if (flowSteps.length === 0) return;
+      const clampedIdx = Math.max(0, Math.min(stepIndex, flowSteps.length - 1));
       setActiveTourStepIdx(clampedIdx);
-      const stepNode = pathNodes[clampedIdx];
+      const stepNode = flowSteps[clampedIdx];
       if (!stepNode) return;
       selectGraphNode(stepNode);
       if (reactFlowInstance) {
@@ -1027,27 +1714,27 @@ export function ReactFlowGraphPane() {
           reactFlowInstance.setCenter(
             rfNode.position.x + NODE_WIDTH / 2,
             rfNode.position.y + NODE_HEIGHT / 2,
-            { zoom: 1.35, duration: 520 }
+            { zoom: 1.28, duration: 480 }
           );
         }
       }
     },
-    [selectedFinding, nodes, reactFlowInstance, selectGraphNode]
+    [activeFindingFlow, nodes, reactFlowInstance, selectGraphNode]
   );
 
   // Auto-play presentation tour interval
   useEffect(() => {
-    if (!isAutoPlayingTour || !selectedFinding?.path_nodes?.length) return;
-    const total = selectedFinding.path_nodes.length;
+    const total = activeFindingFlow?.nodes?.length || 0;
+    if (!isAutoPlayingTour || total === 0) return;
     const interval = setInterval(() => {
       setActiveTourStepIdx((prev) => {
         const nextIdx = (prev + 1) % total;
         focusTourStep(nextIdx);
         return nextIdx;
       });
-    }, 2600);
+    }, 2500);
     return () => clearInterval(interval);
-  }, [isAutoPlayingTour, selectedFinding, focusTourStep]);
+  }, [isAutoPlayingTour, activeFindingFlow, focusTourStep]);
 
   const handleCycleFinding = (delta: number) => {
     if (findings.length === 0) return;
@@ -1075,6 +1762,72 @@ export function ReactFlowGraphPane() {
       setCollapsedDirs(next);
     }
   };
+
+  const handleTriggerAiExplain = () => {
+    setAiDrawerOpen(true, "GRAPH");
+    void explainCurrentGraphWithAi({
+      view_mode: graphViewMode,
+      finding_id: selectedFinding?.id ?? null,
+    });
+  };
+
+  // Plain-English Flow Story Generator
+  const plainEnglishStory = useMemo(() => {
+    if (graphViewMode === "FINDING_PATH") {
+      if (!selectedFinding || !activeFindingFlow) {
+        return "Attack Path View: Select any finding in the left explorer to trace its source-to-sink data flow and BFL fix chokepoint.";
+      }
+      if (isCurrentFindingSevered) {
+        return `Verified Severed Flow (${selectedFinding.cwe_id || selectedFinding.rule_id}): Surgical BFL patch neutralized reachability in ${basenameOf(lastAppliedPatch?.filepath)} — 0 active exploit paths remain.`;
+      }
+      const fNodes = activeFindingFlow.nodes;
+      const srcN = fNodes[0];
+      const bflN = fNodes.find((n) => n.is_bfl) || fNodes[Math.floor(fNodes.length / 2)] || srcN;
+      const sinkN = fNodes[fNodes.length - 1] || bflN;
+      const srcLoc = `${basenameOf(srcN?.filepath)}:${srcN?.start_line || 1}`;
+      const bflLoc = `${basenameOf(bflN?.filepath)}:${bflN?.start_line || 1}`;
+      const sinkName = sinkN?.name || selectedFinding.rule_id;
+      const cweTag = selectedFinding.cwe_id ? ` (${selectedFinding.cwe_id})` : "";
+      return `Attack Flow (${fNodes.length} steps): Input/context enters at ${srcLoc}, passes through BFL fix chokepoint ${bflLoc}, and reaches ${sinkName}${cweTag}.`;
+    }
+
+    if (graphViewMode === "APP_TREE") {
+      const totalFiles = appTree?.total_files ?? nodes.length;
+      const totalDirs = appTree?.total_directories ?? 1;
+      const xCount = allCrossFileEdges.length;
+      return `360° Architecture Map: ${totalFiles} files across ${totalDirs} folders with ${xCount} cross-file import/call dependencies. Click or hover any node to trace its upstream & downstream blast radius.`;
+    }
+
+    if (graphViewMode === "CALL_GRAPH") {
+      return `Inter-Procedural Call Graph: ${nodes.length} caller/callee symbols linked by ${displayEdges.length} directional CALLS ▶ edges (${callGraphScope === "WHOLE_APP" ? "Whole Repository" : basenameOf(activeFilepath)}).`;
+    }
+
+    if (graphViewMode === "ENTRYPOINT_GRAPH") {
+      return `Attack Surface Entrypoints: Traces exposed routes & handlers across ${nodes.length} nodes and ${displayEdges.length} directional hops into downstream execution sinks.`;
+    }
+
+    if (graphViewMode === "DFG_ONLY") {
+      return `Data-Flow Graph (DFG): ${displayEdges.length} variable & taint propagation links (TAINT ▶) across ${nodes.length} statements${activeFilepath ? ` in ${basenameOf(activeFilepath)}` : ""}.`;
+    }
+
+    if (graphViewMode === "CFG_ONLY") {
+      return `Control-Flow Graph (CFG): ${displayEdges.length} execution & branch transitions (TRUE ▶, FALSE ▶, LOOP ↺) across ${nodes.length} statements${activeFilepath ? ` in ${basenameOf(activeFilepath)}` : ""}.`;
+    }
+
+    return `Full Code Property Graph (CPG): Unified syntax (AST), control flow (CFG), and data flow (DFG) across ${nodes.length} nodes and ${displayEdges.length} directional edges.`;
+  }, [
+    graphViewMode,
+    selectedFinding,
+    activeFindingFlow,
+    isCurrentFindingSevered,
+    lastAppliedPatch,
+    appTree,
+    nodes.length,
+    displayEdges.length,
+    allCrossFileEdges.length,
+    callGraphScope,
+    activeFilepath,
+  ]);
 
   // Compute SVG Spider Radar Chart Polygon Points
   const radarSize = 166;
@@ -1112,50 +1865,49 @@ export function ReactFlowGraphPane() {
   }, [findings, selectedFinding]);
 
   const activeTourNode = useMemo(() => {
-    const pNodes = selectedFinding?.path_nodes || [];
+    const pNodes = activeFindingFlow?.nodes || [];
     if (pNodes.length === 0) return null;
     return pNodes[Math.min(activeTourStepIdx, pNodes.length - 1)] || pNodes[0];
-  }, [selectedFinding, activeTourStepIdx]);
+  }, [activeFindingFlow, activeTourStepIdx]);
 
   return (
     <div
       className={
         isGraphFullscreen
-          ? "fixed inset-0 z-[100] w-screen h-screen bg-[var(--surface-void)] flex flex-col select-none"
-          : "flex flex-col h-full bg-[var(--surface-void)] border-l border-[var(--border-hairline)]"
+          ? "fixed inset-0 z-[100] w-screen h-screen bg-[#f8fafc] text-slate-900 flex flex-col select-none"
+          : "flex flex-col h-full bg-[#f8fafc] text-slate-900 border-l border-slate-200"
       }
     >
-      {/* EXECUTIVE FULL-SCREEN PRESENTATION HEADER BANNER */}
+      {/* EXECUTIVE FULL-SCREEN PRESENTATION HEADER BANNER (Light Mode) */}
       {isGraphFullscreen && (
-        <div className="h-12 bg-gradient-to-r from-zinc-950 via-cyan-950/35 to-zinc-950 border-b border-cyan-800/70 px-4 flex items-center justify-between gap-3 shrink-0 shadow-lg">
-          {/* Left: Live Presentation Badge & Target Context */}
+        <div className="h-12 bg-white border-b border-slate-200 px-4 flex items-center justify-between gap-3 shrink-0 shadow-sm">
           <div className="flex items-center gap-3 min-w-0">
-            <span className="px-2.5 py-1 rounded-md bg-cyan-500/15 border border-cyan-500/60 text-cyan-300 font-mono text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 shrink-0">
-              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-              Full-Screen Presentation View
+            <span className="px-2.5 py-1 rounded-md bg-cyan-700 text-white border border-cyan-800 font-mono text-[10px] font-extrabold uppercase tracking-wider flex items-center gap-1.5 shrink-0">
+              <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
+              Full-Screen Presentation
             </span>
             <div className="flex items-center gap-2 text-xs font-mono truncate">
-              <span className="text-zinc-400">Target:</span>
-              <span className="text-zinc-100 font-semibold truncate max-w-[260px]">
+              <span className="text-slate-600">Target:</span>
+              <span className="text-slate-900 font-bold truncate max-w-[260px]">
                 {activeFilepath ||
                   projectPath.split(/[\\/]/).pop() ||
-                  projectPath}
+                  projectPath ||
+                  "Workspace"}
               </span>
-              <span className="text-zinc-600">•</span>
-              <span className="text-cyan-400">
-                {nodes.length} Nodes / {edges.length} Edges
+              <span className="text-slate-300">•</span>
+              <span className="text-cyan-800 font-bold">
+                {displayNodes.length} Nodes / {displayEdges.length} Flows
               </span>
             </div>
           </div>
 
-          {/* Center: Interactive Finding Switcher in Presentation Mode */}
           {findings.length > 0 && (
-            <div className="flex items-center gap-1.5 bg-zinc-900/90 border border-zinc-800 rounded-lg px-2 py-1">
+            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1">
               <button
                 type="button"
                 onClick={() => handleCycleFinding(-1)}
                 title="Previous Vulnerability Finding"
-                className="p-1 rounded hover:bg-zinc-800 text-zinc-300 hover:text-cyan-300 transition-colors"
+                className="p-1 rounded hover:bg-slate-200 text-slate-700 transition-colors"
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
@@ -1168,11 +1920,13 @@ export function ReactFlowGraphPane() {
                     selectFinding(found);
                   }
                 }}
-                className="bg-zinc-950 text-zinc-100 text-[11px] font-mono px-2 py-0.5 rounded border border-zinc-800 max-w-[340px] focus:outline-none focus:border-cyan-500"
+                className="bg-white text-slate-900 text-[11px] font-mono px-2 py-0.5 rounded border border-slate-300 max-w-[340px] focus:outline-none focus:border-cyan-600"
               >
                 {findings.map((f, idx) => {
                   const sinkLn =
-                    f.path_nodes?.[f.path_nodes.length - 1]?.start_line || 1;
+                    f.path_nodes?.[f.path_nodes.length - 1]?.start_line ||
+                    f.best_fix_location?.line ||
+                    1;
                   return (
                     <option key={f.id} value={f.id}>
                       #{idx + 1}/{findings.length} [{f.severity}] {f.title} (L
@@ -1185,35 +1939,34 @@ export function ReactFlowGraphPane() {
                 type="button"
                 onClick={() => handleCycleFinding(1)}
                 title="Next Vulnerability Finding"
-                className="p-1 rounded hover:bg-zinc-800 text-zinc-300 hover:text-cyan-300 transition-colors"
+                className="p-1 rounded hover:bg-slate-200 text-slate-700 transition-colors"
               >
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
             </div>
           )}
 
-          {/* Right: Snapshot Download, Native Browser Fullscreen & Exit Full Screen */}
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
               onClick={handleExportGraphSnapshot}
               title="Download Current Graph Topology as JSON Snapshot"
-              className="px-2.5 py-1 rounded-md bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-zinc-700 text-xs font-mono flex items-center gap-1.5 transition-colors"
+              className="px-2.5 py-1 rounded-md bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 text-xs font-mono font-semibold flex items-center gap-1.5 transition-colors"
             >
-              <Download className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Export Graph</span>
+              <Download className="w-3.5 h-3.5 text-cyan-700" />
+              <span>Export JSON</span>
             </button>
             <button
               type="button"
               onClick={handleToggleBrowserFullscreen}
-              title="Toggle Native OS / Browser Fullscreen (F11)"
-              className={`px-2.5 py-1 rounded-md border text-xs font-mono flex items-center gap-1.5 transition-colors ${
+              title="Toggle Native OS / Browser Fullscreen"
+              className={`px-2.5 py-1 rounded-md border text-xs font-mono font-semibold flex items-center gap-1.5 transition-colors ${
                 isNativeFullscreen
-                  ? "bg-cyan-950 text-cyan-300 border-cyan-700"
-                  : "bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border-zinc-700"
+                  ? "bg-cyan-700 text-white border-cyan-800"
+                  : "bg-white hover:bg-slate-100 text-slate-800 border-slate-300"
               }`}
             >
-              <Monitor className="w-3.5 h-3.5 text-cyan-400" />
+              <Monitor className="w-3.5 h-3.5" />
               <span>{isNativeFullscreen ? "Exit OS Full" : "OS Fullscreen"}</span>
             </button>
             <button
@@ -1226,420 +1979,614 @@ export function ReactFlowGraphPane() {
                 setIsAutoPlayingTour(false);
               }}
               title="Exit Full-Screen Presentation Mode (Esc)"
-              className="px-3 py-1 rounded-md bg-red-950/80 hover:bg-red-900 text-red-200 border border-red-700/80 text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
+              className="px-3 py-1 rounded-md bg-rose-700 hover:bg-rose-800 text-white border border-rose-800 text-xs font-bold flex items-center gap-1.5 transition-colors shadow-sm"
             >
-              <Minimize2 className="w-3.5 h-3.5 text-red-400" />
+              <Minimize2 className="w-3.5 h-3.5 text-white" />
               <span>Exit Full Screen (Esc)</span>
             </button>
           </div>
         </div>
       )}
 
-      {/* Canvas Top Bar with Self-Explanatory View Modes & Full-Screen Toggle */}
-      <div className="h-10 bg-[var(--surface-panel)] border-b border-[var(--border-hairline)] px-3 flex items-center justify-between text-xs text-[var(--ink-primary)] gap-2 shrink-0">
-        <div className="flex items-center gap-2 truncate">
-          <Layers className="w-3.5 h-3.5 text-[var(--sig-cyan)] shrink-0" />
-          <span className="font-semibold text-[var(--ink-primary)] truncate">
-            {graphViewMode === "APP_TREE"
-              ? "360° Spider App Map"
-              : graphViewMode === "FINDING_PATH"
-              ? "Attack Story Graph"
-              : graphViewMode === "CALL_GRAPH"
-              ? "Inter-Procedural Call Graph"
-              : graphViewMode === "ENTRYPOINT_GRAPH"
-              ? "Attack Surface Entry Points Graph"
-              : "Interactive Code Graph"}
-          </span>
-          <span className="text-[11px] text-[var(--ink-muted)] font-mono shrink-0">
-            ({nodes.length} nodes, {edges.length} links)
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2 overflow-x-auto">
-          {/* Self-Explanatory View Mode Tabs (Including Call Graph & Entry Points Graph) */}
-          <div className="flex items-center gap-1 bg-[var(--surface-void)] p-0.5 rounded-md border border-[var(--border-hairline)] text-[10px]">
+      {/* CONSOLIDATED SINGLE-ROW GRAPH TOOLBAR + LAYERS & LAYOUT POPOVER */}
+      <div className="bg-white border-b border-slate-200 px-2.5 py-1.5 flex items-center justify-between gap-2 flex-wrap text-xs shrink-0">
+        {/* Left: All 7 Graph View Mode Tabs */}
+        <div className="flex items-center gap-1.5 overflow-x-auto">
+          <div className="flex items-center gap-0.5 bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-[10.5px]">
             {(
               [
                 {
                   mode: "FINDING_PATH",
-                  label: "1. Attack Path",
-                  tip: "Traces the exact step-by-step path from input source to vulnerable line for the selected finding",
+                  label: "Attack Path",
+                  tip: "Step-by-step directional source -> BFL chokepoint -> sink flow",
                 },
                 {
                   mode: "APP_TREE",
-                  label: "2. 360° Spider Map",
-                  tip: "Interactive decluttered 360° spider-web of all folders, files, functions, and references",
+                  label: "360° App Map",
+                  tip: "Interactive 360° spider & mind-map architecture with cross-file flows",
                 },
                 {
                   mode: "CALL_GRAPH",
-                  label: "3. Call Graph",
-                  tip: "Inter-procedural Call Graph showing caller functions -> callee functions (:CALLS)",
+                  label: "Call Graph",
+                  tip: "Inter-procedural caller -> callee invocations (:CALLS)",
                 },
                 {
                   mode: "ENTRYPOINT_GRAPH",
-                  label: "4. Entry Points",
-                  tip: "Attack Surface Entry Points Graph (API Routes, CLI, Untrusted Sources -> Handlers -> Sinks)",
+                  label: "Entrypoints",
+                  tip: "Exposed HTTP/CLI entrypoints -> handlers -> downstream sinks",
                 },
                 {
                   mode: "DFG_ONLY",
-                  label: "5. Data Flow",
-                  tip: "Shows how variables and user data move between statements",
+                  label: "Data Flow (DFG)",
+                  tip: "Variable and taint propagation edges (:DFG_FLOWS_TO)",
                 },
                 {
                   mode: "CFG_ONLY",
-                  label: "6. Control Flow",
-                  tip: "Shows if/else branches, loops, and execution order",
+                  label: "Control Flow (CFG)",
+                  tip: "Execution order, True/False branches & loop back-edges",
                 },
                 {
                   mode: "FULL_CPG",
-                  label: "7. Full CPG",
-                  tip: "Complete compiler graph combining syntax, control flow, and data flow",
+                  label: "Full CPG",
+                  tip: "Combined AST + CFG + DFG Code Property Graph",
                 },
               ] as { mode: GraphViewMode; label: string; tip: string }[]
-            ).map((item) => (
+            ).map((item) => {
+              const active = graphViewMode === item.mode;
+              return (
+                <button
+                  key={item.mode}
+                  type="button"
+                  onClick={() => setGraphViewMode(item.mode)}
+                  title={item.tip}
+                  className={`px-2 py-1 rounded-md font-mono whitespace-nowrap transition-all ${
+                    active
+                      ? "bg-cyan-700 text-white border border-cyan-800 font-bold shadow-sm"
+                      : "text-slate-700 hover:text-slate-900 hover:bg-white"
+                  }`}
+                >
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Center/Right: Contextual Quick Chips + Layers & Layout Popover + Camera Controls */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {graphViewMode === "APP_TREE" ? (
+            <>
+              {/* Quick Layout Pill (360° Spider / Mind-Map / Hierarchy) */}
+              <div className="flex items-center gap-0.5 bg-slate-100 p-0.5 rounded-lg border border-slate-200 font-mono text-[10px]">
+                {(
+                  [
+                    { id: "SPIDER_WEB", label: "360° Spider" },
+                    { id: "MIND_MAP", label: "Mind-Map" },
+                    { id: "HIERARCHY", label: "TB" },
+                  ] as { id: AppTreeLayoutStyle; label: string }[]
+                ).map((ly) => (
+                  <button
+                    key={ly.id}
+                    type="button"
+                    onClick={() => setTreeLayoutStyle(ly.id)}
+                    className={`px-2 py-0.5 rounded transition-all ${
+                      treeLayoutStyle === ly.id
+                        ? "bg-sky-700 text-white font-bold"
+                        : "text-slate-700 hover:text-slate-900"
+                    }`}
+                  >
+                    {ly.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Cross-File Flows Toggle Chip (Enabled by Default) */}
               <button
-                key={item.mode}
-                onClick={() => setGraphViewMode(item.mode)}
-                title={item.tip}
-                className={`px-2 py-0.5 rounded font-mono whitespace-nowrap transition-colors ${
-                  graphViewMode === item.mode
-                    ? "bg-cyan-950 text-cyan-300 border border-cyan-700 font-bold"
-                    : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)]"
+                type="button"
+                onClick={() => setShowCrossFileFlows((prev) => !prev)}
+                title="Toggle cross-file IMPORTS / CALLS dependency arcs across repository files"
+                className={`px-2.5 py-1 rounded-lg border font-mono text-[10px] font-extrabold flex items-center gap-1 transition-all ${
+                  showCrossFileFlows
+                    ? "bg-violet-700 text-white border-violet-800 shadow-sm"
+                    : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
                 }`}
               >
-                {item.label}
+                <GitBranch className="w-3 h-3" />
+                <span>Cross-File Flows ({allCrossFileEdges.length})</span>
               </button>
-            ))}
+
+              {/* Compact Spotlight Search */}
+              <div className="relative w-36 sm:w-44">
+                <Search className="w-3 h-3 absolute left-2 top-1.5 text-slate-500" />
+                <input
+                  type="text"
+                  value={spiderSearch}
+                  onChange={(e) => setSpiderSearch(e.target.value)}
+                  placeholder="Filter file/symbol..."
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg pl-6 pr-5 py-0.5 text-[11px] text-slate-900 placeholder-slate-500 font-mono focus:outline-none focus:border-cyan-600 focus:bg-white"
+                />
+                {spiderSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setSpiderSearch("")}
+                    className="absolute right-1.5 top-1 text-slate-500 hover:text-slate-800"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Quick LR / TB Orientation Toggle */}
+              <div className="flex items-center gap-0.5 bg-slate-100 p-0.5 rounded-lg border border-slate-200 font-mono text-[10px]">
+                <button
+                  type="button"
+                  onClick={() => setCpgLayoutDirection("LR")}
+                  title="Left-to-Right Horizontal Flow"
+                  className={`px-2 py-0.5 rounded flex items-center gap-0.5 transition-all ${
+                    cpgLayoutDirection === "LR"
+                      ? "bg-sky-700 text-white font-bold"
+                      : "text-slate-700 hover:text-slate-900"
+                  }`}
+                >
+                  <ArrowRight className="w-3 h-3" />
+                  <span>LR</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCpgLayoutDirection("TB")}
+                  title="Top-to-Bottom Vertical Flow"
+                  className={`px-2 py-0.5 rounded flex items-center gap-0.5 transition-all ${
+                    cpgLayoutDirection === "TB"
+                      ? "bg-sky-700 text-white font-bold"
+                      : "text-slate-700 hover:text-slate-900"
+                  }`}
+                >
+                  <ArrowDown className="w-3 h-3" />
+                  <span>TB</span>
+                </button>
+              </div>
+
+              {graphViewMode === "CALL_GRAPH" && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCallGraphScope((s) =>
+                      s === "WHOLE_APP" ? "CURRENT_FILE" : "WHOLE_APP"
+                    )
+                  }
+                  title="Switch Call Graph scope between whole application and active file"
+                  className="px-2 py-1 rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 text-slate-800 font-mono text-[10px] font-bold"
+                >
+                  {callGraphScope === "WHOLE_APP"
+                    ? "Scope: Whole App"
+                    : `Scope: ${basenameOf(activeFilepath)}`}
+                </button>
+              )}
+            </>
+          )}
+
+          {/* Consolidated Layers & Layout ▾ Popover */}
+          <div className="relative" ref={popoverRef}>
+            <button
+              type="button"
+              onClick={() => setShowLayersPopover((p) => !p)}
+              className={`px-2.5 py-1 rounded-lg border font-mono text-[10px] font-bold flex items-center gap-1 transition-colors ${
+                showLayersPopover
+                  ? "bg-slate-200 text-slate-900 border-slate-400"
+                  : "bg-white hover:bg-slate-50 text-slate-800 border-slate-300"
+              }`}
+            >
+              <Layers className="w-3 h-3 text-cyan-700" />
+              <span>Layers &amp; Layout</span>
+              <ChevronDown className="w-3 h-3 text-slate-600" />
+            </button>
+
+            {showLayersPopover && (
+              <div className="absolute right-0 mt-1.5 w-72 rounded-xl border border-slate-300 bg-white shadow-xl p-3 z-50 space-y-3 text-[11px] select-none">
+                <div className="flex items-center justify-between border-b border-slate-200 pb-1.5">
+                  <span className="font-mono font-extrabold text-slate-900 uppercase text-[10px] tracking-wider">
+                    Graph Layers &amp; Layout Controls
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowLayersPopover(false)}
+                    className="text-slate-500 hover:text-slate-800"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {/* Layout Section */}
+                {graphViewMode === "APP_TREE" ? (
+                  <div className="space-y-2">
+                    <div className="text-[10px] font-mono font-bold text-slate-600 uppercase">
+                      360° Ring Declutter Mode
+                    </div>
+                    <div className="grid grid-cols-3 gap-1 font-mono text-[10px]">
+                      {(
+                        [
+                          { id: "SMART_SIMPLIFIED", label: "Smart" },
+                          { id: "VULNERABLE_ONLY", label: "Flaws Only" },
+                          { id: "FULL_EXPANDED", label: "All Files" },
+                        ] as const
+                      ).map((dm) => (
+                        <button
+                          key={dm.id}
+                          type="button"
+                          onClick={() => setSpiderDeclutterMode(dm.id)}
+                          className={`px-1.5 py-1 rounded border font-bold ${
+                            spiderDeclutterMode === dm.id
+                              ? "bg-amber-700 text-white border-amber-800"
+                              : "bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-100"
+                          }`}
+                        >
+                          {dm.label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={handleExpandOrCollapseAll}
+                        className="flex-1 px-2 py-1 rounded border border-slate-300 bg-slate-50 hover:bg-slate-100 text-slate-800 font-mono text-[10px] font-bold flex items-center justify-center gap-1"
+                      >
+                        <FolderTree className="w-3 h-3 text-cyan-700" />
+                        <span>Fold / Unfold Folders</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCenterRoot}
+                        className="px-2 py-1 rounded border border-slate-300 bg-slate-50 hover:bg-slate-100 text-slate-800 font-mono text-[10px] font-bold flex items-center gap-1"
+                      >
+                        <Compass className="w-3 h-3 text-emerald-700" />
+                        <span>Hub</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <div className="text-[10px] font-mono font-bold text-slate-600 uppercase">
+                      Flow Orientation
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5 font-mono text-[10px]">
+                      <button
+                        type="button"
+                        onClick={() => setCpgLayoutDirection("LR")}
+                        className={`px-2 py-1 rounded border font-bold flex items-center justify-center gap-1 ${
+                          cpgLayoutDirection === "LR"
+                            ? "bg-cyan-700 text-white border-cyan-800"
+                            : "bg-slate-50 text-slate-700 border-slate-300"
+                        }`}
+                      >
+                        <ArrowRight className="w-3 h-3" /> Left-Right (LR)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCpgLayoutDirection("TB")}
+                        className={`px-2 py-1 rounded border font-bold flex items-center justify-center gap-1 ${
+                          cpgLayoutDirection === "TB"
+                            ? "bg-cyan-700 text-white border-cyan-800"
+                            : "bg-slate-50 text-slate-700 border-slate-300"
+                        }`}
+                      >
+                        <ArrowDown className="w-3 h-3" /> Top-Down (TB)
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Edge Layer Visibility Toggles */}
+                <div className="space-y-1.5 pt-2 border-t border-slate-200">
+                  <div className="text-[10px] font-mono font-bold text-slate-600 uppercase">
+                    Directional Edge Layers
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5 text-[10.5px] font-mono">
+                    {(
+                      [
+                        { key: "dfg", label: "Data / Taint ▶", dot: "bg-rose-600" },
+                        { key: "cfg", label: "Control / CFG ▶", dot: "bg-cyan-600" },
+                        { key: "calls", label: "Calls & Imports ▶", dot: "bg-violet-600" },
+                        { key: "ast", label: "Tree / AST ▶", dot: "bg-emerald-600" },
+                      ] as const
+                    ).map((ly) => {
+                      const on = edgeLayers[ly.key];
+                      return (
+                        <button
+                          key={ly.key}
+                          type="button"
+                          onClick={() =>
+                            setEdgeLayers((prev) => ({
+                              ...prev,
+                              [ly.key]: !prev[ly.key],
+                            }))
+                          }
+                          className={`px-2 py-1 rounded border text-left flex items-center gap-1.5 transition-colors ${
+                            on
+                              ? "bg-slate-100 text-slate-900 border-slate-400 font-bold"
+                              : "bg-white text-slate-500 border-slate-200 line-through"
+                          }`}
+                        >
+                          <span className={`w-2 h-2 rounded-full ${ly.dot} shrink-0`} />
+                          <span className="truncate">{ly.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Interactive Overlays */}
+                <div className="space-y-1.5 pt-2 border-t border-slate-200">
+                  <div className="text-[10px] font-mono font-bold text-slate-600 uppercase">
+                    Interactive Overlays
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 font-mono text-[10px]">
+                    <button
+                      type="button"
+                      onClick={() => setIsBlastRadiusEnabled((p) => !p)}
+                      className={`px-2 py-1 rounded border font-bold ${
+                        isBlastRadiusEnabled
+                          ? "bg-indigo-700 text-white border-indigo-800"
+                          : "bg-slate-50 text-slate-700 border-slate-300"
+                      }`}
+                    >
+                      🎯 Blast Radius: {isBlastRadiusEnabled ? "ON" : "OFF"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowMiniMap((p) => !p)}
+                      className={`px-2 py-1 rounded border font-bold flex items-center gap-1 ${
+                        showMiniMap
+                          ? "bg-sky-700 text-white border-sky-800"
+                          : "bg-slate-50 text-slate-700 border-slate-300"
+                      }`}
+                    >
+                      <MapIcon className="w-3 h-3" /> MiniMap
+                    </button>
+                    {graphViewMode === "APP_TREE" && (
+                      <button
+                        type="button"
+                        onClick={() => setShowRadarChart((p) => !p)}
+                        className={`px-2 py-1 rounded border font-bold flex items-center gap-1 ${
+                          showRadarChart
+                            ? "bg-cyan-700 text-white border-cyan-800"
+                            : "bg-slate-50 text-slate-700 border-slate-300"
+                        }`}
+                      >
+                        <Radar className="w-3 h-3" /> Radar
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleExportGraphSnapshot}
+                      className="px-2 py-1 rounded border border-slate-300 bg-slate-50 hover:bg-slate-100 text-slate-800 font-bold flex items-center gap-1"
+                    >
+                      <Download className="w-3 h-3 text-cyan-700" /> Export JSON
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Prominent Full-Screen Toggle Button in Graph Header */}
+          {/* Camera Zoom / Fit / Focus / Fullscreen Cluster */}
+          <div className="flex items-center gap-0.5 bg-slate-100 p-0.5 rounded-lg border border-slate-200 font-mono text-[10px]">
+            <button
+              type="button"
+              onClick={handleZoomIn}
+              title="Zoom In (+)"
+              className="p-1 rounded hover:bg-white text-slate-700 hover:text-slate-900"
+            >
+              <ZoomIn className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={handleZoomOut}
+              title="Zoom Out (-)"
+              className="p-1 rounded hover:bg-white text-slate-700 hover:text-slate-900"
+            >
+              <ZoomOut className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={handleFitAll}
+              title="Fit Entire Graph in Viewport"
+              className="px-1.5 py-0.5 rounded hover:bg-white text-slate-800 font-bold"
+            >
+              Fit
+            </button>
+            <button
+              type="button"
+              onClick={handleFocusSelected}
+              title="Zoom Camera to Active Node"
+              className="p-1 rounded hover:bg-white text-amber-800"
+            >
+              <Crosshair className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
           <button
             type="button"
             onClick={() => setGraphFullscreen(!isGraphFullscreen)}
             title={
               isGraphFullscreen
                 ? "Exit Full-Screen Presentation View (Esc)"
-                : "Expand Graph to Full-Screen Presentable View"
+                : "Expand Graph to Full-Screen Presentation View"
             }
-            className={`px-2.5 py-1 rounded-md font-mono text-[10px] font-bold flex items-center gap-1 border shrink-0 transition-all ${
+            className={`px-2 py-1 rounded-lg font-mono text-[10px] font-bold flex items-center gap-1 border shrink-0 transition-all ${
               isGraphFullscreen
-                ? "bg-amber-950/90 text-amber-300 border-amber-700 hover:bg-amber-900"
-                : "bg-cyan-950/90 text-cyan-300 border-cyan-700 hover:bg-cyan-900 shadow-sm shadow-cyan-950"
+                ? "bg-amber-700 text-white border-amber-800"
+                : "bg-white hover:bg-slate-50 text-slate-800 border-slate-300"
             }`}
           >
             {isGraphFullscreen ? (
               <>
                 <Minimize2 className="w-3 h-3" />
-                <span>Split View</span>
+                <span>Split</span>
               </>
             ) : (
               <>
-                <Maximize2 className="w-3 h-3" />
-                <span>Full Screen</span>
+                <Maximize2 className="w-3 h-3 text-cyan-700" />
+                <span>Full</span>
               </>
             )}
           </button>
         </div>
       </div>
 
-      {/* Plain-English Active View Explanation Strip */}
-      <div className="bg-[var(--surface-elevated)] border-b border-[var(--border-hairline)] px-3 py-1 text-[11px] text-[var(--ink-muted)] flex items-center justify-between gap-2 shrink-0">
-        <span className="truncate">
+      {/* PLAIN-ENGLISH FLOW STORY BAR + STEP CHIPS + BLAST RADIUS PILL + AI EXPLAIN FLOW */}
+      <div className="bg-slate-50 border-b border-slate-200 px-3 py-1.5 flex items-center justify-between gap-2 flex-wrap text-xs shrink-0">
+        <div className="flex items-center gap-2 min-w-0 flex-1 flex-wrap">
+          <span className="px-1.5 py-0.5 rounded bg-cyan-50 text-cyan-900 border border-cyan-300 font-mono text-[9.5px] font-extrabold uppercase tracking-wider shrink-0">
+            Flow Story
+          </span>
+          <p className="text-[11.5px] text-slate-800 font-medium leading-snug">
+            {plainEnglishStory}
+          </p>
+
+          {/* Clickable Step Chips (① → ② → ③) in FINDING_PATH mode */}
           {graphViewMode === "FINDING_PATH" &&
-            "Attack Story Path: Shows how untrusted input (Cyan) travels through BFL chokepoints (Gold) to the vulnerable sink (Crimson). Click any node to highlight its code."}
-          {graphViewMode === "APP_TREE" &&
-            "Decluttered 360° Spider Map: Auto-clusters deep clean folders on large apps and scales ring circumference so nodes never overlap. Click any folder to expand/collapse."}
-          {graphViewMode === "CALL_GRAPH" &&
-            "Inter-Procedural Call Graph: Gold arrows connect caller functions to target callee functions (:CALLS) across the application."}
-          {graphViewMode === "ENTRYPOINT_GRAPH" &&
-            "Attack Surface Entry Points Graph: Traces exposed API routes, CLI handlers, and untrusted input sources directly to downstream execution sinks."}
-          {graphViewMode === "DFG_ONLY" &&
-            "Data Flow View (DFG): Crimson dashed arrows trace how variable values and inputs flow from definitions to usages across the current file."}
-          {graphViewMode === "CFG_ONLY" &&
-            "Control Flow View (CFG): Cyan arrows trace sequential execution steps, conditional branches (True/False), and loop back-edges."}
-          {graphViewMode === "FULL_CPG" &&
-            "Complete Code Property Graph: Displays combined syntax (AST), execution order (CFG), and variable flow (DFG) for deep inspection."}
-        </span>
-      </div>
-
-      {/* UNIVERSAL INTERACTIVE CAMERA, LAYOUT & PRESENTATION TOOLBAR */}
-      <div className="bg-[var(--surface-panel)] border-b border-[var(--border-hairline)] px-3 py-1.5 flex items-center justify-between gap-2 flex-wrap text-[11px] shrink-0">
-        {/* Left Controls: Spider Layout + Smart Declutter Mode OR CPG Orientation Toggle */}
-        {graphViewMode === "APP_TREE" ? (
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="flex items-center gap-1 bg-zinc-950 p-0.5 rounded-md border border-zinc-800 font-mono text-[10px]">
-              {(
-                [
-                  { id: "SPIDER_WEB", label: "360° Spider Web" },
-                  { id: "MIND_MAP", label: "Mind-Map (LR)" },
-                  { id: "HIERARCHY", label: "Hierarchy (TB)" },
-                ] as { id: AppTreeLayoutStyle; label: string }[]
-              ).map((ly) => (
+            activeFindingFlow &&
+            activeFindingFlow.nodes.length > 0 && (
+              <div className="flex items-center gap-1 flex-wrap ml-1">
+                {activeFindingFlow.nodes.map((stepNode, idx) => {
+                  const total = activeFindingFlow.nodes.length;
+                  const roleShort =
+                    idx === 0
+                      ? "Origin"
+                      : stepNode.is_bfl
+                      ? "BFL"
+                      : idx === total - 1
+                      ? "Impact"
+                      : `Step ${idx + 1}`;
+                  const isActive = idx === activeTourStepIdx;
+                  return (
+                    <React.Fragment key={`${stepNode.id}-${idx}`}>
+                      {idx > 0 && (
+                        <span className="text-slate-400 font-mono text-[10px]">
+                          →
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => focusTourStep(idx)}
+                        title={`${stepNode.name} (${stepNode.filepath}:L${stepNode.start_line})`}
+                        className={`px-2 py-0.5 rounded-full font-mono text-[10px] font-extrabold border transition-all ${
+                          isActive
+                            ? stepNode.is_bfl
+                              ? "bg-amber-700 text-white border-amber-800 shadow-sm"
+                              : stepNode.is_sink
+                              ? "bg-rose-700 text-white border-rose-800 shadow-sm"
+                              : "bg-cyan-700 text-white border-cyan-800 shadow-sm"
+                            : "bg-white text-slate-800 border-slate-300 hover:border-slate-500"
+                        }`}
+                      >
+                        {formatCircledStep(idx + 1)} {roleShort}
+                      </button>
+                    </React.Fragment>
+                  );
+                })}
                 <button
-                  key={ly.id}
                   type="button"
-                  onClick={() => setTreeLayoutStyle(ly.id)}
-                  className={`px-2 py-0.5 rounded transition-all ${
-                    treeLayoutStyle === ly.id
-                      ? "bg-cyan-950 text-cyan-300 border border-cyan-700 font-bold"
-                      : "text-zinc-400 hover:text-zinc-200"
+                  onClick={() => setIsAutoPlayingTour((p) => !p)}
+                  title="Auto-step camera through each flow node"
+                  className={`ml-1 px-2 py-0.5 rounded-full border font-mono text-[10px] font-bold flex items-center gap-1 ${
+                    isAutoPlayingTour
+                      ? "bg-amber-700 text-white border-amber-800"
+                      : "bg-white hover:bg-slate-100 text-slate-800 border-slate-300"
                   }`}
                 >
-                  {ly.label}
-                </button>
-              ))}
-            </div>
-
-            {/* 360° Spider Declutter Mode Switcher */}
-            <div
-              className="flex items-center gap-1 bg-zinc-950 p-0.5 rounded-md border border-zinc-800 font-mono text-[10px]"
-              title="Control how dense 360° Spider rings are simplified on large repositories"
-            >
-              {(
-                [
-                  { id: "SMART_SIMPLIFIED", label: "✨ Smart Declutter" },
-                  { id: "VULNERABLE_ONLY", label: "🔥 Flaws Only" },
-                  { id: "FULL_EXPANDED", label: "🌐 All Files" },
-                ] as const
-              ).map((dm) => (
-                <button
-                  key={dm.id}
-                  type="button"
-                  onClick={() => setSpiderDeclutterMode(dm.id)}
-                  className={`px-2 py-0.5 rounded transition-all ${
-                    spiderDeclutterMode === dm.id
-                      ? "bg-amber-500/20 text-amber-300 border border-amber-500/50 font-bold"
-                      : "text-zinc-400 hover:text-zinc-200"
-                  }`}
-                >
-                  {dm.label}
-                </button>
-              ))}
-            </div>
-
-            {/* Search Filter for Spider Nodes & Symbols */}
-            <div className="relative min-w-[140px] max-w-[220px]">
-              <Search className="w-3 h-3 absolute left-2 top-2 text-zinc-500" />
-              <input
-                type="text"
-                value={spiderSearch}
-                onChange={(e) => setSpiderSearch(e.target.value)}
-                placeholder="Spotlight file or ref..."
-                className="w-full bg-zinc-950 border border-zinc-800 rounded pl-6 pr-5 py-0.5 text-[11px] text-zinc-200 placeholder-zinc-500 font-mono focus:outline-none focus:border-cyan-500"
-              />
-              {spiderSearch && (
-                <button
-                  type="button"
-                  onClick={() => setSpiderSearch("")}
-                  className="absolute right-1.5 top-1.5 text-zinc-500 hover:text-zinc-300"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="flex items-center gap-1 bg-zinc-950 p-0.5 rounded-md border border-zinc-800 font-mono text-[10px]">
-              <button
-                type="button"
-                onClick={() => setCpgLayoutDirection("TB")}
-                title="Vertical Top-Down Flow Layout"
-                className={`px-2 py-0.5 rounded flex items-center gap-1 transition-all ${
-                  cpgLayoutDirection === "TB"
-                    ? "bg-cyan-950 text-cyan-300 border border-cyan-700 font-bold"
-                    : "text-zinc-400 hover:text-zinc-200"
-                }`}
-              >
-                <ArrowDown className="w-3 h-3" />
-                <span>Top-Down (TB)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setCpgLayoutDirection("LR")}
-                title="Horizontal Left-to-Right Widescreen Flow Layout (Ideal for Full-Screen Presentations)"
-                className={`px-2 py-0.5 rounded flex items-center gap-1 transition-all ${
-                  cpgLayoutDirection === "LR"
-                    ? "bg-cyan-950 text-cyan-300 border border-cyan-700 font-bold"
-                    : "text-zinc-400 hover:text-zinc-200"
-                }`}
-              >
-                <ArrowRight className="w-3 h-3" />
-                <span>Left-Right (LR)</span>
-              </button>
-            </div>
-
-            {graphViewMode === "CALL_GRAPH" && (
-              <div className="flex items-center gap-1 bg-zinc-950 p-0.5 rounded-md border border-zinc-800 font-mono text-[10px]">
-                <button
-                  type="button"
-                  onClick={() => setCallGraphScope("WHOLE_APP")}
-                  className={`px-2 py-0.5 rounded transition-all ${
-                    callGraphScope === "WHOLE_APP"
-                      ? "bg-purple-950 text-purple-300 border border-purple-700 font-bold"
-                      : "text-zinc-400 hover:text-zinc-200"
-                  }`}
-                >
-                  🌐 Whole App Calls
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCallGraphScope("CURRENT_FILE")}
-                  className={`px-2 py-0.5 rounded transition-all ${
-                    callGraphScope === "CURRENT_FILE"
-                      ? "bg-purple-950 text-purple-300 border border-purple-700 font-bold"
-                      : "text-zinc-400 hover:text-zinc-200"
-                  }`}
-                >
-                  📄 Active File Calls
+                  {isAutoPlayingTour ? (
+                    <>
+                      <Pause className="w-2.5 h-2.5" /> Pause
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-2.5 h-2.5 fill-current" /> Tour
+                    </>
+                  )}
                 </button>
               </div>
             )}
+        </div>
 
-            {graphViewMode === "FINDING_PATH" && selectedFinding && (
+        {/* Right: Blast-Radius Status & Clear Focus + Legend + ✨ AI Explain Flow */}
+        <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+          {blastComputation.isActive && (
+            <div className="flex items-center gap-1.5 bg-white border border-indigo-300 rounded-full px-2.5 py-0.5 text-[10px] font-mono shadow-sm">
+              <span className="font-extrabold text-indigo-900 truncate max-w-[120px]">
+                🎯 {blastComputation.originName}
+              </span>
+              <span className="text-sky-800 font-bold">
+                ⬆{blastComputation.upstreamNodes.size} Up
+              </span>
+              <span className="text-rose-800 font-bold">
+                ⬇{blastComputation.downstreamNodes.size} Down
+              </span>
               <button
                 type="button"
-                onClick={() => setIsAutoPlayingTour((p) => !p)}
-                title="Auto-step camera through each node from Source to Sink"
-                className={`px-2.5 py-0.5 rounded border font-mono text-[10px] font-bold flex items-center gap-1 transition-colors ${
-                  isAutoPlayingTour
-                    ? "bg-amber-950 text-amber-300 border-amber-700"
-                    : "bg-zinc-950 hover:bg-zinc-800 text-cyan-300 border-zinc-800"
-                }`}
+                onClick={() => {
+                  setLockedBlastNodeId(null);
+                  setHoveredNodeId(null);
+                }}
+                className="ml-0.5 px-1.5 py-0.2 rounded-full bg-rose-700 hover:bg-rose-800 text-white font-extrabold flex items-center gap-0.5"
+                title="Clear Blast-Radius Focus (Esc)"
               >
-                {isAutoPlayingTour ? (
-                  <>
-                    <Pause className="w-3 h-3 text-amber-400" />
-                    <span>Pause Tour</span>
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-3 h-3 text-cyan-400 fill-current" />
-                    <span>Play Step Tour</span>
-                  </>
-                )}
+                <X className="w-2.5 h-2.5 text-white" />
+                <span>Clear Focus</span>
               </button>
-            )}
-          </div>
-        )}
+            </div>
+          )}
 
-        {/* Right Controls: Universal Camera Zoom, Fit, Focus, Legend, Radar & MiniMap */}
-        <div className="flex items-center gap-1 font-mono text-[10px] flex-wrap">
-          <button
-            type="button"
-            onClick={handleZoomIn}
-            title="Zoom In (+)"
-            className="p-1 rounded bg-zinc-950 hover:bg-zinc-800 text-cyan-400 border border-zinc-800 flex items-center gap-0.5"
-          >
-            <ZoomIn className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={handleZoomOut}
-            title="Zoom Out (-)"
-            className="p-1 rounded bg-zinc-950 hover:bg-zinc-800 text-cyan-400 border border-zinc-800 flex items-center gap-0.5"
-          >
-            <ZoomOut className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={handleFitAll}
-            title="Fit Entire Graph in Viewport"
-            className="px-2 py-1 rounded bg-zinc-950 hover:bg-zinc-800 text-zinc-200 border border-zinc-800 flex items-center gap-1"
-          >
-            <Maximize2 className="w-3 h-3 text-cyan-400" />
-            <span>Fit View</span>
-          </button>
-          {graphViewMode === "APP_TREE" && (
-            <button
-              type="button"
-              onClick={handleCenterRoot}
-              title="Center Camera on Spider Core Hub"
-              className="px-2 py-1 rounded bg-zinc-950 hover:bg-zinc-800 text-zinc-200 border border-zinc-800 flex items-center gap-1"
-            >
-              <Compass className="w-3 h-3 text-emerald-400" />
-              <span>Core</span>
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={handleFocusSelected}
-            title="Zoom Camera to Active Node"
-            className="px-2 py-1 rounded bg-zinc-950 hover:bg-zinc-800 text-zinc-200 border border-zinc-800 flex items-center gap-1"
-          >
-            <Crosshair className="w-3 h-3 text-amber-400" />
-            <span>Focus</span>
-          </button>
-          {graphViewMode === "APP_TREE" && (
-            <>
-              <button
-                type="button"
-                onClick={handleExpandOrCollapseAll}
-                title="Toggle Expand / Collapse All Directories"
-                className="px-2 py-1 rounded bg-zinc-950 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 flex items-center gap-1"
-              >
-                <FolderTree className="w-3 h-3 text-cyan-400" />
-                <span>Fold/Unfold</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowRadarChart((prev) => !prev)}
-                title="Toggle 6-Axis Architecture Spider Radar Overlay"
-                className={`px-2 py-1 rounded border flex items-center gap-1 ${
-                  showRadarChart
-                    ? "bg-cyan-950 text-cyan-300 border-cyan-700"
-                    : "bg-zinc-950 text-zinc-400 border-zinc-800"
-                }`}
-              >
-                <Radar className="w-3 h-3" />
-                <span>Radar</span>
-              </button>
-            </>
-          )}
           <button
             type="button"
             onClick={() => setShowLegend((prev) => !prev)}
-            title="Toggle Visual Color & Edge Legend Overlay"
-            className={`px-2 py-1 rounded border flex items-center gap-1 ${
+            title="Toggle Visual Color & Directional Edge Legend"
+            className={`px-2 py-1 rounded-lg border font-mono text-[10px] font-bold flex items-center gap-1 transition-colors ${
               showLegend
-                ? "bg-cyan-950 text-cyan-300 border-cyan-700"
-                : "bg-zinc-950 text-zinc-400 border-zinc-800"
+                ? "bg-cyan-700 text-white border-cyan-800"
+                : "bg-white hover:bg-slate-100 text-slate-800 border-slate-300"
             }`}
           >
             <Info className="w-3 h-3" />
             <span>Legend</span>
           </button>
+
           <button
             type="button"
-            onClick={() => setShowMiniMap((prev) => !prev)}
-            title="Toggle Overview MiniMap"
-            className={`px-2 py-1 rounded border flex items-center gap-1 ${
-              showMiniMap
-                ? "bg-cyan-950 text-cyan-300 border-cyan-700"
-                : "bg-zinc-950 text-zinc-400 border-zinc-800"
-            }`}
+            onClick={handleTriggerAiExplain}
+            disabled={displayNodes.length === 0}
+            title="Generate a Plain-English AI Walkthrough of the current graph flow"
+            className="px-2.5 py-1 rounded-lg bg-indigo-700 hover:bg-indigo-800 disabled:opacity-50 text-white border border-indigo-800 font-mono text-[10.5px] font-extrabold flex items-center gap-1 shadow-sm transition-colors"
           >
-            <MapIcon className="w-3 h-3" />
-            <span>MiniMap</span>
+            {aiIsBusy ? (
+              <Loader2 className="w-3 h-3 text-white animate-spin" />
+            ) : (
+              <Sparkles className="w-3 h-3 text-white" />
+            )}
+            <span>✨ AI Explain Flow</span>
           </button>
         </div>
       </div>
 
-      {/* ReactFlow Canvas */}
-      <div className="flex-1 w-full h-full relative overflow-hidden">
+      {/* ReactFlow Light Daylight Canvas (#f8fafc) */}
+      <div className="flex-1 w-full h-full relative overflow-hidden bg-[#f8fafc]">
         {/* FLOATING EMERALD "✓ THREAD SEVERED · 0 REACHABLE PATHS" VERIFICATION SEAL */}
         {lastAppliedPatch && lastAppliedPatch.verifiedSevered && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 max-w-[92%] rounded-xl border border-emerald-500/80 bg-emerald-950/95 backdrop-blur-md px-3.5 py-2 shadow-2xl flex items-center justify-between gap-3 text-xs transition-all duration-300 select-none">
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 max-w-[92%] rounded-xl border-[1.5px] border-emerald-500 bg-emerald-50/95 backdrop-blur-md px-3.5 py-2 shadow-lg flex items-center justify-between gap-3 text-xs transition-all duration-300 select-none">
             <div className="flex items-center gap-2 min-w-0 flex-wrap">
-              <span className="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-400 text-emerald-200 font-mono text-[10px] font-extrabold tracking-wider flex items-center gap-1 shrink-0">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="px-2 py-0.5 rounded bg-emerald-700 text-white border border-emerald-800 font-mono text-[10px] font-extrabold tracking-wider flex items-center gap-1 shrink-0">
+                <ShieldCheck className="w-3.5 h-3.5 text-white" />
                 ✓ THREAD SEVERED · 0 REACHABLE PATHS
               </span>
-              <span className="font-mono text-[11px] text-emerald-100 truncate">
+              <span className="font-mono text-[11px] text-emerald-950 truncate">
                 CPG Verified Neutralized in{" "}
-                <strong className="text-white">{lastAppliedPatch.filepath}</strong>
+                <strong className="font-extrabold">
+                  {lastAppliedPatch.filepath}
+                </strong>
               </span>
-              <span className="font-mono text-[10px] px-1.5 py-0.2 rounded bg-zinc-950/80 border border-emerald-700/70 text-emerald-300">
+              <span className="font-mono text-[10px] px-1.5 py-0.2 rounded bg-white border border-emerald-300 text-emerald-900 font-bold">
                 patch:{lastAppliedPatch.patchId}
               </span>
             </div>
@@ -1649,25 +2596,25 @@ export function ReactFlowGraphPane() {
               disabled={isApplyingPatch}
               onClick={() => undoLastRemediationPatch()}
               title="Restore exact pre-patch file bytes and re-verify CPG"
-              className="px-2.5 py-1 rounded bg-zinc-950 hover:bg-zinc-900 disabled:opacity-50 text-emerald-200 border border-emerald-500/80 font-mono text-[10px] font-bold flex items-center gap-1 shrink-0 transition-colors"
+              className="px-2.5 py-1 rounded-lg bg-white hover:bg-emerald-100 disabled:opacity-50 text-emerald-900 border border-emerald-500 font-mono text-[10px] font-extrabold flex items-center gap-1 shrink-0 transition-colors"
             >
-              <RotateCcw className="w-3 h-3 text-emerald-400" />
+              <RotateCcw className="w-3 h-3 text-emerald-700" />
               <span>{isApplyingPatch ? "Restoring..." : "Undo Patch"}</span>
             </button>
           </div>
         )}
 
-        {nodes.length === 0 && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-10 text-zinc-500">
+        {displayNodes.length === 0 && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-10 text-slate-600">
             {lastAppliedPatch && lastAppliedPatch.verifiedSevered ? (
               <>
-                <ShieldCheck className="w-11 h-11 mb-3 text-emerald-400" />
-                <p className="text-sm font-bold text-emerald-300 font-mono">
+                <ShieldCheck className="w-11 h-11 mb-3 text-emerald-700" />
+                <p className="text-sm font-extrabold text-emerald-900 font-mono">
                   ✓ THREAD SEVERED · 0 REACHABLE PATHS IN CPG
                 </p>
-                <p className="text-xs text-zinc-400 mt-1 max-w-md text-center">
+                <p className="text-xs text-slate-600 mt-1 max-w-md text-center">
                   The surgical BFL chokepoint patch in{" "}
-                  <span className="font-mono text-emerald-300">
+                  <span className="font-mono font-bold text-emerald-800">
                     {lastAppliedPatch.filepath}
                   </span>{" "}
                   eliminated all source-to-sink attack paths.
@@ -1675,44 +2622,43 @@ export function ReactFlowGraphPane() {
               </>
             ) : (
               <>
-                <Layers className="w-10 h-10 mb-3 opacity-30 text-zinc-400" />
-                <p className="text-sm font-medium text-zinc-400">
+                <Layers className="w-10 h-10 mb-3 text-slate-400" />
+                <p className="text-sm font-bold text-slate-700">
                   {graphViewMode === "FINDING_PATH"
-                    ? "Select a vulnerability from the sidebar to inspect its taint path"
+                    ? "Select a vulnerability from the sidebar to inspect its directional flow"
                     : "No graph nodes available for this view"}
                 </p>
-                <p className="text-xs text-zinc-600 mt-1">
+                <p className="text-xs text-slate-500 mt-1">
                   {graphViewMode === "FINDING_PATH"
-                    ? "Interactive CPG flow and source-to-sink AST nodes will be visualized here"
-                    : "Switch view mode or select a file to view graph structure"}
+                    ? "Source -> BFL Chokepoint -> Sink AST/DFG nodes will render here with perimeter arrowheads"
+                    : "Switch view mode or select a scanned file to inspect its CPG topology"}
                 </p>
               </>
             )}
           </div>
         )}
 
-        {/* FLOATING 6-AXIS SPIDER RADAR CHART WIDGET (Top-Left in APP_TREE mode) */}
+        {/* FLOATING 6-AXIS SPIDER RADAR CHART WIDGET (Light Mode) */}
         {graphViewMode === "APP_TREE" && showRadarChart && appTree && (
-          <div className="absolute top-3 left-3 z-20 w-56 rounded-xl border border-cyan-900/70 bg-zinc-950/90 backdrop-blur-md p-2.5 shadow-2xl select-none">
+          <div className="absolute top-3 left-3 z-20 w-56 rounded-xl border border-slate-300 bg-white/95 backdrop-blur-md p-2.5 shadow-lg select-none">
             <div className="flex items-center justify-between mb-1">
-              <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-1">
-                <Radar className="w-3 h-3" />
+              <span className="text-[10px] font-mono font-extrabold uppercase tracking-wider text-cyan-800 flex items-center gap-1">
+                <Radar className="w-3 h-3 text-cyan-700" />
                 Spider Radar Profile
               </span>
               {categoryFilter !== "ALL" && (
                 <button
                   type="button"
                   onClick={() => setCategoryFilter("ALL")}
-                  className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 hover:bg-cyan-900"
+                  className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-cyan-50 text-cyan-900 border border-cyan-300 hover:bg-cyan-100"
                 >
-                  Reset ({categoryFilter})
+                  Reset
                 </button>
               )}
             </div>
 
             <div className="flex items-center justify-center">
               <svg width={radarSize} height={radarSize} className="overflow-visible">
-                {/* Concentric hexagonal spider web rings */}
                 {[0.33, 0.66, 1.0].map((level) => {
                   const ringPts = radarMetrics
                     .map((_, idx) => {
@@ -1729,14 +2675,13 @@ export function ReactFlowGraphPane() {
                       key={level}
                       points={ringPts}
                       fill="none"
-                      stroke="#1e293b"
+                      stroke="#cbd5e1"
                       strokeWidth="1"
                       strokeDasharray={level < 1 ? "2 2" : undefined}
                     />
                   );
                 })}
 
-                {/* Radial spokes */}
                 {radarMetrics.map((m, idx) => {
                   const angle =
                     -Math.PI / 2 + (idx * 2 * Math.PI) / radarMetrics.length;
@@ -1761,7 +2706,7 @@ export function ReactFlowGraphPane() {
                         y1={radarCenter}
                         x2={x2}
                         y2={y2}
-                        stroke={isActiveAxis ? "#22d3ee" : "#334155"}
+                        stroke={isActiveAxis ? "#0e7490" : "#94a3b8"}
                         strokeWidth={isActiveAxis ? "1.8" : "1"}
                       />
                       <text
@@ -1771,8 +2716,8 @@ export function ReactFlowGraphPane() {
                         dominantBaseline="middle"
                         className={`text-[8.5px] font-mono fill-current transition-colors ${
                           isActiveAxis
-                            ? "text-cyan-300 font-bold"
-                            : "text-zinc-400 group-hover:text-cyan-300"
+                            ? "text-cyan-900 font-extrabold"
+                            : "text-slate-700 group-hover:text-cyan-800"
                         }`}
                       >
                         {m.axis} ({m.raw})
@@ -1781,15 +2726,13 @@ export function ReactFlowGraphPane() {
                   );
                 })}
 
-                {/* Filled Spider Radar Polygon */}
                 <polygon
                   points={radarPolygonPoints}
-                  fill="rgba(6, 182, 212, 0.25)"
-                  stroke="#06b6d4"
+                  fill="rgba(14, 116, 144, 0.16)"
+                  stroke="#0e7490"
                   strokeWidth="2"
                 />
 
-                {/* Interactive Vertex Dots */}
                 {radarMetrics.map((m, idx) => {
                   const angle =
                     -Math.PI / 2 + (idx * 2 * Math.PI) / radarMetrics.length;
@@ -1802,8 +2745,10 @@ export function ReactFlowGraphPane() {
                       cx={vx}
                       cy={vy}
                       r={3.5}
-                      fill={m.axis === "Flaws" && m.raw > 0 ? "#ef4444" : "#22d3ee"}
-                      stroke="#09090b"
+                      fill={
+                        m.axis === "Flaws" && m.raw > 0 ? "#be123c" : "#0e7490"
+                      }
+                      stroke="#ffffff"
                       strokeWidth="1.5"
                       onClick={() =>
                         setCategoryFilter((prev) =>
@@ -1816,83 +2761,90 @@ export function ReactFlowGraphPane() {
                 })}
               </svg>
             </div>
-            <p className="text-[9px] font-mono text-zinc-500 text-center">
+            <p className="text-[9px] font-mono text-slate-500 text-center">
               Click any axis to spotlight category nodes
             </p>
           </div>
         )}
 
-        {/* FLOATING VISUAL GRAPH LEGEND OVERLAY (Top-Right or Bottom-Left) */}
+        {/* FLOATING LIGHT-MODE VISUAL GRAPH & DIRECTIONAL LEGEND OVERLAY */}
         {showLegend && (
-          <div className="absolute top-3 right-3 z-20 w-64 rounded-xl border border-zinc-800 bg-zinc-950/90 backdrop-blur-md p-3 shadow-2xl select-none text-[10px] font-mono space-y-2">
-            <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5">
-              <span className="text-cyan-400 font-bold uppercase tracking-wider flex items-center gap-1">
-                <Info className="w-3 h-3" />
-                Graph Visual Legend
+          <div className="absolute top-3 right-3 z-20 w-72 rounded-xl border border-slate-300 bg-white/95 backdrop-blur-md p-3 shadow-xl select-none text-[10px] font-mono space-y-2">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-1.5">
+              <span className="text-slate-900 font-extrabold uppercase tracking-wider flex items-center gap-1">
+                <Info className="w-3.5 h-3.5 text-cyan-700" />
+                Directional Graph Legend
               </span>
               <button
                 type="button"
                 onClick={() => setShowLegend(false)}
-                className="text-zinc-500 hover:text-zinc-200"
+                className="text-slate-500 hover:text-slate-800"
               >
-                <X className="w-3 h-3" />
+                <X className="w-3.5 h-3.5" />
               </button>
             </div>
 
             <div className="space-y-1">
-              <div className="text-[9px] text-zinc-500 uppercase font-bold">
+              <div className="text-[9px] text-slate-500 uppercase font-extrabold">
                 Semantic Node Roles
               </div>
-              <div className="flex items-center gap-2 text-zinc-300">
-                <span className="w-2.5 h-2.5 rounded-sm bg-cyan-500/30 border border-cyan-400 shrink-0" />
-                <span>SOURCE (Untrusted Ingress)</span>
+              <div className="flex items-center gap-2 text-slate-800">
+                <span className="px-1.5 py-0.2 rounded bg-cyan-700 text-white text-[8.5px] font-bold">
+                  SOURCE
+                </span>
+                <span>Untrusted Input / Origin</span>
               </div>
-              <div className="flex items-center gap-2 text-zinc-300">
-                <span className="w-2.5 h-2.5 rounded-sm bg-amber-500/30 border border-amber-400 shrink-0" />
-                <span>BFL CHOKEPOINT (Best Fix)</span>
+              <div className="flex items-center gap-2 text-slate-800">
+                <span className="px-1.5 py-0.2 rounded bg-amber-700 text-white text-[8.5px] font-bold">
+                  BFL CHOKEPOINT
+                </span>
+                <span>Best Single-Point Fix Location</span>
               </div>
-              <div className="flex items-center gap-2 text-zinc-300">
-                <span className="w-2.5 h-2.5 rounded-sm bg-rose-500/30 border border-rose-500 shrink-0" />
-                <span>SINK (Vulnerable Execution)</span>
+              <div className="flex items-center gap-2 text-slate-800">
+                <span className="px-1.5 py-0.2 rounded bg-rose-700 text-white text-[8.5px] font-bold">
+                  SINK
+                </span>
+                <span>Vulnerable Execution / Impact</span>
               </div>
-              <div className="flex items-center gap-2 text-zinc-300">
-                <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500/30 border border-emerald-400 shrink-0" />
-                <span>VERIFIED SEVERED / SANITIZER</span>
+              <div className="flex items-center gap-2 text-slate-800">
+                <span className="px-1.5 py-0.2 rounded bg-emerald-700 text-white text-[8.5px] font-bold">
+                  SANITIZER
+                </span>
+                <span>Guarded / Verified Severed</span>
               </div>
             </div>
 
-            <div className="space-y-1 pt-1 border-t border-zinc-800/80">
-              <div className="text-[9px] text-zinc-500 uppercase font-bold">
-                Relationship Links
+            <div className="space-y-1 pt-1.5 border-t border-slate-200">
+              <div className="text-[9px] text-slate-500 uppercase font-extrabold">
+                Directional Flow Edges (Source ──▶ Target)
               </div>
-              <div className="flex items-center gap-2 text-zinc-300">
-                <span className="w-5 h-0.5 border-b-2 border-dashed border-rose-500 shrink-0" />
-                <span>DFG_FLOWS_TO (Data/Taint Flow)</span>
+              <div className="flex items-center gap-2 text-slate-800">
+                <span className="w-5 h-0.5 border-b-2 border-dashed border-rose-600 shrink-0" />
+                <span>TAINT / EXEC SINK ▶ (Animated DFG)</span>
               </div>
-              <div className="flex items-center gap-2 text-zinc-300">
-                <span className="w-5 h-0.5 border-b-2 border-dashed border-emerald-500 shrink-0" />
-                <span>SEVERED PATH (0 Reachable)</span>
+              <div className="flex items-center gap-2 text-slate-800">
+                <span className="w-5 h-0.5 border-b-2 border-dashed border-violet-700 shrink-0" />
+                <span>IMPORTS ▶ (Cross-File Dependency)</span>
               </div>
-              <div className="flex items-center gap-2 text-zinc-300">
-                <span className="w-5 h-0.5 bg-cyan-400 shrink-0" />
-                <span>CFG_NEXT / CONTAINS (Control)</span>
+              <div className="flex items-center gap-2 text-slate-800">
+                <span className="w-5 h-0.5 bg-amber-700 shrink-0" />
+                <span>CALLS ▶ (Function Invocation)</span>
               </div>
-              <div className="flex items-center gap-2 text-zinc-300">
-                <span className="w-5 h-0.5 bg-amber-400 shrink-0" />
-                <span>CALLS (Function Invocation)</span>
+              <div className="flex items-center gap-2 text-slate-800">
+                <span className="w-5 h-0.5 bg-sky-700 shrink-0" />
+                <span>⬆ Upstream / ⬇ Downstream Blast</span>
               </div>
             </div>
           </div>
         )}
 
-        {/* FLOATING REFERENCE & SYMBOL INSPECTOR DRAWER (Bottom-Right in APP_TREE mode) */}
+        {/* FLOATING REFERENCE & SYMBOL INSPECTOR DRAWER (Light Mode in APP_TREE) */}
         {graphViewMode === "APP_TREE" && inspectedNodeData && (
-          <div className="absolute bottom-3 right-3 z-20 w-80 max-h-[68%] flex flex-col rounded-xl border border-cyan-800/80 bg-zinc-950/95 backdrop-blur-md shadow-2xl overflow-hidden select-none">
-            {/* Drawer Header */}
-            <div className="px-3 py-2 bg-zinc-900/90 border-b border-zinc-800 flex items-center justify-between gap-2">
+          <div className="absolute bottom-3 right-3 z-20 w-80 max-h-[65%] flex flex-col rounded-xl border border-slate-300 bg-white/95 backdrop-blur-md shadow-xl overflow-hidden select-none">
+            <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5 truncate">
-                <GitBranch className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                <span className="text-xs font-mono font-bold text-zinc-100 truncate">
+                <GitBranch className="w-3.5 h-3.5 text-cyan-700 shrink-0" />
+                <span className="text-xs font-mono font-extrabold text-slate-900 truncate">
                   {inspectedNodeData.filename ||
                     inspectedNodeData.name ||
                     inspectedNodeData.filepath ||
@@ -1918,12 +2870,12 @@ export function ReactFlowGraphPane() {
                         })`;
                     handleCopyReference(refStr, "main-ref");
                   }}
-                  className="px-1.5 py-0.5 rounded bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-700 text-[10px] font-mono flex items-center gap-1"
+                  className="px-1.5 py-0.5 rounded bg-cyan-50 hover:bg-cyan-100 text-cyan-900 border border-cyan-300 text-[10px] font-mono font-bold flex items-center gap-1"
                   title="Copy full file/symbol reference string"
                 >
                   {copiedRefText === "main-ref" ? (
                     <>
-                      <Check className="w-3 h-3 text-emerald-400" />
+                      <Check className="w-3 h-3 text-emerald-700" />
                       <span>Copied!</span>
                     </>
                   ) : (
@@ -1936,54 +2888,51 @@ export function ReactFlowGraphPane() {
                 <button
                   type="button"
                   onClick={() => setInspectedNodeData(null)}
-                  className="p-0.5 text-zinc-500 hover:text-zinc-200"
+                  className="p-0.5 text-slate-500 hover:text-slate-800"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>
 
-            {/* Drawer Body */}
             <div className="p-3 overflow-y-auto space-y-2.5 text-xs">
-              {/* Path & Category Metadata */}
               <div className="space-y-1">
                 {inspectedNodeData.filepath && (
-                  <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400 bg-zinc-900 px-2 py-1 rounded border border-zinc-800">
+                  <div className="flex items-center justify-between text-[10px] font-mono text-slate-700 bg-slate-100 px-2 py-1 rounded border border-slate-200">
                     <span className="truncate" title={inspectedNodeData.filepath}>
                       {inspectedNodeData.filepath}
                     </span>
                     {inspectedNodeData.line_count && (
-                      <span className="text-cyan-400 shrink-0 ml-2">
+                      <span className="text-cyan-800 font-bold shrink-0 ml-2">
                         {inspectedNodeData.line_count} LOC
                       </span>
                     )}
                   </div>
                 )}
-                <p className="text-[11px] text-zinc-300 leading-relaxed">
+                <p className="text-[11px] text-slate-700 leading-relaxed">
                   {inspectedNodeData.purpose ||
                     inspectedNodeData.details ||
                     inspectedNodeData.signature}
                 </p>
               </div>
 
-              {/* Declared Symbols / Code References inside this File */}
               {inspectedNodeData.elements &&
                 inspectedNodeData.elements.length > 0 && (
                   <div className="space-y-1">
-                    <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400">
+                    <div className="flex items-center justify-between text-[10px] font-mono text-slate-600 font-bold">
                       <span>
-                        DECLARED REFERENCES ({inspectedNodeData.elements.length})
+                        DECLARED SYMBOLS ({inspectedNodeData.elements.length})
                       </span>
                       <button
                         type="button"
                         onClick={() =>
                           handleToggleFileElements(inspectedNodeData.filepath)
                         }
-                        className="text-amber-400 hover:underline"
+                        className="text-amber-800 hover:underline"
                       >
                         {expandedFileElements[inspectedNodeData.filepath]
-                          ? "Hide on Web"
-                          : "Pin to Web"}
+                          ? "Hide on Map"
+                          : "Pin to Map"}
                       </button>
                     </div>
                     <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
@@ -1998,7 +2947,7 @@ export function ReactFlowGraphPane() {
                                   activeStartLine: el.line_number || 1,
                                   activeEndLine: el.line_number || 1,
                                 });
-                                useAuditStore
+                                void useAuditStore
                                   .getState()
                                   .selectCodeLine(
                                     inspectedNodeData.filepath,
@@ -2006,18 +2955,20 @@ export function ReactFlowGraphPane() {
                                   );
                               }
                             }}
-                            className="group flex items-center justify-between gap-1.5 px-2 py-1 rounded bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 hover:border-cyan-700 cursor-pointer font-mono text-[10px]"
+                            className="group flex items-center justify-between gap-1.5 px-2 py-1 rounded bg-slate-50 hover:bg-cyan-50 border border-slate-200 hover:border-cyan-400 cursor-pointer font-mono text-[10px]"
                           >
                             <div className="flex items-center gap-1.5 truncate">
-                              <span className="px-1 py-0.2 rounded bg-amber-950 text-amber-300 border border-amber-800 text-[8px] font-bold">
+                              <span className="px-1 py-0.2 rounded bg-amber-50 text-amber-900 border border-amber-300 text-[8.5px] font-extrabold">
                                 {el.element_type.slice(0, 5)}
                               </span>
-                              <span className="text-zinc-200 group-hover:text-cyan-300 truncate">
+                              <span className="text-slate-900 font-semibold truncate">
                                 {el.name}
                               </span>
                             </div>
                             <div className="flex items-center gap-1.5 shrink-0">
-                              <span className="text-cyan-400">:L{el.line_number}</span>
+                              <span className="text-cyan-800 font-bold">
+                                :L{el.line_number}
+                              </span>
                               <button
                                 type="button"
                                 onClick={(e) => {
@@ -2030,10 +2981,10 @@ export function ReactFlowGraphPane() {
                                   );
                                 }}
                                 title="Copy symbol reference"
-                                className="text-zinc-500 hover:text-cyan-300"
+                                className="text-slate-500 hover:text-cyan-800"
                               >
                                 {copiedRefText === `ref-${i}` ? (
-                                  <Check className="w-3 h-3 text-emerald-400" />
+                                  <Check className="w-3 h-3 text-emerald-700" />
                                 ) : (
                                   <Copy className="w-3 h-3" />
                                 )}
@@ -2046,12 +2997,11 @@ export function ReactFlowGraphPane() {
                   </div>
                 )}
 
-              {/* Associated Security Findings in this File */}
               {inspectedFileFindings.length > 0 && (
-                <div className="space-y-1 pt-1 border-t border-zinc-800">
-                  <span className="text-[10px] font-mono text-red-400 font-bold flex items-center gap-1">
-                    <Flame className="w-3 h-3" />
-                    VULNERABILITY REFERENCES ({inspectedFileFindings.length})
+                <div className="space-y-1 pt-1 border-t border-slate-200">
+                  <span className="text-[10px] font-mono text-rose-800 font-extrabold flex items-center gap-1">
+                    <Flame className="w-3 h-3 text-rose-700" />
+                    VULNERABILITIES IN FILE ({inspectedFileFindings.length})
                   </span>
                   <div className="space-y-1 max-h-28 overflow-y-auto">
                     {inspectedFileFindings.map((f) => {
@@ -2059,14 +3009,14 @@ export function ReactFlowGraphPane() {
                       return (
                         <div
                           key={f.id}
-                          onClick={() => {
-                            selectFinding(f);
-                          }}
-                          className="p-1.5 rounded bg-red-950/30 hover:bg-red-950/60 border border-red-900/60 cursor-pointer flex items-center justify-between gap-2 text-[10px] font-mono"
+                          onClick={() => selectFinding(f)}
+                          className="p-1.5 rounded bg-rose-50 hover:bg-rose-100 border border-rose-300 cursor-pointer flex items-center justify-between gap-2 text-[10px] font-mono"
                         >
-                          <span className="text-red-200 truncate">{f.title}</span>
-                          <span className="text-red-400 shrink-0">
-                            L{firstN?.start_line || 1}
+                          <span className="text-rose-900 font-semibold truncate">
+                            {f.title}
+                          </span>
+                          <span className="text-rose-800 font-extrabold shrink-0">
+                            L{firstN?.start_line || f.best_fix_location?.line || 1}
                           </span>
                         </div>
                       );
@@ -2078,31 +3028,31 @@ export function ReactFlowGraphPane() {
           </div>
         )}
 
-        {/* FULL-SCREEN PRESENTATION ATTACK WALKTHROUGH & LIVE CODE DOCK */}
+        {/* FULL-SCREEN PRESENTATION ATTACK WALKTHROUGH & LIVE CODE DOCK (Light Mode) */}
         {isGraphFullscreen &&
           graphViewMode === "FINDING_PATH" &&
-          selectedFinding && (
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 w-[92%] max-w-5xl rounded-2xl border border-cyan-800/80 bg-zinc-950/95 backdrop-blur-md shadow-2xl p-3.5 space-y-2.5 select-none">
-              {/* Top Row: Finding Metadata & Step-by-Step Camera Navigator */}
-              <div className="flex items-center justify-between gap-3 flex-wrap border-b border-zinc-800/90 pb-2">
+          selectedFinding &&
+          activeFindingFlow && (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 w-[92%] max-w-5xl rounded-2xl border border-slate-300 bg-white/95 backdrop-blur-md shadow-2xl p-3.5 space-y-2.5 select-none">
+              <div className="flex items-center justify-between gap-3 flex-wrap border-b border-slate-200 pb-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <span
-                    className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase border shrink-0 ${
+                    className={`px-2 py-0.5 rounded text-[10px] font-mono font-extrabold uppercase border shrink-0 ${
                       selectedFinding.severity === "CRITICAL"
-                        ? "bg-red-950 text-red-300 border-red-700"
+                        ? "bg-rose-700 text-white border-rose-800"
                         : selectedFinding.severity === "HIGH"
-                        ? "bg-amber-950 text-amber-300 border-amber-700"
-                        : "bg-yellow-950 text-yellow-300 border-yellow-700"
+                        ? "bg-amber-700 text-white border-amber-800"
+                        : "bg-sky-700 text-white border-sky-800"
                     }`}
                   >
                     {selectedFinding.severity}
                   </span>
                   {selectedFinding.cwe_id && (
-                    <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-zinc-900 text-cyan-300 border border-zinc-700 shrink-0">
+                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-100 text-slate-800 border border-slate-300 shrink-0">
                       {selectedFinding.cwe_id}
                     </span>
                   )}
-                  <span className="text-xs font-bold text-zinc-100 truncate">
+                  <span className="text-xs font-extrabold text-slate-900 truncate">
                     {currentFindingIndex >= 0
                       ? `Finding #${currentFindingIndex + 1}/${findings.length}: `
                       : ""}
@@ -2110,27 +3060,26 @@ export function ReactFlowGraphPane() {
                   </span>
                 </div>
 
-                {/* Step-by-Step Camera Tour Buttons */}
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <button
                     type="button"
                     onClick={() => focusTourStep(activeTourStepIdx - 1)}
                     disabled={activeTourStepIdx <= 0}
-                    className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 disabled:opacity-40 text-zinc-200 border border-zinc-700 text-[10px] font-mono flex items-center gap-1"
+                    className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 disabled:opacity-40 text-slate-800 border border-slate-300 text-[10px] font-mono font-bold flex items-center gap-1"
                   >
                     <ChevronLeft className="w-3 h-3" />
-                    <span>Prev Step</span>
+                    <span>Prev</span>
                   </button>
 
-                  {(selectedFinding.path_nodes || []).map((n, idx) => {
-                    const total = selectedFinding.path_nodes.length;
+                  {activeFindingFlow.nodes.map((n, idx) => {
+                    const total = activeFindingFlow.nodes.length;
                     const role =
-                      total === 1
-                        ? "TRIGGER"
-                        : idx === 0
-                        ? "SOURCE"
+                      idx === 0
+                        ? "ORIGIN"
+                        : n.is_bfl
+                        ? "BFL"
                         : idx === total - 1
-                        ? "SINK"
+                        ? "IMPACT"
                         : `STEP ${idx + 1}`;
                     const isActive = idx === activeTourStepIdx;
                     return (
@@ -2138,15 +3087,17 @@ export function ReactFlowGraphPane() {
                         key={`${n.id}-${idx}`}
                         type="button"
                         onClick={() => focusTourStep(idx)}
-                        className={`px-2.5 py-1 rounded text-[10px] font-mono font-bold border transition-all ${
+                        className={`px-2.5 py-1 rounded text-[10px] font-mono font-extrabold border transition-all ${
                           isActive
-                            ? role === "SINK" || role === "TRIGGER"
-                              ? "bg-red-950 text-red-200 border-red-500 shadow-sm shadow-red-950"
-                              : "bg-cyan-950 text-cyan-200 border-cyan-500 shadow-sm shadow-cyan-950"
-                            : "bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200"
+                            ? n.is_sink
+                              ? "bg-rose-700 text-white border-rose-800"
+                              : n.is_bfl
+                              ? "bg-amber-700 text-white border-amber-800"
+                              : "bg-cyan-700 text-white border-cyan-800"
+                            : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
                         }`}
                       >
-                        {idx + 1}. {role} (L{n.start_line})
+                        {formatCircledStep(idx + 1)} {role} (L{n.start_line})
                       </button>
                     );
                   })}
@@ -2155,28 +3106,23 @@ export function ReactFlowGraphPane() {
                     type="button"
                     onClick={() => focusTourStep(activeTourStepIdx + 1)}
                     disabled={
-                      activeTourStepIdx >=
-                      (selectedFinding.path_nodes?.length || 1) - 1
+                      activeTourStepIdx >= activeFindingFlow.nodes.length - 1
                     }
-                    className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 disabled:opacity-40 text-zinc-200 border border-zinc-700 text-[10px] font-mono flex items-center gap-1"
+                    className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 disabled:opacity-40 text-slate-800 border border-slate-300 text-[10px] font-mono font-bold flex items-center gap-1"
                   >
-                    <span>Next Step</span>
+                    <span>Next</span>
                     <ChevronRight className="w-3 h-3" />
                   </button>
                 </div>
               </div>
 
-              {/* Bottom Row: Active Step Code Callout & Remediation Summary */}
               {activeTourNode && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                  <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1.5">
-                    <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400">
-                      <span className="text-cyan-300 font-semibold truncate">
-                        Step {activeTourStepIdx + 1} Code •{" "}
-                        {activeTourNode.filepath}:{activeTourNode.start_line}
-                        {typeof activeTourNode.start_col === "number"
-                          ? `:col ${activeTourNode.start_col + 1}`
-                          : ""}
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5 space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px] font-mono text-slate-600">
+                      <span className="text-cyan-900 font-bold truncate">
+                        Step {activeTourStepIdx + 1} • {activeTourNode.filepath}:
+                        {activeTourNode.start_line}
                       </span>
                       <button
                         type="button"
@@ -2184,26 +3130,26 @@ export function ReactFlowGraphPane() {
                           selectGraphNode(activeTourNode);
                           setGraphFullscreen(false);
                         }}
-                        className="px-2 py-0.5 rounded bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-800 text-[10px] font-mono flex items-center gap-1 shrink-0"
+                        className="px-2 py-0.5 rounded bg-cyan-700 hover:bg-cyan-800 text-white border border-cyan-800 text-[10px] font-mono font-bold flex items-center gap-1 shrink-0"
                       >
-                        <Code2 className="w-3 h-3" />
+                        <Code2 className="w-3 h-3 text-white" />
                         <span>Inspect in Code Editor</span>
                       </button>
                     </div>
-                    <pre className="text-[11px] font-mono text-amber-200 bg-zinc-950 border border-zinc-800/80 rounded-lg px-2.5 py-1.5 overflow-x-auto whitespace-pre-wrap break-all max-h-20">
+                    <pre className="text-[11px] font-mono text-slate-800 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 overflow-x-auto whitespace-pre-wrap break-all max-h-20">
                       {activeTourNode.code || activeTourNode.name}
                     </pre>
                   </div>
 
-                  <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 flex flex-col justify-between space-y-1">
-                    <div className="text-[10px] font-mono uppercase tracking-wider text-emerald-400 font-bold">
-                      Story &amp; Recommended Security Fix
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5 flex flex-col justify-between space-y-1">
+                    <div className="text-[10px] font-mono uppercase tracking-wider text-emerald-800 font-extrabold">
+                      Vulnerability Story &amp; Recommended Fix
                     </div>
-                    <p className="text-[11px] text-zinc-300 leading-relaxed line-clamp-2">
+                    <p className="text-[11px] text-slate-700 leading-relaxed line-clamp-2">
                       {selectedFinding.description}
                     </p>
                     {selectedFinding.remediation && (
-                      <p className="text-[11px] text-emerald-300/90 font-mono leading-snug line-clamp-2">
+                      <p className="text-[11px] text-emerald-900 font-mono leading-snug line-clamp-2 font-medium">
                         Fix: {selectedFinding.remediation}
                       </p>
                     )}
@@ -2214,45 +3160,52 @@ export function ReactFlowGraphPane() {
           )}
 
         <ReactFlow
-          nodes={nodes}
-          edges={edges}
+          nodes={displayNodes}
+          edges={displayEdges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           onInit={fitViewOnLoad}
+          onNodeMouseEnter={(_, node) => {
+            if (isBlastRadiusEnabled) setHoveredNodeId(node.id);
+          }}
+          onNodeMouseLeave={() => {
+            setHoveredNodeId(null);
+          }}
+          onNodeClick={(_, node) => {
+            if (isBlastRadiusEnabled) {
+              setLockedBlastNodeId((prev) =>
+                prev === node.id ? null : node.id
+              );
+            }
+          }}
+          onEdgeMouseEnter={(_, edge) => setHoveredEdgeId(edge.id)}
+          onEdgeMouseLeave={() => setHoveredEdgeId(null)}
+          onPaneClick={() => {
+            setLockedBlastNodeId(null);
+            setHoveredNodeId(null);
+          }}
           minZoom={0.08}
           maxZoom={3.0}
           fitView
           proOptions={{ hideAttribution: true }}
         >
-          <Background
-            color={
-              isLightTheme
-                ? "#94a3b8"
-                : graphViewMode === "APP_TREE"
-                ? "#164e63"
-                : "#3f1d2b"
-            }
-            gap={24}
-            size={1.2}
-          />
-          <Controls className="!bg-zinc-900 !border-zinc-800 !text-zinc-200" />
+          <Background color="#cbd5e1" gap={22} size={1.35} />
+          <Controls className="!bg-white !border-slate-300 !text-slate-800 !shadow-md rounded-lg overflow-hidden" />
           {showMiniMap && (
             <MiniMap
               nodeColor={(n) => {
-                if (n.data?.label === "SpiderHub") return "#06b6d4";
-                if (n.data?.label === "AppDirectory") return "#0891b2";
-                if (n.data?.label === "AppElement") return "#f59e0b";
-                if (n.data?.flawCount > 0 || n.data?.is_sink) return "#ef4444";
-                if (n.data?.is_source) return "#22d3ee";
-                return "#10b981";
+                if (n.data?.label === "SpiderHub") return "#0e7490";
+                if (n.data?.label === "AppDirectory") return "#0284c7";
+                if (n.data?.label === "AppElement") return "#d97706";
+                if (n.data?.flawCount > 0 || n.data?.is_sink) return "#be123c";
+                if (n.data?.is_bfl) return "#b45309";
+                if (n.data?.is_source) return "#0e7490";
+                return "#047857";
               }}
-              maskColor={
-                isLightTheme
-                  ? "rgba(241, 245, 249, 0.72)"
-                  : "rgba(9, 9, 11, 0.75)"
-              }
-              className="!bg-zinc-950 !border-zinc-800 rounded-lg overflow-hidden"
+              maskColor="rgba(241, 245, 249, 0.76)"
+              className="!bg-white !border-slate-300 !shadow-md rounded-lg overflow-hidden"
             />
           )}
         </ReactFlow>
