@@ -2,7 +2,7 @@
 Strict Pydantic v2 Data Contracts for Deterministic Code Property Graph (CPG) & SAST.
 """
 from typing import List, Optional, Literal, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 NodeLabel = Literal[
     "File", "Directory", "AppElement", "Module", "Class", "Function", "Parameter", 
@@ -79,6 +79,13 @@ class Finding(BaseModel):
     reference_url: Optional[str] = None
     path_nodes: List[Dict[str, Any]] = Field(default_factory=list)
     path_edges: List[Dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("path_nodes", "path_edges", mode="before")
+    @classmethod
+    def _coerce_graph_items_to_dicts(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        return [item.model_dump() if isinstance(item, BaseModel) else item for item in value]
     scan_engine: Literal["SAST", "SCA", "IaC"] = "SAST"
     language: str = "Python"
     best_fix_location: Optional[BestFixLocation] = None
@@ -1087,6 +1094,141 @@ class TrackChangesSummary(BaseModel):
     unchanged_findings: List[Finding] = Field(default_factory=list)
     scan_history: List[ScanSnapshotRecord] = Field(default_factory=list)
     status_headline: str = ""
+
+
+# ---------------------------------------------------------------------------
+# 10. Token-Efficient Multi-Provider BYOK Frontier AI Models
+# ---------------------------------------------------------------------------
+AiProviderType = Literal["gemini", "openai", "anthropic", "openai_compatible"]
+
+
+class AiTokenTelemetry(BaseModel):
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    full_file_tokens_est: int = 0
+    tokens_saved: int = 0
+    savings_pct: float = 0.0
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_full_file_tokens_est: int = 0
+    total_tokens_saved: int = 0
+    overall_savings_pct: float = 0.0
+    cache_hits: int = 0
+    total_cache_hits: int = 0
+    total_requests: int = 0
+
+
+class AiConfigUpdateRequest(BaseModel):
+    provider: AiProviderType = "gemini"
+    model: str = "gemini-2.5-flash"
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    persist_key: bool = True
+
+
+class AiPublicConfigResponse(BaseModel):
+    provider: AiProviderType = "gemini"
+    model: str = "gemini-2.5-flash"
+    base_url: str = ""
+    has_api_key: bool = False
+    masked_api_key: str = ""
+    persist_key: bool = True
+    available_providers: List[Dict[str, Any]] = Field(default_factory=list)
+    token_telemetry: AiTokenTelemetry = Field(default_factory=AiTokenTelemetry)
+
+
+class AiConnectionTestResponse(BaseModel):
+    ok: bool
+    provider: str
+    model: str
+    latency_ms: int
+    message: str
+    error_code: Optional[str] = None
+
+
+class AiValidateFindingsRequest(BaseModel):
+    finding_ids: List[str] = Field(default_factory=list)
+    max_batch: int = 10
+
+
+class AiFindingVerdict(BaseModel):
+    finding_id: str
+    verdict: Literal["TRUE_POSITIVE", "FALSE_POSITIVE", "NEEDS_REVIEW"] = "NEEDS_REVIEW"
+    confidence: float = 0.5
+    exploitability_summary: str = ""
+    recommended_action: str = ""
+    suggested_triage_status: Literal["CONFIRMED", "PROPOSED_NOT_EXPLOITABLE", "TO_VERIFY"] = "TO_VERIFY"
+    slice_lines_count: int = 0
+    cache_hit: bool = False
+
+
+class AiValidateFindingsResponse(BaseModel):
+    ok: bool
+    verdicts: List[AiFindingVerdict] = Field(default_factory=list)
+    token_telemetry: AiTokenTelemetry = Field(default_factory=AiTokenTelemetry)
+    error_code: Optional[str] = None
+    user_message: Optional[str] = None
+
+
+class AiCodeAuditRequest(BaseModel):
+    filepath: str
+    start_line: int
+    end_line: int
+    focus_question: Optional[str] = None
+
+
+class AiCodeAuditObservation(BaseModel):
+    line_range: str
+    severity: str
+    title: str
+    explanation: str
+    remediation: str
+
+
+class AiCodeAuditResponse(BaseModel):
+    ok: bool
+    summary: str = ""
+    risk_level: str = "INFO"
+    observations: List[AiCodeAuditObservation] = Field(default_factory=list)
+    secure_snippet: str = ""
+    token_telemetry: AiTokenTelemetry = Field(default_factory=AiTokenTelemetry)
+    error_code: Optional[str] = None
+    user_message: Optional[str] = None
+
+
+class AiPatchSynthesisRequest(BaseModel):
+    finding_id: str
+
+
+class AiPatchSynthesisResponse(BaseModel):
+    ok: bool
+    finding_id: str
+    filepath: str = ""
+    explanation: str = ""
+    before_snippet: str = ""
+    after_snippet: str = ""
+    patched_full_content: Optional[str] = None
+    token_telemetry: AiTokenTelemetry = Field(default_factory=AiTokenTelemetry)
+    error_code: Optional[str] = None
+    user_message: Optional[str] = None
+
+
+class AiGraphExplainRequest(BaseModel):
+    view_mode: str
+    finding_id: Optional[str] = None
+    nodes_digest: List[Dict[str, Any]] = Field(default_factory=list)
+    edges_digest: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class AiGraphExplainResponse(BaseModel):
+    ok: bool
+    headline: str = ""
+    plain_english_story: str = ""
+    step_walkthrough: List[str] = Field(default_factory=list)
+    security_takeaway: str = ""
+    token_telemetry: AiTokenTelemetry = Field(default_factory=AiTokenTelemetry)
+    error_code: Optional[str] = None
+    user_message: Optional[str] = None
 
 
 

@@ -43,12 +43,18 @@ from models import (
     RemediatePreviewRequest, RemediatePreviewResponse,
     RemediateApplyRequest, RemediateApplyResponse,
     RemediateUndoRequest, RemediateUndoResponse,
+    AiConfigUpdateRequest, AiPublicConfigResponse, AiConnectionTestResponse,
+    AiValidateFindingsRequest, AiValidateFindingsResponse,
+    AiCodeAuditRequest, AiCodeAuditResponse,
+    AiPatchSynthesisRequest, AiPatchSynthesisResponse,
+    AiGraphExplainRequest, AiGraphExplainResponse,
 )
 from database.neo4j_client import Neo4jClient
 from database.batch_ingestor import BatchIngestor
 from engine.rule_executor import RuleExecutor
 from engine.vuln_extractor import VulnExtractorEngine
 from engine.enterprise_manager import EnterpriseManager
+from engine.frontier_ai_engine import FrontierAiEngine
 from engine.remediation_patcher import (
     apply_workspace_patch,
     generate_remediation_preview,
@@ -113,6 +119,9 @@ app.add_middleware(
 
 neo4j_client = Neo4jClient.get_instance()
 enterprise_mgr = EnterpriseManager.get_instance()
+frontier_ai_engine = FrontierAiEngine(
+    vault_dir=os.path.join(enterprise_mgr.platform_root, ".alastor_vault")
+)
 current_scan_dir: str = enterprise_mgr.platform_root
 current_app_tree: Optional[AppTreeSummary] = None
 
@@ -3587,5 +3596,107 @@ def get_sast_plus_aspm_suite(project_path: Optional[str] = Query(None)):
         if cached and cached.get("latest_findings"):
             findings = [Finding(**f) for f in cached["latest_findings"]]
     return enterprise_mgr.get_sast_plus_suite(target_dir, findings)
+
+
+# ---------------------------------------------------------------------------
+# 8. Token-Efficient Multi-Provider BYOK Frontier AI Endpoints
+# ---------------------------------------------------------------------------
+def _get_ai_allowed_roots() -> List[str]:
+    """Returns confined workspace & active scan roots permitted for Frontier AI micro-slicing."""
+    base_scan_dir = os.getenv("CPG_SCAN_BASE", os.getcwd())
+    remote_workspace_root = os.path.realpath(os.path.join(os.path.dirname(base_scan_dir), ".remote_targets"))
+    uploaded_workspace_root = os.path.realpath(os.path.join(os.path.dirname(base_scan_dir), ".uploaded_targets"))
+    scan_parent = (
+        os.path.dirname(current_scan_dir)
+        if current_scan_dir and os.path.isfile(current_scan_dir)
+        else current_scan_dir
+    )
+    project_roots = [p.target_path for p in enterprise_mgr.projects if p.target_path]
+    return [
+        current_scan_dir,
+        scan_parent,
+        remote_workspace_root,
+        uploaded_workspace_root,
+        enterprise_mgr.platform_root,
+        *project_roots,
+    ]
+
+
+@app.get("/api/ai/config", response_model=AiPublicConfigResponse)
+def get_frontier_ai_config():
+    """Returns public BYOK AI provider configuration, masked credential status, and token-savings telemetry."""
+    return frontier_ai_engine.get_public_config()
+
+
+@app.post("/api/ai/config", response_model=AiPublicConfigResponse)
+def update_frontier_ai_config(req: AiConfigUpdateRequest):
+    """Validates endpoint URL against SSRF, updates BYOK AI provider settings, and returns masked public state."""
+    try:
+        return frontier_ai_engine.update_config(req)
+    except ValueError as val_exc:
+        raise HTTPException(status_code=400, detail=_sanitize_log(val_exc)) from val_exc
+
+
+@app.post("/api/ai/test-connection", response_model=AiConnectionTestResponse)
+def test_frontier_ai_connection():
+    """Executes a minimal ping against the configured BYOK AI provider to verify credentials and latency."""
+    return frontier_ai_engine.test_connection()
+
+
+@app.post("/api/ai/validate-findings", response_model=AiValidateFindingsResponse)
+def validate_findings_with_frontier_ai(req: AiValidateFindingsRequest):
+    """Batch-validates findings via CPG Micro-Slices and SHA-256 slice verdict caching."""
+    all_findings = get_or_compute_findings()
+    bounded_max = max(1, min(25, int(req.max_batch or 10)))
+    if req.finding_ids:
+        wanted = set(req.finding_ids)
+        selected = [f for f in all_findings if f.id in wanted][:bounded_max]
+    else:
+        selected = [
+            f for f in all_findings if f.triage_status != "NOT_EXPLOITABLE"
+        ][:bounded_max]
+    return frontier_ai_engine.validate_findings(selected, _get_ai_allowed_roots())
+
+
+@app.post("/api/ai/audit-code-selection", response_model=AiCodeAuditResponse)
+def audit_code_selection_with_frontier_ai(req: AiCodeAuditRequest):
+    """Audits a confined line range inside the active scan workspace using the BYOK Frontier AI engine."""
+    return frontier_ai_engine.audit_code_selection(req, _get_ai_allowed_roots())
+
+
+@app.post("/api/ai/synthesize-patch", response_model=AiPatchSynthesisResponse)
+def synthesize_patch_with_frontier_ai(req: AiPatchSynthesisRequest):
+    """Synthesizes a minimal drop-in security patch from a finding's CPG Micro-Slice."""
+    findings = get_or_compute_findings()
+    target = next((f for f in findings if f.id == req.finding_id), None)
+    if target is None and _cached_findings:
+        target = next((f for f in _cached_findings if f.id == req.finding_id), None)
+    if target is None:
+        return AiPatchSynthesisResponse(
+            ok=False,
+            finding_id=req.finding_id,
+            filepath="",
+            token_telemetry=frontier_ai_engine.get_public_config().token_telemetry,
+            error_code="FINDING_NOT_FOUND",
+            user_message=f"Finding '{_sanitize_log(req.finding_id)}' was not found in the active scan.",
+        )
+    return frontier_ai_engine.synthesize_patch(target, _get_ai_allowed_roots())
+
+
+@app.post("/api/ai/explain-graph", response_model=AiGraphExplainResponse)
+def explain_graph_with_frontier_ai(req: AiGraphExplainRequest):
+    """Translates a compact CPG / 360° directional graph digest into a plain-English walkthrough."""
+    eff_req = req
+    if req.finding_id and not req.nodes_digest:
+        findings = get_or_compute_findings()
+        matched = next((f for f in findings if f.id == req.finding_id), None)
+        if matched is not None:
+            eff_req = AiGraphExplainRequest(
+                view_mode=req.view_mode,
+                finding_id=req.finding_id,
+                nodes_digest=list(matched.path_nodes or []),
+                edges_digest=list(matched.path_edges or []),
+            )
+    return frontier_ai_engine.explain_graph(eff_req)
 
 
