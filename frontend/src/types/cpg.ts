@@ -369,6 +369,8 @@ export interface RemediatePreviewResponse {
   patched_content: string;
   fix_summary: string;
   target_line: number;
+  finding_id?: string;
+  source?: "AST" | "AI";
 }
 
 export interface RemediateApplyResponse {
@@ -967,7 +969,9 @@ export interface AiProviderInfo {
   label: string;
   default_model: string;
   models: string[];
-  requires_base_url: boolean;
+  default_base_url: string;
+  requires_api_key: boolean;
+  requires_base_url?: boolean;
 }
 
 export interface AiCumulativeTelemetry {

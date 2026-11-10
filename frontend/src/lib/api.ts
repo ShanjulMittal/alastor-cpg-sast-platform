@@ -59,36 +59,51 @@ export async function apiFetchJson<T>(
     headers,
   });
 
+  const raw = await res.text();
+
   if (!res.ok) {
     let errPayload: unknown = undefined;
     let detail = `HTTP ${res.status}`;
-    try {
-      errPayload = await res.json();
-      if (
-        errPayload &&
-        typeof errPayload === "object" &&
-        "detail" in errPayload &&
-        (errPayload as { detail?: unknown }).detail
-      ) {
-        detail = String((errPayload as { detail?: unknown }).detail);
-      } else if (
-        errPayload &&
-        typeof errPayload === "object" &&
-        "user_message" in errPayload &&
-        (errPayload as { user_message?: unknown }).user_message
-      ) {
-        detail = String((errPayload as { user_message?: unknown }).user_message);
-      }
-    } catch {
+    if (raw) {
       try {
-        const text = await res.text();
-        if (text) detail = text;
-      } catch {}
+        errPayload = JSON.parse(raw);
+        if (
+          errPayload &&
+          typeof errPayload === "object" &&
+          "detail" in errPayload &&
+          (errPayload as { detail?: unknown }).detail
+        ) {
+          detail = String((errPayload as { detail?: unknown }).detail);
+        } else if (
+          errPayload &&
+          typeof errPayload === "object" &&
+          "user_message" in errPayload &&
+          (errPayload as { user_message?: unknown }).user_message
+        ) {
+          detail = String((errPayload as { user_message?: unknown }).user_message);
+        } else {
+          detail = raw;
+        }
+      } catch {
+        detail = raw;
+      }
     }
     throw new ApiRequestError(detail, res.status, detail, errPayload);
   }
 
-  return (await res.json()) as T;
+  if (!raw) {
+    return {} as T;
+  }
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    throw new ApiRequestError(
+      `Invalid JSON response from ${path}`,
+      res.status,
+      raw
+    );
+  }
 }
 
 export async function fetchGraphData(params?: {

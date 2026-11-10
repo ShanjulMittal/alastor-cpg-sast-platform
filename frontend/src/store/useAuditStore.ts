@@ -52,6 +52,7 @@ import {
 } from "@/types/cpg";
 import {
   BACKEND_URL,
+  fetchGraphData,
   fetchAiConfig,
   updateAiConfig,
   testAiConnection,
@@ -63,6 +64,8 @@ import {
 } from "@/lib/api";
 
 export const UI_PREFS_STORAGE_KEY = "alastor_ui_prefs_v4";
+
+let _hasHydratedUiPrefs = false;
 
 const VALID_APP_THEMES: AppThemeId[] = [
   "olympian-light",
@@ -87,8 +90,9 @@ function applyDocumentTheme(theme: AppThemeId): void {
   htmlEl.classList.add("light");
 }
 
-function persistUiPrefs(getState: () => AuditState): void {
+function persistUiPrefs(getState: () => AuditState, force = false): void {
   if (typeof window === "undefined") return;
+  if (!_hasHydratedUiPrefs && !force) return;
   try {
     const s = getState();
     const payload = {
@@ -247,6 +251,10 @@ interface AuditState {
   ) => Promise<AiCodeAuditResponse | null>;
   synthesizeFindingPatchAi: (findingId: string) => Promise<AiPatchSynthesisResponse | null>;
   explainGraphAi: (payload: AiGraphExplainPayload) => Promise<AiGraphExplainResponse | null>;
+  explainCurrentGraphWithAi: (
+    payload?: Partial<AiGraphExplainPayload>
+  ) => Promise<AiGraphExplainResponse | null>;
+  loadAiPatchIntoDiffEditor: (patch: AiPatchSynthesisResponse) => Promise<void>;
   batchApplyAllSafeFixes: (findingIds?: string[]) => Promise<BatchRemediateResponse | null>;
   setAudienceMode: (mode: AudiencePersonaMode) => void;
   setSettingsBarVisible: (visible: boolean) => void;
@@ -627,11 +635,19 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
     // stage === "ASPM_GOVERNANCE"
     const sec = get().aspmSubSection;
+    const curEngineTab = get().engineAccessTab;
+    const curExecTab = get().executiveAspmTab;
+    const curWorkspaceMode = get().workspaceViewMode;
+
     if (sec === "RULES_ENGINE") {
+      const preservedEngineTab: EngineAccessTab =
+        curEngineTab === "RULE_PROFILES" || curEngineTab === "CYPHER_SANITIZERS"
+          ? curEngineTab
+          : "RULE_PROFILES";
       set({
         primaryStage: "ASPM_GOVERNANCE",
         workspaceViewMode: "ENGINE_ACCESS",
-        engineAccessTab: "RULE_PROFILES",
+        engineAccessTab: preservedEngineTab,
       });
       persistUiPrefs(get);
       get().fetchPlatformSettings();
@@ -641,17 +657,53 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       return;
     }
 
+    if (
+      sec === "GOVERNANCE" &&
+      (curEngineTab === "ACCOUNTS_RBAC" || curEngineTab === "ISSUE_CONNECTORS") &&
+      (curWorkspaceMode === "ENGINE_ACCESS" ||
+        (curWorkspaceMode !== "EXECUTIVE_ASPM" && curExecTab !== "RACI"))
+    ) {
+      set({
+        primaryStage: "ASPM_GOVERNANCE",
+        workspaceViewMode: "ENGINE_ACCESS",
+        engineAccessTab: curEngineTab,
+      });
+      persistUiPrefs(get);
+      get().fetchPlatformSettings();
+      get().fetchUserAccounts();
+      get().fetchIntegrations();
+      get().fetchProjects();
+      return;
+    }
+
+    const sastPlusCompatibleTabs: ExecutiveAspmTab[] = [
+      "TRANSLATOR",
+      "SBOM",
+      "ATTACK_SURFACE",
+      "ROADMAP",
+      "ACADEMY",
+    ];
     const mappedExecTab: ExecutiveAspmTab =
       sec === "GOVERNANCE"
         ? "RACI"
         : sec === "SAST_PLUS"
-        ? "SBOM"
+        ? sastPlusCompatibleTabs.includes(curExecTab)
+          ? curExecTab
+          : "SBOM"
         : "ANALYTICS";
-    set({
+
+    set((state) => ({
       primaryStage: "ASPM_GOVERNANCE",
       workspaceViewMode: "EXECUTIVE_ASPM",
       executiveAspmTab: mappedExecTab,
-    });
+      ...(mappedExecTab === "TRANSLATOR" ||
+      mappedExecTab === "SBOM" ||
+      mappedExecTab === "ATTACK_SURFACE" ||
+      mappedExecTab === "ROADMAP" ||
+      mappedExecTab === "ACADEMY"
+        ? { sastPlusActiveTab: mappedExecTab }
+        : { sastPlusActiveTab: state.sastPlusActiveTab }),
+    }));
     persistUiPrefs(get);
     get().fetchSastPlusSuite();
     get().fetchDeepDiveAnalytics();
@@ -875,6 +927,89 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     }
   },
 
+  explainCurrentGraphWithAi: async (payload?: Partial<AiGraphExplainPayload>) => {
+    const viewMode = payload?.view_mode || get().graphViewMode || "FINDING_PATH";
+    const findingId =
+      payload?.finding_id !== undefined
+        ? payload.finding_id
+        : get().selectedFinding?.id ?? null;
+
+    let nodesDigest = payload?.nodes_digest || [];
+    let edgesDigest = payload?.edges_digest || [];
+
+    if (nodesDigest.length === 0) {
+      const rf = get().reactFlowInstance;
+      if (rf && typeof rf.getNodes === "function") {
+        const rfNodes = rf.getNodes() || [];
+        const rfEdges = typeof rf.getEdges === "function" ? rf.getEdges() || [] : [];
+        if (rfNodes.length > 0) {
+          nodesDigest = rfNodes.slice(0, 40).map((n: any) => ({
+            id: n.id,
+            label: n.data?.label || n.data?.name || n.id,
+            type: n.data?.nodeType || n.type || "NODE",
+            code: n.data?.code || "",
+            filepath: n.data?.filepath || "",
+            start_line: n.data?.start_line || 0,
+          }));
+          edgesDigest = rfEdges.slice(0, 60).map((e: any) => ({
+            source: e.source,
+            target: e.target,
+            type: e.label || e.data?.edgeType || e.type || "FLOW",
+          }));
+        }
+      }
+    }
+
+    if (nodesDigest.length === 0) {
+      const selFinding = get().selectedFinding;
+      if (selFinding?.path_nodes && selFinding.path_nodes.length > 0) {
+        nodesDigest = selFinding.path_nodes.slice(0, 40).map((n) => ({
+          id: n.id,
+          label: n.name || n.label || n.id,
+          type: n.label,
+          code: n.code,
+          filepath: n.filepath,
+          start_line: n.start_line,
+        }));
+        edgesDigest = (selFinding.path_edges || []).slice(0, 60).map((e) => ({
+          source: e.source,
+          target: e.target,
+          type: e.type,
+        }));
+      }
+    }
+
+    if (nodesDigest.length === 0) {
+      try {
+        const graphData = await fetchGraphData({
+          view_mode: viewMode,
+          finding_id: findingId,
+          filepath: get().activeFilepath,
+        });
+        nodesDigest = (graphData.nodes || []).slice(0, 40).map((n) => ({
+          id: n.id,
+          label: n.name || n.label || n.id,
+          type: n.label,
+          code: n.code,
+          filepath: n.filepath,
+          start_line: n.start_line,
+        }));
+        edgesDigest = (graphData.edges || []).slice(0, 60).map((e) => ({
+          source: e.source,
+          target: e.target,
+          type: e.type,
+        }));
+      } catch {}
+    }
+
+    return get().explainGraphAi({
+      view_mode: viewMode,
+      finding_id: findingId,
+      nodes_digest: nodesDigest,
+      edges_digest: edgesDigest,
+    });
+  },
+
   setBackdropIntensity: (intensity: BackdropIntensity) => {
     set({ backdropIntensity: intensity });
     if (typeof window !== "undefined") {
@@ -978,12 +1113,15 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       tab === "RULE_PROFILES" || tab === "CYPHER_SANITIZERS"
         ? "RULES_ENGINE"
         : "GOVERNANCE";
-    set({
+    set((state) => ({
       engineAccessTab: tab,
       primaryStage: "ASPM_GOVERNANCE",
       aspmSubSection: mappedSubSection,
       workspaceViewMode: "ENGINE_ACCESS",
-    });
+      ...(mappedSubSection === "GOVERNANCE" && state.executiveAspmTab === "RACI"
+        ? { executiveAspmTab: "ANALYTICS" as ExecutiveAspmTab }
+        : {}),
+    }));
     persistUiPrefs(get);
     if (tab === "RULE_PROFILES" || tab === "CYPHER_SANITIZERS") {
       get().fetchPlatformSettings();
@@ -1011,8 +1149,12 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     set({ isDiffEditorOpen: open });
     if (open) {
       const finding = get().selectedFinding;
-      if (finding) {
-        get().fetchRemediationPreview(finding);
+      const existingPreview = get().remediationPreview;
+      if (
+        finding &&
+        (!existingPreview || existingPreview.finding_id !== finding.id)
+      ) {
+        void get().fetchRemediationPreview(finding);
       }
     }
   },
@@ -1071,11 +1213,143 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       });
       if (res.ok) {
         const data: RemediatePreviewResponse = await res.json();
-        set({ remediationPreview: data, remediationError: null });
+        set({
+          remediationPreview: {
+            ...data,
+            finding_id: finding.id,
+            source: "AST",
+          },
+          remediationError: null,
+        });
       }
     } catch (err) {
       console.error("Failed to fetch remediation preview:", err);
     }
+  },
+
+  loadAiPatchIntoDiffEditor: async (patch: AiPatchSynthesisResponse) => {
+    const matchedFinding =
+      get().findings.find((f) => f.id === patch.finding_id) ||
+      get().selectedFinding;
+    const sinkNode =
+      matchedFinding?.path_nodes && matchedFinding.path_nodes.length > 0
+        ? matchedFinding.path_nodes[matchedFinding.path_nodes.length - 1]
+        : null;
+    const targetFilepath =
+      patch.filepath ||
+      matchedFinding?.best_fix_location?.filepath ||
+      sinkNode?.filepath ||
+      get().activeFilepath ||
+      "";
+    const targetLine =
+      matchedFinding?.best_fix_location?.line ||
+      sinkNode?.start_line ||
+      get().activeStartLine ||
+      1;
+
+    if (!targetFilepath) return;
+
+    let basePreview: RemediatePreviewResponse | null = null;
+    const currentPreview = get().remediationPreview;
+    if (
+      currentPreview &&
+      currentPreview.filepath === targetFilepath &&
+      currentPreview.expected_sha256 &&
+      currentPreview.original_content
+    ) {
+      basePreview = currentPreview;
+    } else {
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/remediate/preview`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            finding_id: patch.finding_id,
+            filepath: targetFilepath,
+            target_line: targetLine,
+            rule_id: matchedFinding?.rule_id || "",
+            recommended_fix: patch.after_snippet || null,
+          }),
+        });
+        if (res.ok) {
+          basePreview = await res.json();
+        }
+      } catch {}
+    }
+
+    let originalContent = basePreview?.original_content || "";
+    let expectedSha256 = basePreview?.expected_sha256 || "";
+
+    if (!originalContent) {
+      try {
+        const fileRes = await fetch(
+          `${BACKEND_URL}/api/file?filepath=${encodeURIComponent(targetFilepath)}`
+        );
+        if (fileRes.ok) {
+          const fileData = await fileRes.json();
+          originalContent = String(fileData?.content || "");
+          if (
+            !expectedSha256 &&
+            typeof crypto !== "undefined" &&
+            crypto.subtle
+          ) {
+            const bytes = new TextEncoder().encode(originalContent);
+            const hashBuf = await crypto.subtle.digest("SHA-256", bytes);
+            expectedSha256 = Array.from(new Uint8Array(hashBuf))
+              .map((b) => b.toString(16).padStart(2, "0"))
+              .join("");
+          }
+        }
+      } catch {}
+    }
+
+    let patchedContent = "";
+    if (patch.patched_full_content && patch.patched_full_content.length > 0) {
+      patchedContent = patch.patched_full_content;
+    } else if (
+      originalContent &&
+      patch.before_snippet &&
+      patch.after_snippet &&
+      originalContent.includes(patch.before_snippet.trim())
+    ) {
+      patchedContent = originalContent.replace(
+        patch.before_snippet.trim(),
+        patch.after_snippet.trim()
+      );
+    } else if (basePreview?.patched_content) {
+      patchedContent = basePreview.patched_content;
+    } else {
+      patchedContent = patch.after_snippet || originalContent;
+    }
+
+    set((state) => ({
+      ...(matchedFinding ? { selectedFinding: matchedFinding } : {}),
+      activeFilepath: targetFilepath,
+      activeStartLine: targetLine,
+      activeEndLine: targetLine,
+      remediationPreview: {
+        can_auto_patch: true,
+        filepath: targetFilepath,
+        expected_sha256: expectedSha256,
+        original_content: originalContent,
+        patched_content: patchedContent,
+        fix_summary:
+          patch.explanation || "Frontier AI synthesized surgical remediation patch",
+        target_line: basePreview?.target_line || targetLine,
+        finding_id: patch.finding_id,
+        source: "AI",
+      },
+      remediationError: null,
+      isDiffEditorOpen: true,
+      primaryStage: "TRIAGE_FIX",
+      workspaceViewMode: "REMEDIATION_IDE",
+      ...(state.ideLayoutMode === "GRAPH_FOCUS"
+        ? { ideLayoutMode: "SPLIT_BOTH" as const }
+        : {}),
+      ...(state.graphViewMode === "APP_TREE"
+        ? { graphViewMode: "FINDING_PATH" as GraphViewMode }
+        : {}),
+    }));
   },
 
   applyRemediationPatch: async (patchedContent: string) => {
@@ -1327,7 +1601,31 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           updates.engineAccessTab = parsed.engineAccessTab;
         }
 
+        const validWorkspaceModes: WorkspaceViewMode[] = [
+          "REMEDIATION_IDE",
+          "AUDIT_STUDIO",
+          "THREAT_MODELING",
+          "EXECUTIVE_ASPM",
+          "PROJECTS_HUB",
+          "ENGINE_ACCESS",
+          "DEEP_DIVE",
+          "RACI_GOVERNANCE",
+          "SAST_PLUS_SUITE",
+          "RULE_ENGINE_PROFILES",
+          "USER_PROFILES",
+        ];
+        if (
+          parsed.workspaceViewMode &&
+          (validWorkspaceModes as string[]).includes(parsed.workspaceViewMode)
+        ) {
+          updates.workspaceViewMode =
+            parsed.workspaceViewMode === "AUDIT_STUDIO"
+              ? "REMEDIATION_IDE"
+              : parsed.workspaceViewMode;
+        }
+
         set(updates);
+        _hasHydratedUiPrefs = true;
 
         if (
           parsed.primaryStage &&
@@ -1338,21 +1636,11 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().setPrimaryStage(parsed.primaryStage);
         } else if (
           parsed.workspaceViewMode &&
-          [
-            "REMEDIATION_IDE",
-            "AUDIT_STUDIO",
-            "THREAT_MODELING",
-            "EXECUTIVE_ASPM",
-            "PROJECTS_HUB",
-            "ENGINE_ACCESS",
-            "DEEP_DIVE",
-            "RACI_GOVERNANCE",
-            "SAST_PLUS_SUITE",
-            "RULE_ENGINE_PROFILES",
-            "USER_PROFILES",
-          ].includes(parsed.workspaceViewMode)
+          (validWorkspaceModes as string[]).includes(parsed.workspaceViewMode)
         ) {
           get().setWorkspaceViewMode(parsed.workspaceViewMode);
+        } else {
+          persistUiPrefs(get, true);
         }
         return;
       }
@@ -1384,8 +1672,11 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       if (legacyBackdrop && ["VIVID", "SUBTLE", "MINIMAL"].includes(legacyBackdrop)) {
         set({ backdropIntensity: legacyBackdrop });
       }
-      persistUiPrefs(get);
-    } catch {}
+    } catch {
+    } finally {
+      _hasHydratedUiPrefs = true;
+      persistUiPrefs(get, true);
+    }
   },
 
   setShowPortalGate: (show, operator) => {

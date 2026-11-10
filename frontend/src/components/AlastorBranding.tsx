@@ -424,25 +424,7 @@ export function AlastorThemeSwitcher() {
   const currentSpec =
     ALASTOR_THEMES.find((t) => t.id === appTheme) || ALASTOR_THEMES[0];
 
-  // Sync light-only theme attributes to <html> and restore from v4 localStorage on mount
-  useEffect(() => {
-    try {
-      const savedTheme = localStorage.getItem("alastor_app_theme_v4") as AppThemeId | null;
-      const savedBackdrop = localStorage.getItem(
-        "alastor_backdrop_intensity"
-      ) as BackdropIntensity | null;
-      if (savedTheme && ALASTOR_THEMES.some((t) => t.id === savedTheme)) {
-        setAppTheme(savedTheme);
-      }
-      if (
-        savedBackdrop &&
-        ["VIVID", "SUBTLE", "MINIMAL"].includes(savedBackdrop)
-      ) {
-        setBackdropIntensity(savedBackdrop);
-      }
-    } catch {}
-  }, [setAppTheme, setBackdropIntensity]);
-
+  // Sync light-only theme attributes to <html> whenever appTheme changes
   useEffect(() => {
     if (typeof document !== "undefined") {
       const htmlEl = document.documentElement;

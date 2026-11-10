@@ -426,12 +426,22 @@ export function MonacoCodePane() {
     return buildFindingStory(selectedFinding);
   }, [selectedFinding]);
 
-  // Trigger remediation preview fetch when DiffEditor is opened or finding changes
+  // Trigger remediation preview fetch when DiffEditor is opened or finding changes,
+  // preserving any already-populated preview (such as an AI-synthesized patch) for the active finding.
   useEffect(() => {
-    if (isDiffEditorOpen && selectedFinding) {
+    if (
+      isDiffEditorOpen &&
+      selectedFinding &&
+      (!remediationPreview || remediationPreview.finding_id !== selectedFinding.id)
+    ) {
       fetchRemediationPreview(selectedFinding);
     }
-  }, [isDiffEditorOpen, selectedFinding?.id, fetchRemediationPreview, selectedFinding]);
+  }, [
+    isDiffEditorOpen,
+    selectedFinding,
+    remediationPreview,
+    fetchRemediationPreview,
+  ]);
 
   // Sync draftPatchedContent when remediationPreview arrives
   useEffect(() => {
@@ -893,7 +903,7 @@ export function MonacoCodePane() {
               title="Toggle live Monaco Chokepoint DiffEditor to preview and apply surgical remediation (Shortcut: d)"
               className={`px-2.5 py-1 rounded-md font-mono text-[10px] font-bold flex items-center gap-1.5 border transition-all ${
                 isDiffEditorOpen
-                  ? "bg-amber-600 text-white border-amber-700 shadow-sm"
+                  ? "bg-amber-700 hover:bg-amber-800 text-white border-amber-800 shadow-sm"
                   : "bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300 shadow-sm"
               }`}
             >
@@ -1225,7 +1235,9 @@ export function MonacoCodePane() {
             <div className="flex items-center gap-2 min-w-0 flex-wrap">
               <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-900 border border-amber-300 font-mono text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 shrink-0">
                 <Crosshair className="w-3 h-3 text-amber-700" />
-                {remediationPreview?.can_auto_patch
+                {remediationPreview?.source === "AI"
+                  ? "Frontier AI Synthesized Patch"
+                  : remediationPreview?.can_auto_patch
                   ? "AST-Deterministic Chokepoint Patch"
                   : "Guided Remediation Template (Editable)"}
               </span>
@@ -1257,7 +1269,7 @@ export function MonacoCodePane() {
                   )
                 }
                 title="Write SHA256 undo backup (.alastor_patches/), apply patched buffer to disk, and re-run CPG reachability verification"
-                className="px-3 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold flex items-center gap-1.5 shadow-sm transition-all"
+                className="px-3 py-1 rounded-md bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-bold flex items-center gap-1.5 shadow-sm transition-all"
               >
                 {isApplyingPatch ? (
                   <>
@@ -1299,7 +1311,7 @@ export function MonacoCodePane() {
           <div className="flex-1 w-full relative bg-white">
             {remediationPreview ? (
               <DiffEditor
-                key={`${remediationPreview.filepath}:${remediationPreview.target_line}`}
+                key={`${remediationPreview.filepath}:${remediationPreview.target_line}:${remediationPreview.source || "AST"}`}
                 height="100%"
                 language={getLanguage(remediationPreview.filepath || activeFilepath)}
                 original={remediationPreview.original_content}
@@ -1757,7 +1769,7 @@ export function MonacoCodePane() {
                       <button
                         type="button"
                         onClick={handleDownloadArtifact}
-                        className="px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-mono font-semibold flex items-center gap-1"
+                        className="px-2.5 py-1 rounded bg-amber-700 hover:bg-amber-800 text-white text-[10px] font-mono font-semibold flex items-center gap-1"
                       >
                         <span>Download {activeArtifact.filename}</span>
                       </button>

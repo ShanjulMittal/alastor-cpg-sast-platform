@@ -100,7 +100,7 @@ html[data-theme="hyperborean-light"] {
   --z-900: 250 253 255;
   --z-800: 207 225 244;
   --z-700: 172 199 228;
-  --z-600: 96 125 158;
+  --z-600: 71 98 130;
   --z-500: 59 85 115;
   --z-400: 38 62 92;
   --z-300: 23 45 74;
@@ -378,8 +378,7 @@ html :is(
   background-color: rgba(209, 250, 229, 0.88) !important;
 }
 html .hover\:bg-emerald-950:hover,
-html .hover\:bg-emerald-900:hover,
-html .hover\:bg-emerald-800:hover {
+html .hover\:bg-emerald-900:hover {
   background-color: #a7f3d0 !important;
 }
 html :is(
@@ -538,7 +537,7 @@ html :is(
   border-color: #fda4af !important;
 }
 
-/* 8. Accidental .text-white Guardrail vs Solid Saturated Buttons/Pills */
+/* 8. Accidental .text-white Guardrail vs Solid Saturated Buttons/Pills (WCAG AA >= 4.5:1) */
 html .text-white,
 html .hover\:text-white:hover,
 html .group:hover .group-hover\:text-white {
@@ -549,56 +548,73 @@ html :is(
   .bg-blue-500,
   .bg-blue-600,
   .bg-blue-700,
+  .bg-blue-800,
   .bg-indigo-500,
   .bg-indigo-600,
   .bg-indigo-700,
+  .bg-indigo-800,
   .bg-emerald-500,
   .bg-emerald-600,
   .bg-emerald-700,
+  .bg-emerald-800,
   .bg-green-500,
   .bg-green-600,
   .bg-green-700,
+  .bg-green-800,
   .bg-rose-500,
   .bg-rose-600,
   .bg-rose-700,
+  .bg-rose-800,
   .bg-red-500,
   .bg-red-600,
   .bg-red-700,
+  .bg-red-800,
   .bg-amber-500,
   .bg-amber-600,
   .bg-amber-700,
+  .bg-amber-800,
   .bg-purple-500,
   .bg-purple-600,
   .bg-purple-700,
+  .bg-purple-800,
   .bg-violet-500,
   .bg-violet-600,
   .bg-violet-700,
+  .bg-violet-800,
   .bg-cyan-500,
   .bg-cyan-600,
   .bg-cyan-700,
+  .bg-cyan-800,
   .bg-sky-500,
   .bg-sky-600,
   .bg-sky-700,
+  .bg-sky-800,
   .bg-orange-500,
   .bg-orange-600,
   .bg-orange-700,
+  .bg-orange-800,
   .bg-teal-500,
   .bg-teal-600,
   .bg-teal-700,
+  .bg-teal-800,
   .from-indigo-600,
   .from-blue-600,
   .from-cyan-600,
   .from-emerald-600,
   .from-violet-600,
   .from-rose-600,
-  [class^="bg-blue-600/"],
-  [class*=" bg-blue-600/"],
-  [class^="bg-indigo-600/"],
-  [class*=" bg-indigo-600/"],
-  [class^="bg-emerald-600/"],
-  [class*=" bg-emerald-600/"],
-  [class^="bg-cyan-600/"],
-  [class*=" bg-cyan-600/"],
+  .bg-blue-600\/80,
+  .bg-blue-600\/90,
+  .bg-blue-600\/95,
+  .bg-indigo-600\/80,
+  .bg-indigo-600\/90,
+  .bg-indigo-600\/95,
+  .bg-emerald-600\/80,
+  .bg-emerald-600\/90,
+  .bg-emerald-600\/95,
+  .bg-cyan-600\/80,
+  .bg-cyan-600\/90,
+  .bg-cyan-600\/95,
   .bg-\[var\(--sig-crimson\)\],
   .bg-\[var\(--sig-emerald\)\],
   .bg-\[var\(--sig-cyan\)\],
@@ -608,62 +624,204 @@ html :is(
   .bg-blue-500,
   .bg-blue-600,
   .bg-blue-700,
+  .bg-blue-800,
   .bg-indigo-500,
   .bg-indigo-600,
   .bg-indigo-700,
+  .bg-indigo-800,
   .bg-emerald-500,
   .bg-emerald-600,
   .bg-emerald-700,
+  .bg-emerald-800,
   .bg-green-500,
   .bg-green-600,
   .bg-green-700,
+  .bg-green-800,
   .bg-rose-500,
   .bg-rose-600,
   .bg-rose-700,
+  .bg-rose-800,
   .bg-red-500,
   .bg-red-600,
   .bg-red-700,
+  .bg-red-800,
   .bg-amber-500,
   .bg-amber-600,
   .bg-amber-700,
+  .bg-amber-800,
   .bg-purple-500,
   .bg-purple-600,
   .bg-purple-700,
+  .bg-purple-800,
   .bg-violet-500,
   .bg-violet-600,
   .bg-violet-700,
+  .bg-violet-800,
   .bg-cyan-500,
   .bg-cyan-600,
   .bg-cyan-700,
+  .bg-cyan-800,
   .bg-sky-500,
   .bg-sky-600,
   .bg-sky-700,
+  .bg-sky-800,
   .bg-orange-500,
   .bg-orange-600,
   .bg-orange-700,
+  .bg-orange-800,
   .bg-teal-500,
   .bg-teal-600,
   .bg-teal-700,
+  .bg-teal-800,
   .from-indigo-600,
   .from-blue-600,
   .from-cyan-600,
   .from-emerald-600,
   .from-violet-600,
   .from-rose-600,
-  [class^="bg-blue-600/"],
-  [class*=" bg-blue-600/"],
-  [class^="bg-indigo-600/"],
-  [class*=" bg-indigo-600/"],
-  [class^="bg-emerald-600/"],
-  [class*=" bg-emerald-600/"],
-  [class^="bg-cyan-600/"],
-  [class*=" bg-cyan-600/"],
+  .bg-blue-600\/80,
+  .bg-blue-600\/90,
+  .bg-blue-600\/95,
+  .bg-indigo-600\/80,
+  .bg-indigo-600\/90,
+  .bg-indigo-600\/95,
+  .bg-emerald-600\/80,
+  .bg-emerald-600\/90,
+  .bg-emerald-600\/95,
+  .bg-cyan-600\/80,
+  .bg-cyan-600\/90,
+  .bg-cyan-600\/95,
   .bg-\[var\(--sig-crimson\)\],
   .bg-\[var\(--sig-emerald\)\],
   .bg-\[var\(--sig-cyan\)\],
   .bg-\[var\(--sig-gold\)\]
 ) .text-white {
   color: #ffffff !important;
+}
+
+/* Darken mid-tone .text-white CTAs so white foreground always meets WCAG AA >= 4.5:1 */
+html :is(.bg-amber-600, .bg-amber-500, .from-amber-600).text-white,
+html :is(.bg-amber-600, .bg-amber-500):has(.text-white) {
+  background-color: #b45309 !important;
+}
+html :is(.hover\:bg-amber-800:hover, .hover\:bg-amber-700:hover, .hover\:bg-amber-600:hover, .hover\:bg-amber-500:hover).text-white {
+  background-color: #92400e !important;
+}
+html .bg-amber-700.text-white:is(.border-amber-800, .border-amber-700) {
+  border-color: #92400e !important;
+}
+
+html :is(.bg-emerald-600, .bg-emerald-500, .bg-emerald-600\/80, .bg-emerald-600\/90, .bg-emerald-600\/95).text-white,
+html :is(.bg-emerald-600, .bg-emerald-500):has(.text-white) {
+  background-color: #047857 !important;
+}
+html :is(.hover\:bg-emerald-800:hover, .hover\:bg-emerald-700:hover, .hover\:bg-emerald-600:hover, .hover\:bg-emerald-500:hover).text-white {
+  background-color: #065f46 !important;
+}
+html .bg-emerald-700.text-white:is(.border-emerald-800, .border-emerald-700) {
+  border-color: #065f46 !important;
+}
+
+html :is(.bg-green-600, .bg-green-500).text-white,
+html :is(.bg-green-600, .bg-green-500):has(.text-white) {
+  background-color: #15803d !important;
+}
+html :is(.hover\:bg-green-800:hover, .hover\:bg-green-700:hover, .hover\:bg-green-600:hover, .hover\:bg-green-500:hover).text-white {
+  background-color: #166534 !important;
+}
+
+html :is(.bg-cyan-600, .bg-cyan-500, .bg-cyan-600\/80, .bg-cyan-600\/90, .bg-cyan-600\/95).text-white,
+html :is(.bg-cyan-600, .bg-cyan-500):has(.text-white) {
+  background-color: #0e7490 !important;
+}
+html :is(.hover\:bg-cyan-800:hover, .hover\:bg-cyan-700:hover, .hover\:bg-cyan-600:hover, .hover\:bg-cyan-500:hover).text-white {
+  background-color: #155e75 !important;
+}
+
+html :is(.bg-sky-600, .bg-sky-500).text-white,
+html :is(.bg-sky-600, .bg-sky-500):has(.text-white) {
+  background-color: #0369a1 !important;
+}
+html :is(.hover\:bg-sky-800:hover, .hover\:bg-sky-700:hover, .hover\:bg-sky-600:hover, .hover\:bg-sky-500:hover).text-white {
+  background-color: #075985 !important;
+}
+
+html :is(.bg-teal-600, .bg-teal-500).text-white,
+html :is(.bg-teal-600, .bg-teal-500):has(.text-white) {
+  background-color: #0f766e !important;
+}
+html :is(.hover\:bg-teal-800:hover, .hover\:bg-teal-700:hover, .hover\:bg-teal-600:hover, .hover\:bg-teal-500:hover).text-white {
+  background-color: #115e59 !important;
+}
+
+html :is(.bg-orange-600, .bg-orange-500).text-white,
+html :is(.bg-orange-600, .bg-orange-500):has(.text-white) {
+  background-color: #c2410c !important;
+}
+html :is(.hover\:bg-orange-800:hover, .hover\:bg-orange-700:hover, .hover\:bg-orange-600:hover, .hover\:bg-orange-500:hover).text-white {
+  background-color: #9a3412 !important;
+}
+
+html .bg-rose-500.text-white,
+html .hover\:bg-rose-500:hover.text-white {
+  background-color: #be123c !important;
+}
+
+html .bg-red-500.text-white,
+html .hover\:bg-red-500:hover.text-white {
+  background-color: #dc2626 !important;
+}
+
+html .bg-blue-500.text-white,
+html .hover\:bg-blue-500:hover.text-white {
+  background-color: #2563eb !important;
+}
+
+html .bg-indigo-500.text-white,
+html .hover\:bg-indigo-500:hover.text-white {
+  background-color: #4f46e5 !important;
+}
+
+html .bg-purple-500.text-white,
+html .hover\:bg-purple-500:hover.text-white {
+  background-color: #7e22ce !important;
+}
+
+html .bg-violet-500.text-white,
+html .hover\:bg-violet-500:hover.text-white {
+  background-color: #6d28d9 !important;
+}
+
+/* Disabled light-gray buttons must never keep white text on palezinc/slate surfaces */
+html :disabled:is(
+  [class*="disabled:bg-zinc-800"],
+  [class*="disabled:bg-zinc-900"],
+  [class*="disabled:bg-zinc-700"],
+  [class*="disabled:bg-slate-800"],
+  [class*="disabled:bg-slate-900"],
+  [class*="disabled:bg-slate-700"]
+) {
+  background-color: #e2e8f0 !important;
+  border-color: #cbd5e1 !important;
+}
+
+html :disabled:is(
+  [class*="disabled:bg-zinc-800"],
+  [class*="disabled:bg-zinc-900"],
+  [class*="disabled:bg-zinc-700"],
+  [class*="disabled:bg-slate-800"],
+  [class*="disabled:bg-slate-900"],
+  [class*="disabled:bg-slate-700"]
+).text-white,
+html :disabled:is(
+  [class*="disabled:bg-zinc-800"],
+  [class*="disabled:bg-zinc-900"],
+  [class*="disabled:bg-zinc-700"],
+  [class*="disabled:bg-slate-800"],
+  [class*="disabled:bg-slate-900"],
+  [class*="disabled:bg-slate-700"]
+) .text-white {
+  color: #475569 !important;
 }
 
 /* Slow mythic rotation for Alastor arcane sigil rings */
