@@ -5,33 +5,29 @@ import { useAuditStore } from "@/store/useAuditStore";
 import { AppThemeId, BackdropIntensity } from "@/types/cpg";
 import {
   Sun,
-  Moon,
   Palette,
-  Sparkles,
   Check,
   Flame,
   Eye,
-  ShieldAlert,
 } from "lucide-react";
 
 export interface AlastorThemeSpec {
   id: AppThemeId;
   name: string;
   subtitle: string;
-  mode: "light" | "dark";
+  mode: "light";
   badge: string;
   swatches: [string, string, string, string];
 }
 
 export const ALASTOR_THEMES: AlastorThemeSpec[] = [
-  // LIGHT THEMES
   {
     id: "olympian-light",
     name: "Olympian Daylight",
-    subtitle: "Crisp Alabaster White, Cool Marble Slate & Royal Crimson-Gold",
+    subtitle: "Crisp High-Contrast Slate, Pure White & Royal Crimson-Gold",
     mode: "light",
-    badge: "LIGHT • CRISP",
-    swatches: ["#f3f6fb", "#ffffff", "#0f172a", "#e11d48"],
+    badge: "DEFAULT • CRISP",
+    swatches: ["#f8fafc", "#ffffff", "#0f172a", "#be123c"],
   },
   {
     id: "athena-parchment",
@@ -49,39 +45,10 @@ export const ALASTOR_THEMES: AlastorThemeSpec[] = [
     badge: "LIGHT • COOL",
     swatches: ["#ebf4fc", "#fafdff", "#09192e", "#0284c7"],
   },
-  // DARK & MYTHIC THEMES
-  {
-    id: "alastor-infernal",
-    name: "Alastor Infernal",
-    subtitle: "Mythological Demon Obsidian, Molten Gold & Crimson Ember",
-    mode: "dark",
-    badge: "MYTHIC DEFAULT",
-    swatches: ["#0b0609", "#170b10", "#e11d48", "#f59e0b"],
-  },
-  {
-    id: "hecate-arcane",
-    name: "Hecate Arcane",
-    subtitle: "Astral Amethyst Void, Deep Indigo & Eldritch Magenta",
-    mode: "dark",
-    badge: "DARK • VIOLET",
-    swatches: ["#090514", "#180b28", "#a855f7", "#ec4899"],
-  },
-  {
-    id: "stygian-abyss",
-    name: "Stygian Abyss",
-    subtitle: "Classic Deep Zinc Obsidian, Cobalt & Electric Stygian Cyan",
-    mode: "dark",
-    badge: "DARK • CYBER",
-    swatches: ["#09090b", "#18181b", "#06b6d4", "#3b82f6"],
-  },
 ];
 
-export function isLightAppTheme(themeId: AppThemeId): boolean {
-  return (
-    themeId === "olympian-light" ||
-    themeId === "athena-parchment" ||
-    themeId === "hyperborean-light"
-  );
+export function isLightAppTheme(_themeId?: AppThemeId | string): boolean {
+  return true;
 }
 
 /**
@@ -229,7 +196,7 @@ export function AlastorBrandHeader() {
         type="button"
         onClick={() => setShowCrestModal((v) => !v)}
         title="ALASTOR — Mythological Spirit of Retribution & Deterministic CPG Security Engine (Click to view Demon Crest)"
-        className="group relative w-9 h-9 rounded-xl bg-gradient-to-br from-rose-950 via-zinc-950 to-amber-950 p-0.5 border border-amber-500/60 shadow-lg shadow-rose-600/25 hover:border-amber-400 hover:scale-105 transition-all flex items-center justify-center overflow-hidden"
+        className="group relative w-9 h-9 rounded-xl bg-white p-0.5 border border-amber-500/70 shadow-sm hover:border-rose-500 hover:scale-105 transition-all flex items-center justify-center overflow-hidden"
       >
         {!imgError ? (
           <img
@@ -241,46 +208,46 @@ export function AlastorBrandHeader() {
         ) : (
           <AlastorDemonCrestSvg className="w-7 h-7" />
         )}
-        <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-rose-500 border border-amber-300 animate-pulse" />
+        <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-rose-600 border border-white" />
       </button>
 
       <div
         className="hidden sm:block cursor-pointer"
         onClick={() => setShowCrestModal((v) => !v)}
       >
-        <h1 className="text-sm font-black tracking-wider text-zinc-100 flex items-center gap-1.5">
-          <span className="bg-gradient-to-r from-amber-400 via-rose-500 to-amber-300 bg-clip-text text-transparent drop-shadow-sm">
+        <h1 className="text-sm font-black tracking-wider text-slate-900 flex items-center gap-1.5">
+          <span className="bg-gradient-to-r from-rose-700 via-amber-700 to-rose-800 bg-clip-text text-transparent">
             ALASTOR
           </span>
-          <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-rose-950/90 text-amber-300 border border-rose-700/80 tracking-widest">
+          <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-rose-50 text-rose-800 border border-rose-200 tracking-widest">
             DAIMON CPG
           </span>
         </h1>
-        <p className="text-[10px] text-zinc-400 font-medium tracking-tight">
+        <p className="text-[10px] text-slate-600 font-medium tracking-tight">
           Nemesis of Code Flaws • SAST • SCA • IaC
         </p>
       </div>
 
       {/* Mythological Crest & Lore Showcase Popover */}
       {showCrestModal && (
-        <div className="absolute left-0 top-12 w-80 rounded-2xl bg-zinc-950 border border-amber-600/60 shadow-2xl p-4 z-50 text-left space-y-3">
-          <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
+        <div className="absolute left-0 top-12 w-80 rounded-2xl bg-white border border-slate-300 shadow-2xl p-4 z-50 text-left space-y-3">
+          <div className="flex items-center justify-between border-b border-slate-200 pb-2">
             <div className="flex items-center gap-1.5">
-              <Flame className="w-4 h-4 text-rose-500" />
-              <span className="text-xs font-black tracking-wider uppercase text-zinc-100">
+              <Flame className="w-4 h-4 text-rose-600" />
+              <span className="text-xs font-black tracking-wider uppercase text-slate-900">
                 ALASTOR • Ἀλάστωρ
               </span>
             </div>
             <button
               type="button"
               onClick={() => setShowCrestModal(false)}
-              className="text-[10px] font-mono text-zinc-400 hover:text-zinc-100 px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800"
+              className="text-[10px] font-mono text-slate-600 hover:text-slate-900 px-1.5 py-0.5 rounded bg-slate-100 border border-slate-300"
             >
               ESC
             </button>
           </div>
 
-          <div className="relative rounded-xl overflow-hidden border border-amber-500/40 bg-black aspect-square max-h-52 mx-auto flex items-center justify-center shadow-inner">
+          <div className="relative rounded-xl overflow-hidden border border-slate-200 bg-slate-50 aspect-square max-h-52 mx-auto flex items-center justify-center shadow-inner">
             <img
               src="/alastor-demon-logo.png"
               alt="Alastor Mythological Demon Crest"
@@ -288,14 +255,14 @@ export function AlastorBrandHeader() {
             />
           </div>
 
-          <div className="space-y-1.5 text-[11px] text-zinc-300 leading-relaxed">
+          <div className="space-y-1.5 text-[11px] text-slate-700 leading-relaxed">
             <p>
-              In ancient Greek mythology, <b className="text-amber-400">Alastor</b>{" "}
+              In ancient Greek mythology, <b className="text-amber-700">Alastor</b>{" "}
               (<i>&ldquo;The Unforgetting Avenger&rdquo;</i>) is the relentless{" "}
-              <b className="text-rose-400">Daimon of Retribution</b> who tracks down
+              <b className="text-rose-700">Daimon of Retribution</b> who tracks down
               hidden corruptions and unseen sins so that no flaw escapes judgment.
             </p>
-            <p className="text-[10px] text-zinc-400 font-mono border-t border-zinc-800 pt-1.5">
+            <p className="text-[10px] text-slate-500 font-mono border-t border-slate-200 pt-1.5">
               Deterministic Code Property Graph (AST + CFG + DFG) • Unified SAST, SCA &amp; IaC
             </p>
           </div>
@@ -307,47 +274,31 @@ export function AlastorBrandHeader() {
 
 /**
  * Full-Viewport Atmospheric Mythological Demon & Arcane Sigil Background.
- * Adapts smoothly to both Light Themes and Dark/Mythic Themes.
+ * Strictly calibrated for High-Contrast Daylight Themes.
  */
 export function AlastorMythicBackground() {
-  const appTheme = useAuditStore((s) => s.appTheme);
   const backdropIntensity = useAuditStore((s) => s.backdropIntensity);
   const showPortalGate = useAuditStore((s) => s.showPortalGate);
-  const isLight = isLightAppTheme(appTheme);
 
   if (backdropIntensity === "MINIMAL") {
     return null;
   }
 
-  // Stillness by Default inside the IDE (showPortalGate === false):
-  // Unless the user explicitly selects VIVID or is on the Launch Hub, keep the background ultra-restrained and stationary.
   const isVividOrGate = backdropIntensity === "VIVID" || showPortalGate;
 
   const imageOpacity =
     backdropIntensity === "VIVID"
-      ? isLight
-        ? "opacity-[0.08]"
-        : "opacity-[0.20]"
+      ? "opacity-[0.06]"
       : showPortalGate
-      ? isLight
-        ? "opacity-[0.045]"
-        : "opacity-[0.12]"
-      : isLight
-      ? "opacity-[0.015]"
-      : "opacity-[0.035]";
+      ? "opacity-[0.035]"
+      : "opacity-[0.012]";
 
   const sigilOpacity =
     backdropIntensity === "VIVID"
-      ? isLight
-        ? "opacity-[0.18]"
-        : "opacity-[0.26]"
+      ? "opacity-[0.14]"
       : showPortalGate
-      ? isLight
-        ? "opacity-[0.10]"
-        : "opacity-[0.14]"
-      : isLight
-      ? "opacity-[0.03]"
-      : "opacity-[0.045]";
+      ? "opacity-[0.08]"
+      : "opacity-[0.025]";
 
   const outerSpinClass = isVividOrGate ? "animate-alastor-sigil" : "";
   const innerSpinClass = isVividOrGate ? "animate-alastor-sigil-reverse" : "";
@@ -359,18 +310,16 @@ export function AlastorMythicBackground() {
     >
       {/* Layer 1: Mythological Sanctuary & Demon Guardian Artwork */}
       <div
-        className={`absolute inset-0 bg-cover bg-center bg-no-repeat transition-opacity duration-500 ${imageOpacity} ${
-          isLight ? "mix-blend-multiply filter contrast-125" : "mix-blend-screen"
-        }`}
+        className={`absolute inset-0 bg-cover bg-center bg-no-repeat transition-opacity duration-500 ${imageOpacity} mix-blend-multiply filter contrast-125`}
         style={{
           backgroundImage: `url('/alastor-mythic-bg.png')`,
         }}
       />
 
-      {/* Layer 2: Ambient Mythological Radial Glows (restrained during IDE code review) */}
+      {/* Layer 2: Ambient Daylight Radial Accents */}
       <div
         className={`absolute inset-0 transition-opacity duration-500 ${
-          isVividOrGate ? "opacity-100" : "opacity-35"
+          isVividOrGate ? "opacity-80" : "opacity-30"
         }`}
         style={{
           background: `
@@ -408,7 +357,6 @@ export function AlastorMythicBackground() {
               stroke="var(--alastor-sigil-stroke)"
               strokeWidth="1"
             />
-            {/* Hexagram of Retribution */}
             <polygon
               points="250,38 433,356 67,356"
               fill="none"
@@ -460,10 +408,9 @@ export function AlastorMythicBackground() {
 }
 
 /**
- * Top-Bar Theme & Appearance Switcher:
- * - 1-Click Light / Dark Mode Quick Toggle
- * - 6 Curated Themes (3 Light Themes + 3 Mythic/Dark Themes)
- * - Mythic Demon Backdrop Intensity Selector (Vivid / Subtle / Minimal)
+ * Top-Bar Daylight Theme & Appearance Switcher:
+ * - 3 Curated High-Contrast Daylight Palettes (Olympian, Athena Parchment, Hyperborean Frost)
+ * - Mythic Watermark Intensity Selector (Vivid / Subtle / Off)
  */
 export function AlastorThemeSwitcher() {
   const appTheme = useAuditStore((s) => s.appTheme);
@@ -475,13 +422,12 @@ export function AlastorThemeSwitcher() {
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   const currentSpec =
-    ALASTOR_THEMES.find((t) => t.id === appTheme) || ALASTOR_THEMES[3];
-  const isLight = isLightAppTheme(appTheme);
+    ALASTOR_THEMES.find((t) => t.id === appTheme) || ALASTOR_THEMES[0];
 
-  // Sync theme attributes to <html> and restore from localStorage on mount
+  // Sync light-only theme attributes to <html> and restore from v4 localStorage on mount
   useEffect(() => {
     try {
-      const savedTheme = localStorage.getItem("alastor_app_theme_v3") as AppThemeId | null;
+      const savedTheme = localStorage.getItem("alastor_app_theme_v4") as AppThemeId | null;
       const savedBackdrop = localStorage.getItem(
         "alastor_backdrop_intensity"
       ) as BackdropIntensity | null;
@@ -500,17 +446,15 @@ export function AlastorThemeSwitcher() {
   useEffect(() => {
     if (typeof document !== "undefined") {
       const htmlEl = document.documentElement;
-      htmlEl.setAttribute("data-theme", appTheme);
-      htmlEl.setAttribute("data-theme-mode", isLight ? "light" : "dark");
-      if (isLight) {
-        htmlEl.classList.remove("dark");
-        htmlEl.classList.add("light");
-      } else {
-        htmlEl.classList.remove("light");
-        htmlEl.classList.add("dark");
-      }
+      const validId = ALASTOR_THEMES.some((t) => t.id === appTheme)
+        ? appTheme
+        : "olympian-light";
+      htmlEl.setAttribute("data-theme", validId);
+      htmlEl.setAttribute("data-theme-mode", "light");
+      htmlEl.classList.remove("dark");
+      htmlEl.classList.add("light");
     }
-  }, [appTheme, isLight]);
+  }, [appTheme]);
 
   // Close popover on outside click
   useEffect(() => {
@@ -525,52 +469,32 @@ export function AlastorThemeSwitcher() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [open]);
 
-  const toggleQuickLightDark = () => {
-    if (isLight) {
-      setAppTheme("alastor-infernal");
-    } else {
-      setAppTheme("olympian-light");
-    }
+  const cycleDaylightPalette = () => {
+    const idx = ALASTOR_THEMES.findIndex((t) => t.id === appTheme);
+    const nextSpec = ALASTOR_THEMES[(idx + 1) % ALASTOR_THEMES.length];
+    setAppTheme(nextSpec.id);
   };
-
-  const lightThemes = ALASTOR_THEMES.filter((t) => t.mode === "light");
-  const darkThemes = ALASTOR_THEMES.filter((t) => t.mode === "dark");
 
   return (
     <div ref={menuRef} className="relative flex items-center gap-1 shrink-0">
-      {/* 1-Click Quick Light / Dark Mode Toggle */}
+      {/* 1-Click Daylight Palette Cycle Button */}
       <button
         type="button"
-        onClick={toggleQuickLightDark}
-        title={
-          isLight
-            ? "Currently in Light Mode — Click to switch to Alastor Infernal Dark"
-            : "Currently in Dark Mode — Click to switch to Olympian Daylight (Light Mode)"
-        }
+        onClick={cycleDaylightPalette}
+        title="High-Contrast Daylight Mode — Click to cycle between Olympian Daylight, Athena Parchment, and Hyperborean Frost"
         className="h-7 px-2 rounded-md bg-[var(--surface-elevated)] hover:bg-[var(--surface-void)] border border-[var(--border-hairline)] text-[11px] font-medium text-[var(--ink-primary)] flex items-center gap-1 transition-all"
       >
-        {isLight ? (
-          <>
-            <Sun className="w-3.5 h-3.5 text-[var(--sig-gold)]" />
-            <span className="hidden 2xl:inline text-[11px] font-semibold">
-              Light
-            </span>
-          </>
-        ) : (
-          <>
-            <Moon className="w-3.5 h-3.5 text-[var(--sig-crimson)]" />
-            <span className="hidden 2xl:inline text-[11px] font-semibold">
-              Dark
-            </span>
-          </>
-        )}
+        <Sun className="w-3.5 h-3.5 text-[var(--sig-gold)]" />
+        <span className="hidden 2xl:inline text-[11px] font-semibold">
+          Daylight
+        </span>
       </button>
 
-      {/* Full Theme Palette Picker Button */}
+      {/* Full Daylight Theme Palette Picker Button */}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        title="Choose Color Theme (Light Themes, Warm Parchment, Alastor Infernal Demon, Arcane Violet, Cyber Abyss)"
+        title="Choose High-Contrast Daylight Palette (Olympian Daylight, Athena Parchment, Hyperborean Frost)"
         className={`h-7 px-2 rounded-md border text-[11px] font-medium flex items-center gap-1.5 transition-all ${
           open
             ? "bg-[var(--surface-elevated)] border-[var(--sig-gold)] text-[var(--ink-primary)]"
@@ -592,27 +516,26 @@ export function AlastorThemeSwitcher() {
         </span>
       </button>
 
-      {/* Theme & Mythic Backdrop Dropdown Modal */}
+      {/* Daylight Theme & Watermark Dropdown Modal */}
       {open && (
-        <div className="absolute right-0 top-9 w-80 rounded-xl bg-[var(--surface-elevated)] border border-[var(--border-hairline)] shadow-2xl p-3 z-[150] space-y-3 text-left text-[var(--ink-primary)]">
+        <div className="absolute right-0 top-9 w-80 rounded-xl bg-[var(--surface-panel)] border border-[var(--border-hairline)] shadow-xl p-3 z-[150] space-y-3 text-left text-[var(--ink-primary)]">
           <div className="flex items-center justify-between border-b border-[var(--border-hairline)] pb-2">
             <span className="text-xs font-bold uppercase tracking-wider text-[var(--ink-primary)] flex items-center gap-1.5">
               <Palette className="w-3.5 h-3.5 text-[var(--sig-gold)]" />
-              Alastor Themes &amp; Light Mode
+              Daylight Palettes
             </span>
-            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--surface-panel)] border border-[var(--border-hairline)] text-[var(--ink-muted)]">
-              6 Palettes
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--surface-elevated)] border border-[var(--border-hairline)] text-[var(--ink-muted)]">
+              3 Light Themes
             </span>
           </div>
 
-          {/* Section 1: Light Themes */}
           <div className="space-y-1.5">
             <div className="text-[10px] font-mono font-bold uppercase tracking-wider text-[var(--sig-gold)] flex items-center gap-1">
               <Sun className="w-3 h-3" />
-              Light &amp; Daylight Themes
+              High-Contrast Daylight Themes
             </div>
             <div className="space-y-1">
-              {lightThemes.map((t) => {
+              {ALASTOR_THEMES.map((t) => {
                 const active = appTheme === t.id;
                 return (
                   <button
@@ -621,8 +544,8 @@ export function AlastorThemeSwitcher() {
                     onClick={() => setAppTheme(t.id)}
                     className={`w-full p-2 rounded-lg border text-left transition-all flex items-center justify-between gap-2 ${
                       active
-                        ? "bg-[var(--surface-panel)] border-[var(--sig-gold)] shadow-sm"
-                        : "bg-[var(--surface-panel)]/70 border-[var(--border-hairline)] hover:border-[var(--sig-gold)]/50"
+                        ? "bg-[var(--surface-elevated)] border-[var(--sig-gold)] shadow-sm"
+                        : "bg-[var(--surface-panel)] border-[var(--border-hairline)] hover:border-[var(--sig-gold)]/50"
                     }`}
                   >
                     <div className="min-w-0">
@@ -656,63 +579,11 @@ export function AlastorThemeSwitcher() {
             </div>
           </div>
 
-          {/* Section 2: Mythic Demon & Dark Themes */}
-          <div className="space-y-1.5 pt-1 border-t border-[var(--border-hairline)]">
-            <div className="text-[10px] font-mono font-bold uppercase tracking-wider text-[var(--sig-crimson)] flex items-center gap-1">
-              <Flame className="w-3 h-3" />
-              Mythic Demon &amp; Dark Themes
-            </div>
-            <div className="space-y-1">
-              {darkThemes.map((t) => {
-                const active = appTheme === t.id;
-                return (
-                  <button
-                    key={t.id}
-                    type="button"
-                    onClick={() => setAppTheme(t.id)}
-                    className={`w-full p-2 rounded-lg border text-left transition-all flex items-center justify-between gap-2 ${
-                      active
-                        ? "bg-[var(--surface-panel)] border-[var(--sig-crimson)] shadow-sm"
-                        : "bg-[var(--surface-panel)]/70 border-[var(--border-hairline)] hover:border-[var(--sig-crimson)]/50"
-                    }`}
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-bold text-[var(--ink-primary)]">
-                          {t.name}
-                        </span>
-                        <span className="text-[9px] font-mono px-1.5 py-0.1 rounded bg-[var(--surface-void)] text-[var(--sig-crimson)] border border-[var(--border-hairline)]">
-                          {t.badge}
-                        </span>
-                      </div>
-                      <p className="text-[10px] text-[var(--ink-muted)] truncate mt-0.5">
-                        {t.subtitle}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <div className="flex items-center -space-x-1">
-                        {t.swatches.map((hex, i) => (
-                          <span
-                            key={i}
-                            className="w-3.5 h-3.5 rounded-full border border-[var(--border-hairline)] shadow-sm"
-                            style={{ backgroundColor: hex }}
-                          />
-                        ))}
-                      </div>
-                      {active && <Check className="w-3.5 h-3.5 text-[var(--sig-emerald)] ml-1" />}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Section 3: Mythological Demon Background Intensity */}
           <div className="pt-2 border-t border-[var(--border-hairline)] space-y-1.5">
             <div className="flex items-center justify-between text-[10px] font-mono text-[var(--ink-muted)]">
               <span className="flex items-center gap-1 font-bold uppercase text-[var(--ink-primary)]">
                 <Eye className="w-3 h-3 text-[var(--sig-gold)]" />
-                Mythic Demon Background
+                Watermark Intensity
               </span>
               <span>{backdropIntensity}</span>
             </div>
@@ -725,7 +596,7 @@ export function AlastorThemeSwitcher() {
                     onClick={() => setBackdropIntensity(lvl)}
                     className={`py-1 rounded text-[10px] font-mono font-bold transition-colors ${
                       backdropIntensity === lvl
-                        ? "bg-[var(--surface-elevated)] text-[var(--sig-gold)] border border-[var(--sig-gold)]"
+                        ? "bg-[var(--surface-panel)] text-[var(--sig-gold)] border border-[var(--sig-gold)]"
                         : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)]"
                     }`}
                   >

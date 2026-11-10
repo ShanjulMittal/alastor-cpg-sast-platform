@@ -40,9 +40,9 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`dark ${fontDisplay.variable} ${fontSans.variable} ${fontMono.variable}`}
-      data-theme="alastor-infernal"
-      data-theme-mode="dark"
+      className={`light ${fontDisplay.variable} ${fontSans.variable} ${fontMono.variable}`}
+      data-theme="olympian-light"
+      data-theme-mode="light"
       suppressHydrationWarning
     >
       <body className="bg-[var(--surface-void)] text-[var(--ink-primary)] font-sans min-h-screen overflow-hidden antialiased">

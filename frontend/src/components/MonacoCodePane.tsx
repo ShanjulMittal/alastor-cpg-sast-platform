@@ -3,8 +3,8 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
 import Editor, { DiffEditor, Monaco, OnMount, DiffOnMount } from "@monaco-editor/react";
 import { useAuditStore } from "@/store/useAuditStore";
+import { BACKEND_URL } from "@/lib/api";
 import { FilePurposeInfo, Finding } from "@/types/cpg";
-import { isLightAppTheme } from "./AlastorBranding";
 import {
   FileCode,
   Loader2,
@@ -30,8 +30,6 @@ import {
   GitCompare,
   ShieldCheck,
 } from "lucide-react";
-
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
 interface StoryChapter {
   stepNumber: number;
@@ -209,7 +207,7 @@ function buildFindingStory(finding: Finding): FindingStory {
         stepNumber: idx + 1,
         role: "TRIGGER",
         badgeText: `PACKAGE ${idx + 1} OF ${total} • AFFECTED THIRD-PARTY DEPENDENCY`,
-        badgeColor: "bg-amber-950 text-amber-300 border-amber-700",
+        badgeColor: "bg-amber-50 text-amber-900 border-amber-300",
         headline: `Third-Party Package \`${node.name || codeSnippet}\` in ${fp}:L${ln}`,
         explanation: `Manifest \`${fp}\` at Line ${ln} declares \`${codeSnippet}\` using a floating/unpinned version specifier. Pin this package to an exact verified version so builds remain deterministic and tamper-proof.`,
         filepath: fp,
@@ -224,7 +222,7 @@ function buildFindingStory(finding: Finding): FindingStory {
         stepNumber: idx + 1,
         role: "TRIGGER",
         badgeText: "INFRASTRUCTURE / RUNTIME CONFIGURATION DIRECTIVE",
-        badgeColor: "bg-amber-950 text-amber-300 border-amber-700",
+        badgeColor: "bg-amber-50 text-amber-900 border-amber-300",
         headline: `Configuration Directive \`${node.name || label}\` at ${fp}:L${ln}`,
         explanation: `File \`${fp}\` at Line ${ln} (\`${codeSnippet.slice(0, 80)}\`) requires security hardening: ${howToFix}`,
         filepath: fp,
@@ -239,7 +237,7 @@ function buildFindingStory(finding: Finding): FindingStory {
         stepNumber: 1,
         role: "TRIGGER",
         badgeText: "VULNERABLE TRIGGER POINT",
-        badgeColor: "bg-red-950 text-red-300 border-red-700",
+        badgeColor: "bg-rose-50 text-rose-900 border-rose-300",
         headline: `Vulnerable ${label} (\`${node.name || codeSnippet.slice(0, 40)}\`) at ${fp.split("/").pop()}:L${ln}`,
         explanation: `The security engine pinpointed this exact ${label.toLowerCase()} (\`${codeSnippet.slice(0, 80)}\`) in \`${fp}\` at line ${ln} as the root trigger for ${categoryLabel}.`,
         filepath: fp,
@@ -254,7 +252,7 @@ function buildFindingStory(finding: Finding): FindingStory {
         stepNumber: 1,
         role: "SOURCE",
         badgeText: "STEP 1 • ENTRY POINT (SOURCE)",
-        badgeColor: "bg-cyan-950 text-cyan-300 border-cyan-700",
+        badgeColor: "bg-sky-50 text-sky-900 border-sky-300",
         headline: `Untrusted Input Enters via \`${node.name || label}\``,
         explanation: `Execution or untrusted data originates here at \`${fp}:L${ln}\` (\`${codeSnippet.slice(0, 80)}\`). At this point, the value is not yet validated or sanitized.`,
         filepath: fp,
@@ -269,7 +267,7 @@ function buildFindingStory(finding: Finding): FindingStory {
         stepNumber: idx + 1,
         role: "SINK",
         badgeText: `STEP ${idx + 1} • DANGEROUS SINK (IMPACT)`,
-        badgeColor: "bg-red-950 text-red-300 border-red-700",
+        badgeColor: "bg-rose-50 text-rose-900 border-rose-300",
         headline: `Reaches Vulnerable Sink \`${node.name || label}\``,
         explanation: `The unvalidated data or control path arrives at this sensitive operation at \`${fp}:L${ln}\` (\`${codeSnippet.slice(0, 80)}\`), triggering ${categoryLabel}.`,
         filepath: fp,
@@ -283,7 +281,7 @@ function buildFindingStory(finding: Finding): FindingStory {
       stepNumber: idx + 1,
       role: "PROPAGATION",
       badgeText: `STEP ${idx + 1} • CHOKEPOINT / PROPAGATION`,
-      badgeColor: "bg-amber-950 text-amber-300 border-amber-700",
+      badgeColor: "bg-amber-50 text-amber-900 border-amber-300",
       headline: `Flows Through \`${node.name || label}\``,
       explanation: `The tainted value or execution path continues through \`${fp}:L${ln}\` (\`${codeSnippet.slice(0, 80)}\`) without being neutralized by a sanitizer or guard.`,
       filepath: fp,
@@ -370,10 +368,16 @@ export function MonacoCodePane() {
   const updateFindingTriage = useAuditStore((s) => s.updateFindingTriage);
   const createTicketForFinding = useAuditStore((s) => s.createTicketForFinding);
   const setIntegrationModalOpen = useAuditStore((s) => s.setIntegrationModalOpen);
-  const appTheme = useAuditStore((s) => s.appTheme);
   const audienceMode = useAuditStore((s) => s.audienceMode);
   const setWorkspaceViewMode = useAuditStore((s) => s.setWorkspaceViewMode);
   const setSastPlusActiveTab = useAuditStore((s) => s.setSastPlusActiveTab);
+
+  // Frontier AI Copilot Drawer & Micro-Slice store bindings
+  const setAiDrawerOpen = useAuditStore((s) => s.setAiDrawerOpen);
+  const auditCodeSelectionAi = useAuditStore((s) => s.auditCodeSelectionAi);
+  const synthesizeFindingPatchAi = useAuditStore((s) => s.synthesizeFindingPatchAi);
+  const aiVerdictsByFinding = useAuditStore((s) => s.aiVerdictsByFinding);
+  const aiIsBusy = useAuditStore((s) => s.aiIsBusy);
 
   // "Sever the Thread" DiffEditor & Keyboard Path Stepping store bindings
   const isDiffEditorOpen = useAuditStore((s) => s.isDiffEditorOpen);
@@ -392,6 +396,10 @@ export function MonacoCodePane() {
   const [loading, setLoading] = useState<boolean>(false);
   const [filePurposeInfo, setFilePurposeInfo] = useState<FilePurposeInfo | null>(null);
   const [draftPatchedContent, setDraftPatchedContent] = useState<string>("");
+  const [selectionRange, setSelectionRange] = useState<{
+    startLine: number;
+    endLine: number;
+  } | null>(null);
 
   // Storyboard UI state
   const [storyTab, setStoryTab] = useState<"STORY" | "FIX" | "ARTIFACTS" | "EVIDENCE">("STORY");
@@ -408,6 +416,10 @@ export function MonacoCodePane() {
   const diffEditorRef = useRef<any>(null);
   const monacoRef = useRef<Monaco | null>(null);
   const decorationsRef = useRef<any>(null);
+
+  useEffect(() => {
+    setSelectionRange(null);
+  }, [activeFilepath]);
 
   const story = useMemo(() => {
     if (!selectedFinding) return null;
@@ -531,7 +543,7 @@ export function MonacoCodePane() {
         range: new monaco.Range(activeStartLine, 1, endLine, 1),
         options: {
           isWholeLine: true,
-          className: "bg-red-500/20 border-l-4 border-red-500",
+          className: "bg-rose-500/15 border-l-4 border-rose-600",
           glyphMarginClassName: "cpg-vuln-glyph",
         },
       },
@@ -542,7 +554,7 @@ export function MonacoCodePane() {
         range: new monaco.Range(activeStartLine, startCol, activeStartLine, endCol),
         options: {
           isWholeLine: false,
-          inlineClassName: "bg-red-500/40 text-amber-200 underline decoration-red-400 font-bold",
+          inlineClassName: "bg-amber-200/80 text-rose-950 underline decoration-rose-600 font-bold",
         },
       });
     }
@@ -559,10 +571,53 @@ export function MonacoCodePane() {
     monacoRef.current = monaco;
 
     editor.onMouseDown((e) => {
-      if (e.target && e.target.position && activeFilepath) {
-        selectCodeLine(activeFilepath, e.target.position.lineNumber);
+      const currentFp = useAuditStore.getState().activeFilepath;
+      if (e.target && e.target.position && currentFp) {
+        selectCodeLine(currentFp, e.target.position.lineNumber);
       }
     });
+
+    editor.onDidChangeCursorSelection((e) => {
+      const sel = e.selection;
+      if (!sel || sel.isEmpty()) {
+        setSelectionRange(null);
+        return;
+      }
+      const startLine = Math.min(sel.startLineNumber, sel.endLineNumber);
+      const endLine = Math.max(sel.startLineNumber, sel.endLineNumber);
+      setSelectionRange({ startLine, endLine });
+    });
+  };
+
+  const handleAiAuditSelection = () => {
+    const fp =
+      activeFilepath ||
+      selectedFinding?.best_fix_location?.filepath ||
+      selectedFinding?.path_nodes?.[0]?.filepath ||
+      "";
+    setAiDrawerOpen(true, "CODE_AUDIT");
+    if (!fp) return;
+
+    let startLn = 1;
+    let endLn = 25;
+    if (selectionRange) {
+      startLn = Math.max(1, selectionRange.startLine);
+      endLn = Math.max(startLn, Math.min(selectionRange.endLine, startLn + 140));
+    } else {
+      const anchorStart =
+        activeStartLine || selectedFinding?.best_fix_location?.line || 1;
+      const anchorEnd = activeEndLine || anchorStart;
+      startLn = Math.max(1, anchorStart - 6);
+      endLn = Math.max(startLn, anchorEnd + 6);
+    }
+    void auditCodeSelectionAi(fp, startLn, endLn);
+  };
+
+  const handleAiSynthesizePatch = () => {
+    setAiDrawerOpen(true, "PATCH");
+    if (selectedFinding) {
+      void synthesizeFindingPatchAi(selectedFinding.id);
+    }
   };
 
   const handleDiffEditorDidMount: DiffOnMount = (editor) => {
@@ -733,12 +788,14 @@ export function MonacoCodePane() {
   const activeArtifact = selectedFinding ? getActiveArtifactContent() : null;
   const totalPathHops = selectedFinding?.path_nodes?.length || 0;
 
+  const activeAiVerdict = selectedFinding ? aiVerdictsByFinding[selectedFinding.id] : undefined;
+
   return (
     <div className="flex flex-col h-full bg-[var(--surface-void)] border-r border-[var(--border-hairline)] overflow-hidden">
       {/* Top File Header Bar */}
-      <div className="h-10 bg-[var(--surface-panel)] border-b border-[var(--border-hairline)] px-3 flex items-center justify-between text-xs text-[var(--ink-primary)] gap-2 shrink-0">
+      <div className="min-h-[40px] py-1 bg-[var(--surface-panel)] border-b border-[var(--border-hairline)] px-3 flex items-center justify-between text-xs text-[var(--ink-primary)] gap-2 shrink-0 flex-wrap">
         <div className="flex items-center gap-2 truncate min-w-0">
-          <span className="px-1.5 py-0.5 rounded bg-[var(--surface-elevated)] border border-[var(--border-hairline)] text-[var(--ink-muted)] font-mono text-[10px] uppercase shrink-0">
+          <span className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-300 text-slate-600 font-mono text-[10px] font-semibold uppercase shrink-0">
             Source Inspector
           </span>
           <FileCode className="w-3.5 h-3.5 text-[var(--sig-cyan)] shrink-0" />
@@ -746,14 +803,19 @@ export function MonacoCodePane() {
             {activeFilepath || "No file selected"}
           </span>
           {activeStartLine && activeStartLine >= 1 && (
-            <span className="text-[11px] font-mono px-1.5 py-0.2 rounded bg-red-950/80 text-red-300 border border-red-800 shrink-0">
+            <span className="text-[11px] font-mono px-1.5 py-0.2 rounded bg-rose-50 text-rose-800 border border-rose-300 font-semibold shrink-0">
               L{activeStartLine}
               {activeEndLine && activeEndLine !== activeStartLine ? `–${activeEndLine}` : ""}
             </span>
           )}
+          {selectionRange && (
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-800 border border-indigo-300 font-semibold shrink-0">
+              Sel L{selectionRange.startLine}–L{selectionRange.endLine}
+            </span>
+          )}
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
           {loading && (
             <div className="flex items-center gap-1.5 text-[var(--ink-muted)] text-[11px] font-mono">
               <Loader2 className="w-3 h-3 animate-spin text-[var(--sig-cyan)]" />
@@ -764,14 +826,14 @@ export function MonacoCodePane() {
           {/* [ / ] Step Hops Indicator & Controls */}
           {selectedFinding && totalPathHops > 0 && (
             <div
-              className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[var(--surface-elevated)] border border-[var(--border-hairline)] font-mono text-[10px]"
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-50 border border-slate-300 font-mono text-[10px]"
               title="Use [ and ] keys to step backward/forward along the CPG taint path"
             >
               <button
                 type="button"
                 onClick={() => stepFindingPath(-1)}
                 disabled={activePathStepIndex <= 0}
-                className="px-1 rounded hover:bg-zinc-800 disabled:opacity-40 text-[var(--sig-cyan)] font-bold"
+                className="px-1 rounded hover:bg-slate-200 disabled:opacity-40 text-[var(--sig-cyan)] font-bold"
                 title="Previous taint hop ([)"
               >
                 [
@@ -787,12 +849,40 @@ export function MonacoCodePane() {
                 type="button"
                 onClick={() => stepFindingPath(1)}
                 disabled={activePathStepIndex >= totalPathHops - 1}
-                className="px-1 rounded hover:bg-zinc-800 disabled:opacity-40 text-[var(--sig-cyan)] font-bold"
+                className="px-1 rounded hover:bg-slate-200 disabled:opacity-40 text-[var(--sig-cyan)] font-bold"
                 title="Next taint hop (])"
               >
                 ]
               </button>
             </div>
+          )}
+
+          {/* Frontier AI Micro-Slice Audit Selection Button */}
+          <button
+            type="button"
+            disabled={aiIsBusy || (!activeFilepath && !selectedFinding)}
+            onClick={handleAiAuditSelection}
+            title={
+              selectionRange
+                ? `Audit selected lines L${selectionRange.startLine}–L${selectionRange.endLine} via Token-Saving Micro-Slice`
+                : "Audit active code slice with Frontier AI Copilot"
+            }
+            className="px-2.5 py-1 rounded-md font-mono text-[10px] font-bold flex items-center gap-1 border bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border-indigo-300 disabled:opacity-50 shadow-sm transition-all"
+          >
+            <span>✨ AI Audit Selection</span>
+          </button>
+
+          {/* Frontier AI Synthesize Patch Button */}
+          {selectedFinding && (
+            <button
+              type="button"
+              disabled={aiIsBusy}
+              onClick={handleAiSynthesizePatch}
+              title="Synthesize a surgical CPG-aware remediation patch with Frontier AI"
+              className="px-2.5 py-1 rounded-md font-mono text-[10px] font-bold flex items-center gap-1 border bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300 disabled:opacity-50 shadow-sm transition-all"
+            >
+              <span>✨ AI Synthesize Patch</span>
+            </button>
           )}
 
           {/* Signature Gold "Preview BFL Diff (d)" Toggle Button */}
@@ -803,8 +893,8 @@ export function MonacoCodePane() {
               title="Toggle live Monaco Chokepoint DiffEditor to preview and apply surgical remediation (Shortcut: d)"
               className={`px-2.5 py-1 rounded-md font-mono text-[10px] font-bold flex items-center gap-1.5 border transition-all ${
                 isDiffEditorOpen
-                  ? "bg-amber-500 text-zinc-950 border-amber-400 shadow-sm"
-                  : "bg-[var(--surface-elevated)] hover:bg-[var(--surface-void)] text-[var(--sig-gold)] border-[var(--sig-gold)]/70 shadow-sm"
+                  ? "bg-amber-600 text-white border-amber-700 shadow-sm"
+                  : "bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300 shadow-sm"
               }`}
             >
               <GitCompare className="w-3.5 h-3.5" />
@@ -819,21 +909,21 @@ export function MonacoCodePane() {
         <div
           className={`${
             lastAppliedPatch.verifiedSevered
-              ? "bg-emerald-950/90 border-emerald-500/80"
-              : "bg-amber-950/90 border-amber-500/80"
+              ? "bg-emerald-50 border-emerald-300"
+              : "bg-amber-50 border-amber-300"
           } border-b px-3 py-2 flex items-center justify-between gap-3 text-xs shrink-0 transition-all duration-300`}
         >
           <div className="flex items-center gap-2 min-w-0 flex-wrap">
             <span
               className={`px-2 py-0.5 rounded font-mono text-[10px] font-extrabold tracking-wider flex items-center gap-1 shrink-0 ${
                 lastAppliedPatch.verifiedSevered
-                  ? "bg-emerald-500/20 border border-emerald-400 text-emerald-200"
-                  : "bg-amber-500/20 border border-amber-400 text-amber-200"
+                  ? "bg-emerald-100 border border-emerald-400 text-emerald-900"
+                  : "bg-amber-100 border border-amber-400 text-amber-900"
               }`}
             >
               <ShieldCheck
                 className={`w-3.5 h-3.5 ${
-                  lastAppliedPatch.verifiedSevered ? "text-emerald-400" : "text-amber-400"
+                  lastAppliedPatch.verifiedSevered ? "text-emerald-700" : "text-amber-700"
                 }`}
               />
               {lastAppliedPatch.verifiedSevered
@@ -842,16 +932,16 @@ export function MonacoCodePane() {
             </span>
             <span
               className={`font-mono text-[11px] truncate ${
-                lastAppliedPatch.verifiedSevered ? "text-emerald-100" : "text-amber-100"
+                lastAppliedPatch.verifiedSevered ? "text-emerald-900" : "text-amber-900"
               }`}
             >
-              Patched <strong className="text-white">{lastAppliedPatch.filepath}</strong>
+              Patched <strong className="text-slate-900">{lastAppliedPatch.filepath}</strong>
             </span>
             <span
-              className={`font-mono text-[10px] px-1.5 py-0.2 rounded bg-zinc-950/80 border ${
+              className={`font-mono text-[10px] px-1.5 py-0.2 rounded bg-white border ${
                 lastAppliedPatch.verifiedSevered
-                  ? "border-emerald-700/70 text-emerald-300"
-                  : "border-amber-700/70 text-amber-300"
+                  ? "border-emerald-300 text-emerald-800"
+                  : "border-amber-300 text-amber-800"
               }`}
             >
               patch:{lastAppliedPatch.patchId}
@@ -863,9 +953,9 @@ export function MonacoCodePane() {
             disabled={isApplyingPatch}
             onClick={() => undoLastRemediationPatch()}
             title="Restore exact pre-patch file bytes from .alastor_patches SHA256 undo journal and re-verify CPG"
-            className="px-2.5 py-1 rounded bg-zinc-950 hover:bg-zinc-900 disabled:opacity-50 text-emerald-200 border border-emerald-500/80 font-mono text-[10px] font-bold flex items-center gap-1 shrink-0 transition-colors"
+            className="px-2.5 py-1 rounded bg-white hover:bg-emerald-100 disabled:opacity-50 text-emerald-900 border border-emerald-400 font-mono text-[10px] font-bold flex items-center gap-1 shrink-0 transition-colors"
           >
-            <RotateCcw className="w-3 h-3 text-emerald-400" />
+            <RotateCcw className="w-3 h-3 text-emerald-700" />
             <span>{isApplyingPatch ? "Restoring..." : "Undo Patch"}</span>
           </button>
         </div>
@@ -873,10 +963,10 @@ export function MonacoCodePane() {
 
       {/* INLINE CONFLICT / ERROR BANNER WITH 1-CLICK REFRESH DIFF */}
       {remediationError && (
-        <div className="bg-amber-950/90 border-b border-amber-500/80 px-3 py-2 flex items-center justify-between gap-3 text-xs shrink-0 transition-all duration-200">
+        <div className="bg-amber-50 border-b border-amber-300 px-3 py-2 flex items-center justify-between gap-3 text-xs shrink-0 transition-all duration-200">
           <div className="flex items-center gap-2 min-w-0">
-            <AlertOctagon className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-            <span className="font-mono text-[11px] text-amber-100 truncate">
+            <AlertOctagon className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+            <span className="font-mono text-[11px] text-amber-900 truncate">
               {remediationError}
             </span>
           </div>
@@ -884,9 +974,9 @@ export function MonacoCodePane() {
             <button
               type="button"
               onClick={() => fetchRemediationPreview(selectedFinding)}
-              className="px-2.5 py-1 rounded bg-zinc-950 hover:bg-zinc-900 text-amber-200 border border-amber-500/80 font-mono text-[10px] font-bold flex items-center gap-1 shrink-0 transition-colors"
+              className="px-2.5 py-1 rounded bg-white hover:bg-amber-100 text-amber-900 border border-amber-400 font-mono text-[10px] font-bold flex items-center gap-1 shrink-0 transition-colors"
             >
-              <RotateCcw className="w-3 h-3 text-amber-400" />
+              <RotateCcw className="w-3 h-3 text-amber-700" />
               <span>Refresh Diff</span>
             </button>
           )}
@@ -898,7 +988,7 @@ export function MonacoCodePane() {
         <div className="bg-[var(--surface-panel)] border-b border-[var(--border-hairline)] px-3 py-1.5 text-xs shrink-0">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
-              <span className="px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 text-[10px] font-mono font-bold uppercase shrink-0">
+              <span className="px-1.5 py-0.5 rounded bg-sky-50 text-sky-900 border border-sky-300 text-[10px] font-mono font-bold uppercase shrink-0">
                 {filePurposeInfo.category.replace("_", " ")}
               </span>
               <p className="text-[var(--ink-primary)] text-[11px] truncate" title={filePurposeInfo.purpose}>
@@ -918,7 +1008,7 @@ export function MonacoCodePane() {
                 <button
                   key={`${elem.name}-${idx}`}
                   onClick={() => jumpToLine(elem.line_number)}
-                  className="px-1.5 py-0.5 rounded bg-[var(--surface-void)] border border-[var(--border-hairline)] text-[var(--ink-primary)] hover:text-cyan-300 hover:border-cyan-700 whitespace-nowrap transition-colors flex items-center gap-1"
+                  className="px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200 text-slate-800 hover:text-blue-700 hover:border-blue-400 whitespace-nowrap transition-colors flex items-center gap-1"
                   title={`${elem.details} (${elem.signature || elem.name}) — Click to jump to line ${elem.line_number}`}
                 >
                   <span className="text-[9px] text-[var(--sig-cyan)] font-bold">
@@ -938,20 +1028,20 @@ export function MonacoCodePane() {
         <div className="bg-[var(--surface-elevated)] border-b border-[var(--border-hairline)] px-3 py-2 text-xs shrink-0 space-y-1.5 max-h-[235px] overflow-y-auto">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-700 text-[10px] font-mono font-bold uppercase">
+              <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-900 border border-emerald-300 text-[10px] font-mono font-bold uppercase">
                 Observation Dossier • {selectedFinding.scan_engine || "SAST"}
               </span>
-              <span className="px-2 py-0.5 rounded bg-[var(--surface-panel)] text-cyan-300 border border-[var(--border-hairline)] text-[10px] font-mono font-semibold">
+              <span className="px-2 py-0.5 rounded bg-white text-blue-800 border border-slate-300 text-[10px] font-mono font-semibold">
                 {selectedFinding.rule_id} • {selectedFinding.cwe_id || "CWE"}
               </span>
               {/* Reachability Badge */}
               <span
                 className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
                   selectedFinding.reachability_status === "UNREACHABLE_DORMANT"
-                    ? "bg-zinc-900 text-zinc-300 border-zinc-700"
+                    ? "bg-slate-100 text-slate-700 border-slate-300"
                     : selectedFinding.reachability_status === "CONDITIONALLY_REACHABLE"
-                    ? "bg-amber-950/90 text-amber-300 border-amber-700/80"
-                    : "bg-red-950/90 text-red-300 border-red-700/80"
+                    ? "bg-amber-50 text-amber-900 border-amber-300"
+                    : "bg-rose-50 text-rose-900 border-rose-300"
                 }`}
               >
                 {selectedFinding.reachability_status === "UNREACHABLE_DORMANT"
@@ -960,27 +1050,44 @@ export function MonacoCodePane() {
                   ? "BUILD / DEV REACHABLE"
                   : "RUNTIME REACHABLE"}
               </span>
+              {/* AI Finding Verdict Badge */}
+              {activeAiVerdict && (
+                <button
+                  type="button"
+                  onClick={() => setAiDrawerOpen(true, "VALIDATE")}
+                  className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
+                    activeAiVerdict.verdict === "TRUE_POSITIVE"
+                      ? "bg-rose-50 text-rose-900 border-rose-300"
+                      : activeAiVerdict.verdict === "FALSE_POSITIVE"
+                      ? "bg-emerald-50 text-emerald-900 border-emerald-300"
+                      : "bg-indigo-50 text-indigo-900 border-indigo-300"
+                  }`}
+                  title={activeAiVerdict.exploitability_summary}
+                >
+                  ✨ AI: {activeAiVerdict.verdict.replace("_", " ")} ({Math.round(activeAiVerdict.confidence * 100)}%)
+                </button>
+              )}
               {/* EPSS 30-Day Exploit Probability Badge */}
               {typeof selectedFinding.epss_score === "number" && (
-                <span className="px-2 py-0.5 rounded bg-amber-950/80 text-amber-200 border border-amber-700/80 text-[10px] font-mono font-semibold">
+                <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-900 border border-amber-300 text-[10px] font-mono font-semibold">
                   EPSS 30d: {(selectedFinding.epss_score * 100).toFixed(1)}% ({(selectedFinding.epss_percentile || 0).toFixed(0)}th pct)
                 </span>
               )}
               {selectedFinding.cisa_kev_listed && (
-                <span className="px-2 py-0.5 rounded bg-red-950 text-red-200 border border-red-600 text-[10px] font-mono font-bold">
+                <span className="px-2 py-0.5 rounded bg-rose-100 text-rose-900 border border-rose-400 text-[10px] font-mono font-bold">
                   CISA KEV
                 </span>
               )}
               {selectedFinding.effort_estimate && (
-                <span className="px-2 py-0.5 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-700/80 text-[10px] font-mono">
+                <span className="px-2 py-0.5 rounded bg-sky-50 text-sky-900 border border-sky-300 text-[10px] font-mono">
                   Effort: {selectedFinding.effort_estimate}
                 </span>
               )}
             </div>
 
             <div className="flex items-center gap-1.5 text-[10px] font-mono">
-              <span className="px-2 py-0.5 rounded bg-[var(--surface-panel)] border border-[var(--border-hairline)] text-[var(--ink-primary)]">
-                R: <strong className="text-emerald-300">{selectedFinding.raci_responsible || "Lead Developer"}</strong> • A: <strong className="text-red-300">{selectedFinding.raci_accountable || "Security Architect"}</strong>
+              <span className="px-2 py-0.5 rounded bg-white border border-slate-300 text-slate-800">
+                R: <strong className="text-emerald-800">{selectedFinding.raci_responsible || "Lead Developer"}</strong> • A: <strong className="text-rose-800">{selectedFinding.raci_accountable || "Security Architect"}</strong>
               </span>
               <button
                 type="button"
@@ -988,7 +1095,7 @@ export function MonacoCodePane() {
                   setSastPlusActiveTab("TRANSLATOR");
                   setWorkspaceViewMode("SAST_PLUS_SUITE");
                 }}
-                className="px-2 py-0.5 rounded bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-700 font-bold transition-colors"
+                className="px-2 py-0.5 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold transition-colors"
               >
                 Business Guide →
               </button>
@@ -997,7 +1104,7 @@ export function MonacoCodePane() {
                 onClick={() => {
                   setWorkspaceViewMode("THREAT_MODELING");
                 }}
-                className="px-2 py-0.5 rounded bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-700 font-bold transition-colors"
+                className="px-2 py-0.5 rounded bg-sky-50 hover:bg-sky-100 text-sky-900 border border-sky-300 font-bold transition-colors"
               >
                 STRIDE &amp; PBOM →
               </button>
@@ -1005,13 +1112,13 @@ export function MonacoCodePane() {
           </div>
 
           <div className="text-[11px] font-semibold text-[var(--ink-primary)]">
-            <span className="text-amber-300 font-mono uppercase text-[10px] mr-1.5">Observation:</span>
+            <span className="text-amber-800 font-mono uppercase text-[10px] mr-1.5">Observation:</span>
             {selectedFinding.title}
           </div>
 
           {selectedFinding.path_nodes && selectedFinding.path_nodes.length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
-              <span className="text-[10px] font-mono uppercase text-cyan-400 font-bold shrink-0">
+              <span className="text-[10px] font-mono uppercase text-blue-800 font-bold shrink-0">
                 {selectedFinding.scan_engine === "SCA"
                   ? `Affected Third-Party Software (${selectedFinding.path_nodes.length}):`
                   : `Affected Code / Component (${selectedFinding.path_nodes.length}):`}
@@ -1024,11 +1131,11 @@ export function MonacoCodePane() {
                     selectGraphNode(n);
                     jumpToLine(n.start_line || 1);
                   }}
-                  className="px-2 py-0.5 rounded bg-[var(--surface-void)] hover:bg-[var(--surface-panel)] border border-amber-700/70 text-amber-200 text-[10px] font-mono transition-colors"
+                  className="px-2 py-0.5 rounded bg-white hover:bg-amber-50 border border-amber-300 text-slate-900 text-[10px] font-mono transition-colors"
                   title={`Click to highlight line ${n.start_line} in ${n.filepath}`}
                 >
                   {(n.name || n.code || "statement").replace(/\0/g, "").slice(0, 55)}{" "}
-                  <span className="text-cyan-400">({n.filepath.split("/").pop()}:L{n.start_line})</span>
+                  <span className="text-blue-700 font-semibold">({n.filepath.split("/").pop()}:L{n.start_line})</span>
                 </button>
               ))}
             </div>
@@ -1036,19 +1143,19 @@ export function MonacoCodePane() {
 
           {selectedFinding.reachability_reason && (
             <p className="text-[11px] text-[var(--ink-primary)] leading-relaxed">
-              <strong className="text-cyan-300">Reachability &amp; Exploitability Analysis: </strong>
+              <strong className="text-blue-800">Reachability &amp; Exploitability Analysis: </strong>
               {selectedFinding.reachability_reason}
             </p>
           )}
 
           <p className="text-[11px] text-[var(--ink-primary)] leading-relaxed">
-            <strong className="text-emerald-300">What Is Wrong (Written Explanation): </strong>
+            <strong className="text-emerald-800">What Is Wrong (Written Explanation): </strong>
             {selectedFinding.description || selectedFinding.plain_english_summary}
           </p>
 
           {selectedFinding.remediation && (
             <p className="text-[11px] text-[var(--ink-primary)] leading-relaxed">
-              <strong className="text-cyan-300">How to Fix It: </strong>
+              <strong className="text-blue-800">How to Fix It: </strong>
               {selectedFinding.remediation}
             </p>
           )}
@@ -1056,24 +1163,24 @@ export function MonacoCodePane() {
           {/* Side-by-Side Before vs. After Remediation Code Diff Summary */}
           {(selectedFinding.best_fix_location?.before_code_block || selectedFinding.best_fix_location?.after_code_block) && (
             <div className="pt-1 grid grid-cols-1 lg:grid-cols-2 gap-2">
-              <div className="p-2 rounded-lg bg-red-950/35 border border-red-800/60">
-                <div className="text-[9px] font-mono uppercase tracking-wider text-red-300 font-bold mb-1">
+              <div className="p-2 rounded-lg bg-rose-50/90 border border-rose-200">
+                <div className="text-[9px] font-mono uppercase tracking-wider text-rose-800 font-bold mb-1">
                   − Before (Flagged Declaration / Statement)
                 </div>
-                <pre className="text-[10px] font-mono text-red-200 whitespace-pre-wrap break-all leading-snug max-h-24 overflow-y-auto">
+                <pre className="text-[10px] font-mono text-rose-950 whitespace-pre-wrap break-all leading-snug max-h-24 overflow-y-auto">
                   {selectedFinding.best_fix_location?.before_code_block}
                 </pre>
               </div>
-              <div className="p-2 rounded-lg bg-emerald-950/35 border border-emerald-800/60">
+              <div className="p-2 rounded-lg bg-emerald-50/90 border border-emerald-200">
                 <div className="flex items-center justify-between gap-2 mb-1">
-                  <span className="text-[9px] font-mono uppercase tracking-wider text-emerald-300 font-bold">
+                  <span className="text-[9px] font-mono uppercase tracking-wider text-emerald-800 font-bold">
                     + After (Verified Chokepoint Replacement)
                   </span>
                   <div className="flex items-center gap-1">
                     <button
                       type="button"
                       onClick={() => setDiffEditorOpen(true)}
-                      className="px-1.5 py-0.5 rounded bg-amber-950 hover:bg-amber-900 text-amber-300 border border-amber-600 text-[9px] font-mono font-bold"
+                      className="px-1.5 py-0.5 rounded bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-[9px] font-mono font-bold"
                     >
                       Open Live Diff (d)
                     </button>
@@ -1088,13 +1195,13 @@ export function MonacoCodePane() {
                         setCopiedFix(true);
                         setTimeout(() => setCopiedFix(false), 1800);
                       }}
-                      className="px-1.5 py-0.5 rounded bg-emerald-900/80 hover:bg-emerald-800 text-emerald-200 border border-emerald-600 text-[9px] font-mono font-bold"
+                      className="px-1.5 py-0.5 rounded bg-white hover:bg-emerald-100 text-emerald-900 border border-emerald-300 text-[9px] font-mono font-bold"
                     >
                       {copiedFix ? "✓ Copied!" : "Copy Fix"}
                     </button>
                   </div>
                 </div>
-                <pre className="text-[10px] font-mono text-emerald-200 whitespace-pre-wrap break-all leading-snug max-h-24 overflow-y-auto">
+                <pre className="text-[10px] font-mono text-emerald-950 whitespace-pre-wrap break-all leading-snug max-h-24 overflow-y-auto">
                   {selectedFinding.best_fix_location?.after_code_block}
                 </pre>
               </div>
@@ -1102,8 +1209,8 @@ export function MonacoCodePane() {
           )}
 
           {audienceMode === "NON_CODER_MANAGEMENT" && selectedFinding.non_coder_analogy && (
-            <p className="text-[11px] text-amber-200/90 leading-relaxed">
-              <strong className="text-amber-300">Real-World Analogy: </strong>
+            <p className="text-[11px] text-amber-950 leading-relaxed">
+              <strong className="text-amber-800">Real-World Analogy: </strong>
               {selectedFinding.non_coder_analogy}
             </p>
           )}
@@ -1116,8 +1223,8 @@ export function MonacoCodePane() {
           {/* "Sever the Thread" Chokepoint Action Bar */}
           <div className="bg-[var(--surface-elevated)] border-b border-[var(--border-hairline)] px-3 py-2 flex items-center justify-between gap-2 flex-wrap shrink-0">
             <div className="flex items-center gap-2 min-w-0 flex-wrap">
-              <span className="px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-600 font-mono text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 shrink-0">
-                <Crosshair className="w-3 h-3 text-amber-400" />
+              <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-900 border border-amber-300 font-mono text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 shrink-0">
+                <Crosshair className="w-3 h-3 text-amber-700" />
                 {remediationPreview?.can_auto_patch
                   ? "AST-Deterministic Chokepoint Patch"
                   : "Guided Remediation Template (Editable)"}
@@ -1130,6 +1237,16 @@ export function MonacoCodePane() {
             </div>
 
             <div className="flex items-center gap-1.5 shrink-0 font-mono text-[10px]">
+              <button
+                type="button"
+                disabled={aiIsBusy}
+                onClick={handleAiSynthesizePatch}
+                title="Synthesize or refine patch via Frontier AI Copilot"
+                className="px-2.5 py-1 rounded-md bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-300 font-bold flex items-center gap-1 transition-colors"
+              >
+                <span>✨ AI Patch</span>
+              </button>
+
               <button
                 type="button"
                 disabled={isApplyingPatch || !remediationPreview}
@@ -1160,7 +1277,7 @@ export function MonacoCodePane() {
                 disabled={!remediationPreview}
                 onClick={handleDownloadLivePatch}
                 title="Download unified diff (.patch) file from the live DiffEditor buffer"
-                className="px-2.5 py-1 rounded-md bg-[var(--surface-panel)] hover:bg-zinc-800 text-[var(--ink-primary)] border border-[var(--border-hairline)] font-semibold flex items-center gap-1 transition-colors"
+                className="px-2.5 py-1 rounded-md bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 font-semibold flex items-center gap-1 transition-colors"
               >
                 <Download className="w-3 h-3 text-[var(--sig-cyan)]" />
                 <span>Download .patch</span>
@@ -1170,7 +1287,7 @@ export function MonacoCodePane() {
                 type="button"
                 onClick={() => setDiffEditorOpen(false)}
                 title="Close BFL DiffEditor (Shortcut: d)"
-                className="px-2 py-1 rounded-md bg-[var(--surface-panel)] hover:bg-zinc-800 text-[var(--ink-muted)] hover:text-[var(--ink-primary)] border border-[var(--border-hairline)] flex items-center gap-1 transition-colors"
+                className="px-2 py-1 rounded-md bg-white hover:bg-slate-100 text-slate-600 hover:text-slate-900 border border-slate-300 flex items-center gap-1 transition-colors"
               >
                 <X className="w-3 h-3" />
                 <span>Close Diff (d)</span>
@@ -1179,7 +1296,7 @@ export function MonacoCodePane() {
           </div>
 
           {/* Live Side-by-Side Monaco DiffEditor */}
-          <div className="flex-1 w-full relative">
+          <div className="flex-1 w-full relative bg-white">
             {remediationPreview ? (
               <DiffEditor
                 key={`${remediationPreview.filepath}:${remediationPreview.target_line}`}
@@ -1187,7 +1304,7 @@ export function MonacoCodePane() {
                 language={getLanguage(remediationPreview.filepath || activeFilepath)}
                 original={remediationPreview.original_content}
                 modified={remediationPreview.patched_content}
-                theme={isLightAppTheme(appTheme) ? "light" : "vs-dark"}
+                theme="light"
                 options={{
                   renderSideBySide: true,
                   readOnly: false,
@@ -1211,12 +1328,12 @@ export function MonacoCodePane() {
           </div>
         </div>
       ) : (
-        <div className="flex-1 w-full min-h-[190px] relative">
+        <div className="flex-1 w-full min-h-[190px] relative bg-white">
           <Editor
             height="100%"
             language={getLanguage(activeFilepath)}
             value={content}
-            theme={isLightAppTheme(appTheme) ? "light" : "vs-dark"}
+            theme="light"
             options={{
               readOnly: true,
               fontSize: 13,
@@ -1244,8 +1361,8 @@ export function MonacoCodePane() {
               <span
                 className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase border shrink-0 ${
                   selectedFinding.severity === "CRITICAL" || selectedFinding.severity === "HIGH"
-                    ? "bg-red-950 text-red-300 border-red-700"
-                    : "bg-amber-950 text-amber-300 border-amber-700"
+                    ? "bg-rose-50 text-rose-900 border-rose-300"
+                    : "bg-amber-50 text-amber-900 border-amber-300"
                 }`}
               >
                 {selectedFinding.severity}
@@ -1260,9 +1377,9 @@ export function MonacoCodePane() {
                   type="button"
                   onClick={() => jumpToBestFixLocation(selectedFinding)}
                   title={selectedFinding.best_fix_location.rationale}
-                  className="px-2 py-0.5 rounded bg-[var(--surface-elevated)] hover:bg-[var(--surface-void)] border border-[var(--sig-gold)]/70 text-[var(--sig-gold)] text-[10px] font-mono font-bold flex items-center gap-1 shrink-0 shadow-sm"
+                  className="px-2 py-0.5 rounded bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 text-[10px] font-mono font-bold flex items-center gap-1 shrink-0 shadow-sm"
                 >
-                  <Crosshair className="w-3 h-3 text-[var(--sig-gold)]" />
+                  <Crosshair className="w-3 h-3 text-amber-700" />
                   <span>
                     Best Fix Chokepoint (BFL): L{selectedFinding.best_fix_location.line}
                   </span>
@@ -1270,7 +1387,7 @@ export function MonacoCodePane() {
               )}
 
               {/* Suppression / Validation ("Mark As") Selector */}
-              <div className="flex items-center gap-1 bg-[var(--surface-panel)] px-2 py-0.5 rounded border border-[var(--border-hairline)] text-[10px] font-mono shrink-0">
+              <div className="flex items-center gap-1 bg-white px-2 py-0.5 rounded border border-slate-300 text-[10px] font-mono shrink-0">
                 <span className="text-[var(--ink-muted)]">Mark As:</span>
                 <select
                   value={selectedFinding.triage_status || "TO_VERIFY"}
@@ -1283,24 +1400,24 @@ export function MonacoCodePane() {
                         : "Validated by security reviewer"
                     )
                   }
-                  className="bg-transparent text-[var(--sig-cyan)] font-bold focus:outline-none cursor-pointer"
+                  className="bg-transparent text-blue-800 font-bold focus:outline-none cursor-pointer"
                 >
-                  <option value="TO_VERIFY" className="bg-zinc-950 text-zinc-200">
+                  <option value="TO_VERIFY" className="bg-white text-slate-900">
                     To Verify
                   </option>
-                  <option value="CONFIRMED" className="bg-zinc-950 text-red-300">
+                  <option value="CONFIRMED" className="bg-white text-rose-800">
                     Confirmed Exploitable
                   </option>
-                  <option value="NOT_EXPLOITABLE" className="bg-zinc-950 text-zinc-400">
+                  <option value="NOT_EXPLOITABLE" className="bg-white text-slate-600">
                     Not Exploitable (Suppress)
                   </option>
                   <option
                     value="PROPOSED_NOT_EXPLOITABLE"
-                    className="bg-zinc-950 text-amber-300"
+                    className="bg-white text-amber-800"
                   >
                     Proposed Not Exploitable
                   </option>
-                  <option value="RESOLVED" className="bg-zinc-950 text-emerald-300">
+                  <option value="RESOLVED" className="bg-white text-emerald-800">
                     Resolved / Patched
                   </option>
                 </select>
@@ -1313,7 +1430,7 @@ export function MonacoCodePane() {
                     type="button"
                     onClick={() => setIntegrationModalOpen(true)}
                     title="Click to manage ticket status & comments in Integration Hub"
-                    className="px-2 py-0.5 rounded bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-700 text-[10px] font-mono font-bold cursor-pointer"
+                    className="px-2 py-0.5 rounded bg-sky-50 hover:bg-sky-100 text-sky-900 border border-sky-300 text-[10px] font-mono font-bold cursor-pointer"
                   >
                     Ticket: {selectedFinding.linked_ticket_id}
                   </button>
@@ -1323,7 +1440,7 @@ export function MonacoCodePane() {
                       target="_blank"
                       rel="noreferrer"
                       title="Open standalone ticket view"
-                      className="px-1.5 py-0.5 rounded bg-[var(--surface-panel)] hover:bg-cyan-950 text-cyan-300 border border-[var(--border-hairline)] text-[10px] font-mono"
+                      className="px-1.5 py-0.5 rounded bg-white hover:bg-sky-50 text-sky-900 border border-slate-300 text-[10px] font-mono"
                     >
                       ↗
                     </a>
@@ -1334,14 +1451,14 @@ export function MonacoCodePane() {
                   <button
                     type="button"
                     onClick={() => createTicketForFinding(selectedFinding.id, "JIRA")}
-                    className="px-2 py-0.5 rounded bg-[var(--surface-panel)] hover:bg-zinc-800 border border-[var(--border-hairline)] text-[var(--ink-primary)] text-[10px] font-mono font-semibold"
+                    className="px-2 py-0.5 rounded bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 text-[10px] font-mono font-semibold"
                   >
                     + Jira
                   </button>
                   <button
                     type="button"
                     onClick={() => createTicketForFinding(selectedFinding.id, "GITHUB_ISSUES")}
-                    className="px-2 py-0.5 rounded bg-[var(--surface-panel)] hover:bg-zinc-800 border border-[var(--border-hairline)] text-[var(--ink-primary)] text-[10px] font-mono font-semibold"
+                    className="px-2 py-0.5 rounded bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 text-[10px] font-mono font-semibold"
                   >
                     + GitHub Issue
                   </button>
@@ -1351,7 +1468,7 @@ export function MonacoCodePane() {
 
             <div className="flex items-center gap-1 shrink-0">
               {/* Storyboard 4 Sub-Tabs */}
-              <div className="flex items-center bg-[var(--surface-panel)] p-0.5 rounded-lg border border-[var(--border-hairline)] text-[11px] overflow-x-auto">
+              <div className="flex items-center bg-white p-0.5 rounded-lg border border-slate-300 text-[11px] overflow-x-auto">
                 <button
                   type="button"
                   onClick={() => {
@@ -1360,8 +1477,8 @@ export function MonacoCodePane() {
                   }}
                   className={`flex items-center gap-1 px-2 py-1 rounded-md font-medium whitespace-nowrap transition-colors ${
                     storyTab === "STORY"
-                      ? "bg-cyan-950 text-cyan-300 border border-cyan-700/80"
-                      : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)]"
+                      ? "bg-sky-50 text-sky-900 border border-sky-300 font-semibold"
+                      : "text-slate-600 hover:text-slate-900"
                   }`}
                 >
                   <BookOpen className="w-3 h-3" />
@@ -1375,8 +1492,8 @@ export function MonacoCodePane() {
                   }}
                   className={`flex items-center gap-1 px-2 py-1 rounded-md font-medium whitespace-nowrap transition-colors ${
                     storyTab === "FIX"
-                      ? "bg-emerald-950 text-emerald-300 border border-emerald-700/80"
-                      : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)]"
+                      ? "bg-emerald-50 text-emerald-900 border border-emerald-300 font-semibold"
+                      : "text-slate-600 hover:text-slate-900"
                   }`}
                 >
                   <Wrench className="w-3 h-3" />
@@ -1390,8 +1507,8 @@ export function MonacoCodePane() {
                   }}
                   className={`flex items-center gap-1 px-2 py-1 rounded-md font-medium whitespace-nowrap transition-colors ${
                     storyTab === "ARTIFACTS"
-                      ? "bg-amber-950 text-amber-300 border border-amber-700/80"
-                      : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)]"
+                      ? "bg-amber-50 text-amber-900 border border-amber-300 font-semibold"
+                      : "text-slate-600 hover:text-slate-900"
                   }`}
                 >
                   <Sparkles className="w-3 h-3" />
@@ -1405,8 +1522,8 @@ export function MonacoCodePane() {
                   }}
                   className={`flex items-center gap-1 px-2 py-1 rounded-md font-medium whitespace-nowrap transition-colors ${
                     storyTab === "EVIDENCE"
-                      ? "bg-cyan-950 text-cyan-300 border border-cyan-700/80"
-                      : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)]"
+                      ? "bg-sky-50 text-sky-900 border border-sky-300 font-semibold"
+                      : "text-slate-600 hover:text-slate-900"
                   }`}
                 >
                   <Activity className="w-3 h-3" />
@@ -1418,7 +1535,7 @@ export function MonacoCodePane() {
                 type="button"
                 onClick={() => setIsStoryboardExpanded((v) => !v)}
                 title={isStoryboardExpanded ? "Collapse Storyboard" : "Expand Storyboard"}
-                className="p-1 rounded bg-[var(--surface-panel)] hover:bg-zinc-800 text-[var(--ink-muted)] hover:text-[var(--ink-primary)] border border-[var(--border-hairline)]"
+                className="p-1 rounded bg-white hover:bg-slate-100 text-slate-600 hover:text-slate-900 border border-slate-300"
               >
                 {isStoryboardExpanded ? (
                   <ChevronDown className="w-3.5 h-3.5" />
@@ -1436,7 +1553,7 @@ export function MonacoCodePane() {
               {storyTab === "STORY" && (
                 <div className="space-y-3">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                    <div className="p-2.5 rounded-lg bg-[var(--surface-void)] border border-[var(--border-hairline)]">
+                    <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
                       <div className="text-[10px] font-mono uppercase text-[var(--sig-cyan)] font-bold mb-1 flex items-center gap-1">
                         <Sparkles className="w-3 h-3" />
                         What Is Happening in the Code
@@ -1446,8 +1563,8 @@ export function MonacoCodePane() {
                       </p>
                     </div>
 
-                    <div className="p-2.5 rounded-lg bg-[var(--surface-void)] border border-[var(--sig-crimson)]/40">
-                      <div className="text-[10px] font-mono uppercase text-[var(--sig-crimson)] font-bold mb-1 flex items-center gap-1">
+                    <div className="p-2.5 rounded-lg bg-rose-50/60 border border-rose-200">
+                      <div className="text-[10px] font-mono uppercase text-rose-800 font-bold mb-1 flex items-center gap-1">
                         <AlertOctagon className="w-3 h-3" />
                         Why This Matters (Security Impact)
                       </div>
@@ -1469,12 +1586,12 @@ export function MonacoCodePane() {
                             type="button"
                             disabled={activeStepIdx <= 0}
                             onClick={() => handleSelectStoryChapter(Math.max(0, activeStepIdx - 1))}
-                            className="px-2 py-0.5 rounded bg-[var(--surface-elevated)] border border-[var(--border-hairline)] disabled:opacity-40 text-[var(--ink-primary)] text-[10px] font-mono flex items-center gap-1"
+                            className="px-2 py-0.5 rounded bg-white border border-slate-300 disabled:opacity-40 text-slate-800 text-[10px] font-mono flex items-center gap-1"
                           >
                             <ChevronLeft className="w-3 h-3" />
                             <span>Prev [</span>
                           </button>
-                          <span className="text-[10px] font-mono text-cyan-400 font-bold">
+                          <span className="text-[10px] font-mono text-blue-800 font-bold">
                             Step {activeStepIdx + 1} of {story.chapters.length}
                           </span>
                           <button
@@ -1485,7 +1602,7 @@ export function MonacoCodePane() {
                                 Math.min(story.chapters.length - 1, activeStepIdx + 1)
                               )
                             }
-                            className="px-2 py-0.5 rounded bg-cyan-700 hover:bg-cyan-600 disabled:opacity-40 text-white text-[10px] font-mono flex items-center gap-1"
+                            className="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white text-[10px] font-mono flex items-center gap-1"
                           >
                             <span>Next ]</span>
                             <ChevronRight className="w-3 h-3" />
@@ -1503,8 +1620,8 @@ export function MonacoCodePane() {
                             onClick={() => handleSelectStoryChapter(idx)}
                             className={`p-2.5 rounded-lg border cursor-pointer transition-all ${
                               isActiveStep
-                                ? "bg-[var(--surface-void)] border-cyan-500 shadow-sm"
-                                : "bg-[var(--surface-void)] border-[var(--border-hairline)] hover:border-cyan-700/60"
+                                ? "bg-sky-50/70 border-blue-500 shadow-sm"
+                                : "bg-slate-50 border-slate-200 hover:border-blue-400"
                             }`}
                           >
                             <div className="flex items-center justify-between gap-2 mb-1">
@@ -1518,7 +1635,7 @@ export function MonacoCodePane() {
                                   {chap.headline}
                                 </span>
                               </div>
-                              <span className="text-[10px] font-mono text-cyan-400 flex items-center gap-1 shrink-0">
+                              <span className="text-[10px] font-mono text-blue-800 font-semibold flex items-center gap-1 shrink-0">
                                 <Crosshair className="w-3 h-3" />
                                 {chap.filepath.split("/").pop()}:L{chap.line}
                               </span>
@@ -1529,8 +1646,8 @@ export function MonacoCodePane() {
                             </p>
 
                             {chap.code && (
-                              <div className="px-2.5 py-1.5 rounded bg-[var(--surface-panel)] border border-[var(--border-hairline)] font-mono text-[11px] text-amber-200 overflow-x-auto">
-                                <span className="text-[var(--ink-muted)] select-none mr-2">L{chap.line}:</span>
+                              <div className="px-2.5 py-1.5 rounded bg-white border border-slate-200 font-mono text-[11px] text-slate-900 overflow-x-auto">
+                                <span className="text-slate-500 select-none mr-2">L{chap.line}:</span>
                                 {chap.code}
                               </div>
                             )}
@@ -1545,9 +1662,9 @@ export function MonacoCodePane() {
               {/* TAB 2: HOW TO FIX & SECURE CODE EXAMPLE */}
               {storyTab === "FIX" && (
                 <div className="space-y-3">
-                  <div className="p-2.5 rounded-lg bg-emerald-950/20 border border-emerald-800/60 flex items-start justify-between gap-3">
+                  <div className="p-2.5 rounded-lg bg-emerald-50/80 border border-emerald-200 flex items-start justify-between gap-3">
                     <div>
-                      <div className="text-[10px] font-mono uppercase text-emerald-400 font-bold mb-1 flex items-center gap-1">
+                      <div className="text-[10px] font-mono uppercase text-emerald-800 font-bold mb-1 flex items-center gap-1">
                         <CheckCircle2 className="w-3.5 h-3.5" />
                         Recommended Remediation Strategy
                       </div>
@@ -1557,7 +1674,7 @@ export function MonacoCodePane() {
                       <button
                         type="button"
                         onClick={() => setDiffEditorOpen(true)}
-                        className="px-2.5 py-1 rounded bg-amber-950 hover:bg-amber-900 border border-amber-600 text-amber-300 text-[10px] font-mono font-bold flex items-center gap-1"
+                        className="px-2.5 py-1 rounded bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 text-[10px] font-mono font-bold flex items-center gap-1"
                       >
                         <GitCompare className="w-3 h-3" />
                         <span>Preview BFL Diff (d)</span>
@@ -1565,11 +1682,11 @@ export function MonacoCodePane() {
                       <button
                         type="button"
                         onClick={handleCopyFix}
-                        className="px-2.5 py-1 rounded bg-emerald-900/60 hover:bg-emerald-800 border border-emerald-700 text-emerald-200 text-[10px] font-mono flex items-center gap-1"
+                        className="px-2.5 py-1 rounded bg-white hover:bg-emerald-100 border border-emerald-300 text-emerald-900 text-[10px] font-mono font-semibold flex items-center gap-1"
                       >
                         {copiedFix ? (
                           <>
-                            <Check className="w-3 h-3 text-emerald-400" />
+                            <Check className="w-3 h-3 text-emerald-700" />
                             <span>Copied!</span>
                           </>
                         ) : (
@@ -1586,7 +1703,7 @@ export function MonacoCodePane() {
                     <div className="text-[10px] font-mono uppercase text-[var(--ink-muted)]">
                       Reference Secure Code Pattern
                     </div>
-                    <pre className="p-3 rounded-lg bg-[var(--surface-void)] border border-[var(--border-hairline)] font-mono text-[11px] text-emerald-300 overflow-x-auto leading-relaxed">
+                    <pre className="p-3 rounded-lg bg-slate-50 border border-slate-200 font-mono text-[11px] text-emerald-950 overflow-x-auto leading-relaxed">
                       {story.secureCodeExample}
                     </pre>
                   </div>
@@ -1597,7 +1714,7 @@ export function MonacoCodePane() {
               {storyTab === "ARTIFACTS" && activeArtifact && (
                 <div className="space-y-2.5">
                   <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <div className="flex items-center gap-1 bg-[var(--surface-void)] p-1 rounded-lg border border-[var(--border-hairline)] text-[10px] font-mono">
+                    <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-lg border border-slate-200 text-[10px] font-mono">
                       {[
                         { id: "PATCH", label: "1. Remediation Diff (.patch)" },
                         { id: "TEST", label: "2. Verification Unit Test (.py)" },
@@ -1610,8 +1727,8 @@ export function MonacoCodePane() {
                           onClick={() => setArtifactSubTab(art.id as any)}
                           className={`px-2 py-1 rounded transition-colors ${
                             artifactSubTab === art.id
-                              ? "bg-amber-950 text-amber-300 border border-amber-700 font-bold"
-                              : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)]"
+                              ? "bg-amber-50 text-amber-900 border border-amber-300 font-bold"
+                              : "text-slate-600 hover:text-slate-900"
                           }`}
                         >
                           {art.label}
@@ -1623,11 +1740,11 @@ export function MonacoCodePane() {
                       <button
                         type="button"
                         onClick={handleCopyArtifact}
-                        className="px-2.5 py-1 rounded bg-[var(--surface-elevated)] border border-[var(--border-hairline)] text-[var(--ink-primary)] text-[10px] font-mono flex items-center gap-1"
+                        className="px-2.5 py-1 rounded bg-white border border-slate-300 text-slate-800 text-[10px] font-mono flex items-center gap-1"
                       >
                         {copiedArtifact ? (
                           <>
-                            <Check className="w-3 h-3 text-emerald-400" />
+                            <Check className="w-3 h-3 text-emerald-700" />
                             <span>Copied!</span>
                           </>
                         ) : (
@@ -1647,7 +1764,7 @@ export function MonacoCodePane() {
                     </div>
                   </div>
 
-                  <pre className="p-3 rounded-lg bg-[var(--surface-void)] border border-[var(--border-hairline)] font-mono text-[11px] text-amber-200 overflow-x-auto max-h-48 leading-relaxed">
+                  <pre className="p-3 rounded-lg bg-slate-50 border border-slate-200 font-mono text-[11px] text-slate-900 overflow-x-auto max-h-48 leading-relaxed">
                     {activeArtifact.content}
                   </pre>
                 </div>
@@ -1657,35 +1774,35 @@ export function MonacoCodePane() {
               {storyTab === "EVIDENCE" && (
                 <div className="space-y-2.5">
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    <div className="p-2 rounded bg-[var(--surface-void)] border border-[var(--border-hairline)]">
+                    <div className="p-2 rounded bg-slate-50 border border-slate-200">
                       <div className="text-[10px] font-mono text-[var(--ink-muted)]">Rule Identifier</div>
                       <div className="text-xs font-mono font-bold text-[var(--ink-primary)] mt-0.5">
                         {selectedFinding.rule_id}
                       </div>
                     </div>
-                    <div className="p-2 rounded bg-[var(--surface-void)] border border-[var(--border-hairline)]">
+                    <div className="p-2 rounded bg-slate-50 border border-slate-200">
                       <div className="text-[10px] font-mono text-[var(--ink-muted)]">MITRE CWE</div>
-                      <div className="text-xs font-mono font-bold text-cyan-300 mt-0.5">
+                      <div className="text-xs font-mono font-bold text-blue-800 mt-0.5">
                         {selectedFinding.cwe_id || "CWE-703 / Logic"}
                       </div>
                     </div>
-                    <div className="p-2 rounded bg-[var(--surface-void)] border border-[var(--border-hairline)]">
+                    <div className="p-2 rounded bg-slate-50 border border-slate-200">
                       <div className="text-[10px] font-mono text-[var(--ink-muted)]">OWASP Top 10</div>
-                      <div className="text-xs font-mono font-bold text-cyan-300 mt-0.5 truncate">
+                      <div className="text-xs font-mono font-bold text-blue-800 mt-0.5 truncate">
                         {selectedFinding.owasp_category || "A03 / A04 Security"}
                       </div>
                     </div>
-                    <div className="p-2 rounded bg-[var(--surface-void)] border border-[var(--border-hairline)]">
+                    <div className="p-2 rounded bg-slate-50 border border-slate-200">
                       <div className="text-[10px] font-mono text-[var(--ink-muted)]">CVSS Score</div>
-                      <div className="text-xs font-mono font-bold text-amber-300 mt-0.5">
+                      <div className="text-xs font-mono font-bold text-amber-800 mt-0.5">
                         {selectedFinding.cvss_score ? `${selectedFinding.cvss_score} / 10.0` : "N/A"}
                       </div>
                     </div>
                   </div>
 
-                  <div className="p-2.5 rounded bg-[var(--surface-void)] border border-[var(--border-hairline)] space-y-1.5 text-[11px]">
+                  <div className="p-2.5 rounded bg-slate-50 border border-slate-200 space-y-1.5 text-[11px]">
                     <div>
-                      <span className="text-emerald-400 font-mono font-bold uppercase text-[10px]">
+                      <span className="text-emerald-800 font-mono font-bold uppercase text-[10px]">
                         Written Technical Explanation:{" "}
                       </span>
                       <span className="text-[var(--ink-primary)] leading-relaxed">
@@ -1694,7 +1811,7 @@ export function MonacoCodePane() {
                     </div>
                     {selectedFinding.remediation && (
                       <div>
-                        <span className="text-cyan-400 font-mono font-bold uppercase text-[10px]">
+                        <span className="text-blue-800 font-mono font-bold uppercase text-[10px]">
                           Written Remediation Action:{" "}
                         </span>
                         <span className="text-[var(--ink-primary)] leading-relaxed">
@@ -1704,10 +1821,10 @@ export function MonacoCodePane() {
                     )}
                   </div>
 
-                  <div className="p-2.5 rounded bg-[var(--surface-void)] border border-[var(--border-hairline)] flex items-center justify-between">
+                  <div className="p-2.5 rounded bg-slate-50 border border-slate-200 flex items-center justify-between">
                     <div className="text-xs text-[var(--ink-primary)]">
                       <span className="text-[var(--ink-muted)] font-mono">Detection Source: </span>
-                      <span className="font-semibold text-cyan-300">
+                      <span className="font-semibold text-blue-800">
                         {selectedFinding.source_site || "ALASTOR Deterministic CPG Engine"}
                       </span>
                     </div>
@@ -1716,7 +1833,7 @@ export function MonacoCodePane() {
                         href={selectedFinding.reference_url}
                         target="_blank"
                         rel="noreferrer"
-                        className="px-2.5 py-1 rounded bg-cyan-950 hover:bg-cyan-900 border border-cyan-700 text-cyan-200 text-xs font-mono flex items-center gap-1"
+                        className="px-2.5 py-1 rounded bg-sky-50 hover:bg-sky-100 border border-sky-300 text-sky-900 text-xs font-mono font-semibold flex items-center gap-1"
                       >
                         <span>Open Official Advisory</span>
                         <ExternalLink className="w-3 h-3" />

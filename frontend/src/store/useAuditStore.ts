@@ -35,41 +35,56 @@ import {
   GitHubRepoVerifyResponse,
   GitRepoScanOptions,
   ScanResponse,
+  PrimaryWorkflowStage,
+  MapSubTab,
+  AspmSubSection,
+  AiDrawerTab,
+  BatchRemediateResponse,
+  AiPublicConfig,
+  AiConfigUpdatePayload,
+  AiConnectionTestResponse,
+  AiFindingVerdict,
+  AiValidateFindingsResponse,
+  AiCodeAuditResponse,
+  AiPatchSynthesisResponse,
+  AiGraphExplainPayload,
+  AiGraphExplainResponse,
 } from "@/types/cpg";
+import {
+  BACKEND_URL,
+  fetchAiConfig,
+  updateAiConfig,
+  testAiConnection,
+  validateFindingsWithAi,
+  auditCodeSelectionWithAi,
+  synthesizePatchWithAi,
+  explainGraphWithAi,
+  batchApplyRemediations,
+} from "@/lib/api";
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
-export const UI_PREFS_STORAGE_KEY = "alastor_ui_prefs_v3";
+export const UI_PREFS_STORAGE_KEY = "alastor_ui_prefs_v4";
 
 const VALID_APP_THEMES: AppThemeId[] = [
-  "alastor-infernal",
   "olympian-light",
   "athena-parchment",
   "hyperborean-light",
-  "hecate-arcane",
-  "stygian-abyss",
 ];
 
-function isLightThemeId(theme: AppThemeId): boolean {
-  return (
-    theme === "olympian-light" ||
-    theme === "athena-parchment" ||
-    theme === "hyperborean-light"
-  );
+function normalizeLightTheme(theme?: string | null): AppThemeId {
+  if (theme && (VALID_APP_THEMES as string[]).includes(theme)) {
+    return theme as AppThemeId;
+  }
+  return "olympian-light";
 }
 
 function applyDocumentTheme(theme: AppThemeId): void {
   if (typeof document === "undefined") return;
+  const safeTheme = normalizeLightTheme(theme);
   const htmlEl = document.documentElement;
-  const isLight = isLightThemeId(theme);
-  htmlEl.setAttribute("data-theme", theme);
-  htmlEl.setAttribute("data-theme-mode", isLight ? "light" : "dark");
-  if (isLight) {
-    htmlEl.classList.remove("dark");
-    htmlEl.classList.add("light");
-  } else {
-    htmlEl.classList.remove("light");
-    htmlEl.classList.add("dark");
-  }
+  htmlEl.setAttribute("data-theme", safeTheme);
+  htmlEl.setAttribute("data-theme-mode", "light");
+  htmlEl.classList.remove("dark");
+  htmlEl.classList.add("light");
 }
 
 function persistUiPrefs(getState: () => AuditState): void {
@@ -79,8 +94,11 @@ function persistUiPrefs(getState: () => AuditState): void {
     const payload = {
       hasEnteredWorkspace: !s.showPortalGate,
       showPortalGate: s.showPortalGate,
-      appTheme: s.appTheme,
+      appTheme: normalizeLightTheme(s.appTheme),
       backdropIntensity: s.backdropIntensity,
+      primaryStage: s.primaryStage,
+      mapSubTab: s.mapSubTab,
+      aspmSubSection: s.aspmSubSection,
       workspaceViewMode: s.workspaceViewMode,
       executiveAspmTab: s.executiveAspmTab,
       engineAccessTab: s.engineAccessTab,
@@ -101,6 +119,9 @@ interface AuditState {
   activeEndLine: number | null;
   selectedGraphNodeId: string | null;
   graphViewMode: GraphViewMode;
+  primaryStage: PrimaryWorkflowStage;
+  mapSubTab: MapSubTab;
+  aspmSubSection: AspmSubSection;
   workspaceViewMode: WorkspaceViewMode;
   executiveAspmTab: ExecutiveAspmTab;
   engineAccessTab: EngineAccessTab;
@@ -111,12 +132,26 @@ interface AuditState {
   remediationPreview: RemediatePreviewResponse | null;
   remediationError: string | null;
   isApplyingPatch: boolean;
+  isBatchFixing: boolean;
+  lastBatchFixResult: BatchRemediateResponse | null;
   lastAppliedPatch: {
     patchId: string;
     findingId: string;
     filepath: string;
     verifiedSevered: boolean;
   } | null;
+
+  // Frontier AI BYOK Copilot Drawer & Micro-Slice State
+  isAiDrawerOpen: boolean;
+  aiDrawerActiveTab: AiDrawerTab;
+  aiConfig: AiPublicConfig | null;
+  aiConnectionStatus: AiConnectionTestResponse | null;
+  aiVerdictsByFinding: Record<string, AiFindingVerdict>;
+  aiLastAudit: AiCodeAuditResponse | null;
+  aiLastSynthesizedPatch: AiPatchSynthesisResponse | null;
+  aiLastGraphExplanation: AiGraphExplainResponse | null;
+  aiErrorBanner: string | null;
+  aiIsBusy: boolean;
   audienceMode: AudiencePersonaMode;
   isSettingsBarVisible: boolean;
   metrics: MetricsResponse | null;
@@ -196,6 +231,23 @@ interface AuditState {
 
   setAppTheme: (theme: AppThemeId) => void;
   setBackdropIntensity: (intensity: BackdropIntensity) => void;
+  setPrimaryStage: (stage: PrimaryWorkflowStage) => void;
+  setMapSubTab: (subTab: MapSubTab) => void;
+  setAspmSubSection: (section: AspmSubSection) => void;
+  setAiDrawerOpen: (open: boolean, tab?: AiDrawerTab) => void;
+  fetchAiConfigState: () => Promise<AiPublicConfig | null>;
+  saveAiConfigState: (payload: AiConfigUpdatePayload) => Promise<AiPublicConfig | null>;
+  runAiConnectionTest: () => Promise<AiConnectionTestResponse | null>;
+  validateFindingsAi: (findingIds?: string[]) => Promise<AiValidateFindingsResponse | null>;
+  auditCodeSelectionAi: (
+    filepath: string,
+    startLine: number,
+    endLine: number,
+    focusQuestion?: string
+  ) => Promise<AiCodeAuditResponse | null>;
+  synthesizeFindingPatchAi: (findingId: string) => Promise<AiPatchSynthesisResponse | null>;
+  explainGraphAi: (payload: AiGraphExplainPayload) => Promise<AiGraphExplainResponse | null>;
+  batchApplyAllSafeFixes: (findingIds?: string[]) => Promise<BatchRemediateResponse | null>;
   setAudienceMode: (mode: AudiencePersonaMode) => void;
   setSettingsBarVisible: (visible: boolean) => void;
   setUiDensityMode: (mode: "SIMPLE_CLEAN" | "PRO_DETAILED") => void;
@@ -384,6 +436,9 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   activeEndLine: null,
   selectedGraphNodeId: null,
   graphViewMode: "FINDING_PATH",
+  primaryStage: "TRIAGE_FIX",
+  mapSubTab: "SPIDER_360",
+  aspmSubSection: "POSTURE",
   workspaceViewMode: "REMEDIATION_IDE",
   executiveAspmTab: "TRANSLATOR",
   engineAccessTab: "RULE_PROFILES",
@@ -394,7 +449,19 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   remediationPreview: null,
   remediationError: null,
   isApplyingPatch: false,
+  isBatchFixing: false,
+  lastBatchFixResult: null,
   lastAppliedPatch: null,
+  isAiDrawerOpen: false,
+  aiDrawerActiveTab: "VALIDATE",
+  aiConfig: null,
+  aiConnectionStatus: null,
+  aiVerdictsByFinding: {},
+  aiLastAudit: null,
+  aiLastSynthesizedPatch: null,
+  aiLastGraphExplanation: null,
+  aiErrorBanner: null,
+  aiIsBusy: false,
   audienceMode: "NON_CODER_MANAGEMENT",
   isSettingsBarVisible: false,
   metrics: null,
@@ -492,14 +559,320 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   },
 
   setAppTheme: (theme: AppThemeId) => {
-    set({ appTheme: theme });
-    applyDocumentTheme(theme);
+    const safeTheme = normalizeLightTheme(theme);
+    set({ appTheme: safeTheme });
+    applyDocumentTheme(safeTheme);
     if (typeof window !== "undefined") {
       try {
-        localStorage.setItem("alastor_app_theme_v3", theme);
+        localStorage.setItem("alastor_app_theme_v4", safeTheme);
       } catch {}
     }
     persistUiPrefs(get);
+  },
+
+  setPrimaryStage: (stage: PrimaryWorkflowStage) => {
+    if (stage === "SCAN_REPOS") {
+      set({
+        primaryStage: "SCAN_REPOS",
+        workspaceViewMode: "PROJECTS_HUB",
+      });
+      persistUiPrefs(get);
+      get().fetchProjects();
+      get().fetchTrackChanges();
+      return;
+    }
+
+    if (stage === "TRIAGE_FIX") {
+      const currentGraphMode = get().graphViewMode;
+      const currentLayout = get().ideLayoutMode;
+      set({
+        primaryStage: "TRIAGE_FIX",
+        workspaceViewMode: "REMEDIATION_IDE",
+        ...(currentGraphMode === "APP_TREE"
+          ? { graphViewMode: "FINDING_PATH" as GraphViewMode }
+          : {}),
+        ...(currentLayout === "GRAPH_FOCUS" && currentGraphMode === "APP_TREE"
+          ? { ideLayoutMode: "SPLIT_BOTH" as const }
+          : {}),
+      });
+      persistUiPrefs(get);
+      get().fetchTrackChanges();
+      return;
+    }
+
+    if (stage === "MAP_360_THREATS") {
+      const sub = get().mapSubTab;
+      if (sub === "THREAT_BOUNDARIES") {
+        set({
+          primaryStage: "MAP_360_THREATS",
+          workspaceViewMode: "THREAT_MODELING",
+        });
+        persistUiPrefs(get);
+        get().fetchSastPlusSuite();
+        get().fetchTrackChanges();
+      } else {
+        set({
+          primaryStage: "MAP_360_THREATS",
+          workspaceViewMode: "REMEDIATION_IDE",
+          graphViewMode: "APP_TREE",
+          ideLayoutMode: "GRAPH_FOCUS",
+        });
+        persistUiPrefs(get);
+        get().fetchAppTree();
+        get().fetchSastPlusSuite();
+        get().fetchTrackChanges();
+      }
+      return;
+    }
+
+    // stage === "ASPM_GOVERNANCE"
+    const sec = get().aspmSubSection;
+    if (sec === "RULES_ENGINE") {
+      set({
+        primaryStage: "ASPM_GOVERNANCE",
+        workspaceViewMode: "ENGINE_ACCESS",
+        engineAccessTab: "RULE_PROFILES",
+      });
+      persistUiPrefs(get);
+      get().fetchPlatformSettings();
+      get().fetchUserAccounts();
+      get().fetchIntegrations();
+      get().fetchProjects();
+      return;
+    }
+
+    const mappedExecTab: ExecutiveAspmTab =
+      sec === "GOVERNANCE"
+        ? "RACI"
+        : sec === "SAST_PLUS"
+        ? "SBOM"
+        : "ANALYTICS";
+    set({
+      primaryStage: "ASPM_GOVERNANCE",
+      workspaceViewMode: "EXECUTIVE_ASPM",
+      executiveAspmTab: mappedExecTab,
+    });
+    persistUiPrefs(get);
+    get().fetchSastPlusSuite();
+    get().fetchDeepDiveAnalytics();
+    get().fetchRaciGovernance();
+    get().fetchTrackChanges();
+  },
+
+  setMapSubTab: (subTab: MapSubTab) => {
+    if (subTab === "THREAT_BOUNDARIES") {
+      set({
+        mapSubTab: "THREAT_BOUNDARIES",
+        primaryStage: "MAP_360_THREATS",
+        workspaceViewMode: "THREAT_MODELING",
+      });
+      persistUiPrefs(get);
+      get().fetchSastPlusSuite();
+    } else {
+      set({
+        mapSubTab: "SPIDER_360",
+        primaryStage: "MAP_360_THREATS",
+        workspaceViewMode: "REMEDIATION_IDE",
+        graphViewMode: "APP_TREE",
+        ideLayoutMode: "GRAPH_FOCUS",
+      });
+      persistUiPrefs(get);
+      get().fetchAppTree();
+      get().fetchSastPlusSuite();
+    }
+  },
+
+  setAspmSubSection: (section: AspmSubSection) => {
+    if (section === "RULES_ENGINE") {
+      set({
+        aspmSubSection: section,
+        primaryStage: "ASPM_GOVERNANCE",
+        workspaceViewMode: "ENGINE_ACCESS",
+        engineAccessTab: "RULE_PROFILES",
+      });
+      persistUiPrefs(get);
+      get().fetchPlatformSettings();
+      get().fetchUserAccounts();
+      get().fetchIntegrations();
+      return;
+    }
+    if (section === "GOVERNANCE") {
+      set({
+        aspmSubSection: section,
+        primaryStage: "ASPM_GOVERNANCE",
+        workspaceViewMode: "EXECUTIVE_ASPM",
+        executiveAspmTab: "RACI",
+      });
+      persistUiPrefs(get);
+      get().fetchRaciGovernance();
+      get().fetchUserAccounts();
+      get().fetchIntegrations();
+      return;
+    }
+    if (section === "SAST_PLUS") {
+      set({
+        aspmSubSection: section,
+        primaryStage: "ASPM_GOVERNANCE",
+        workspaceViewMode: "EXECUTIVE_ASPM",
+        executiveAspmTab: "SBOM",
+        sastPlusActiveTab: "SBOM",
+      });
+      persistUiPrefs(get);
+      get().fetchSastPlusSuite();
+      return;
+    }
+    set({
+      aspmSubSection: section,
+      primaryStage: "ASPM_GOVERNANCE",
+      workspaceViewMode: "EXECUTIVE_ASPM",
+      executiveAspmTab: "ANALYTICS",
+    });
+    persistUiPrefs(get);
+    get().fetchDeepDiveAnalytics();
+    get().fetchSastPlusSuite();
+    get().fetchRaciGovernance();
+  },
+
+  setAiDrawerOpen: (open: boolean, tab?: AiDrawerTab) => {
+    set((state) => ({
+      isAiDrawerOpen: open,
+      ...(tab ? { aiDrawerActiveTab: tab } : { aiDrawerActiveTab: state.aiDrawerActiveTab }),
+    }));
+    if (open && !get().aiConfig) {
+      void get().fetchAiConfigState();
+    }
+  },
+
+  fetchAiConfigState: async () => {
+    try {
+      const cfg = await fetchAiConfig();
+      set({ aiConfig: cfg });
+      return cfg;
+    } catch (err: any) {
+      console.error("Failed to fetch AI config:", err);
+      return null;
+    }
+  },
+
+  saveAiConfigState: async (payload: AiConfigUpdatePayload) => {
+    set({ aiIsBusy: true, aiErrorBanner: null });
+    try {
+      const cfg = await updateAiConfig(payload);
+      set({
+        aiConfig: cfg,
+        aiIsBusy: false,
+        aiConnectionStatus: null,
+        aiErrorBanner: null,
+      });
+      return cfg;
+    } catch (err: any) {
+      const msg = err?.detail || err?.message || "Failed to update AI configuration.";
+      set({ aiIsBusy: false, aiErrorBanner: msg });
+      return null;
+    }
+  },
+
+  runAiConnectionTest: async () => {
+    set({ aiIsBusy: true, aiErrorBanner: null });
+    try {
+      const res = await testAiConnection();
+      set({
+        aiConnectionStatus: res,
+        aiIsBusy: false,
+        aiErrorBanner: res.ok ? null : res.message,
+      });
+      void get().fetchAiConfigState();
+      return res;
+    } catch (err: any) {
+      const msg = err?.detail || err?.message || "Failed to test AI connection.";
+      set({ aiIsBusy: false, aiErrorBanner: msg });
+      return null;
+    }
+  },
+
+  validateFindingsAi: async (findingIds?: string[]) => {
+    set({ aiIsBusy: true, aiErrorBanner: null });
+    try {
+      const res = await validateFindingsWithAi({
+        finding_ids: findingIds ?? [],
+      });
+      const nextMap = { ...get().aiVerdictsByFinding };
+      for (const v of res.verdicts || []) {
+        if (v && v.finding_id) {
+          nextMap[v.finding_id] = v;
+        }
+      }
+      set({
+        aiVerdictsByFinding: nextMap,
+        aiIsBusy: false,
+        aiErrorBanner: res.ok ? null : res.user_message || "AI finding validation did not complete.",
+      });
+      void get().fetchAiConfigState();
+      return res;
+    } catch (err: any) {
+      const msg = err?.detail || err?.message || "Failed to validate findings with AI.";
+      set({ aiIsBusy: false, aiErrorBanner: msg });
+      return null;
+    }
+  },
+
+  auditCodeSelectionAi: async (filepath, startLine, endLine, focusQuestion) => {
+    set({ aiIsBusy: true, aiErrorBanner: null });
+    try {
+      const res = await auditCodeSelectionWithAi({
+        filepath,
+        start_line: startLine,
+        end_line: endLine,
+        ...(focusQuestion ? { focus_question: focusQuestion } : {}),
+      });
+      set({
+        aiLastAudit: res,
+        aiIsBusy: false,
+        aiErrorBanner: res.ok ? null : res.user_message || "AI code selection audit failed.",
+      });
+      void get().fetchAiConfigState();
+      return res;
+    } catch (err: any) {
+      const msg = err?.detail || err?.message || "Failed to audit code selection with AI.";
+      set({ aiIsBusy: false, aiErrorBanner: msg });
+      return null;
+    }
+  },
+
+  synthesizeFindingPatchAi: async (findingId: string) => {
+    set({ aiIsBusy: true, aiErrorBanner: null });
+    try {
+      const res = await synthesizePatchWithAi({ finding_id: findingId });
+      set({
+        aiLastSynthesizedPatch: res,
+        aiIsBusy: false,
+        aiErrorBanner: res.ok ? null : res.user_message || "AI patch synthesis failed.",
+      });
+      void get().fetchAiConfigState();
+      return res;
+    } catch (err: any) {
+      const msg = err?.detail || err?.message || "Failed to synthesize patch with AI.";
+      set({ aiIsBusy: false, aiErrorBanner: msg });
+      return null;
+    }
+  },
+
+  explainGraphAi: async (payload: AiGraphExplainPayload) => {
+    set({ aiIsBusy: true, aiErrorBanner: null });
+    try {
+      const res = await explainGraphWithAi(payload);
+      set({
+        aiLastGraphExplanation: res,
+        aiIsBusy: false,
+        aiErrorBanner: res.ok ? null : res.user_message || "AI graph walkthrough failed.",
+      });
+      void get().fetchAiConfigState();
+      return res;
+    } catch (err: any) {
+      const msg = err?.detail || err?.message || "Failed to explain graph with AI.";
+      set({ aiIsBusy: false, aiErrorBanner: msg });
+      return null;
+    }
   },
 
   setBackdropIntensity: (intensity: BackdropIntensity) => {
@@ -561,6 +934,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       tab === "THREAT_MODEL" ? "ATTACK_SURFACE" : tab;
     set({
       sastPlusActiveTab: tab,
+      primaryStage: "ASPM_GOVERNANCE",
+      aspmSubSection: "SAST_PLUS",
       workspaceViewMode: "EXECUTIVE_ASPM",
       executiveAspmTab: mappedExecTab,
     });
@@ -569,8 +944,16 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   },
 
   setExecutiveAspmTab: (tab: ExecutiveAspmTab) => {
+    const mappedSubSection: AspmSubSection =
+      tab === "ANALYTICS"
+        ? "POSTURE"
+        : tab === "RACI"
+        ? "GOVERNANCE"
+        : "SAST_PLUS";
     set((state) => ({
       executiveAspmTab: tab,
+      primaryStage: "ASPM_GOVERNANCE",
+      aspmSubSection: mappedSubSection,
       workspaceViewMode: "EXECUTIVE_ASPM",
       ...(tab === "TRANSLATOR" ||
       tab === "SBOM" ||
@@ -591,8 +974,14 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   },
 
   setEngineAccessTab: (tab: EngineAccessTab) => {
+    const mappedSubSection: AspmSubSection =
+      tab === "RULE_PROFILES" || tab === "CYPHER_SANITIZERS"
+        ? "RULES_ENGINE"
+        : "GOVERNANCE";
     set({
       engineAccessTab: tab,
+      primaryStage: "ASPM_GOVERNANCE",
+      aspmSubSection: mappedSubSection,
       workspaceViewMode: "ENGINE_ACCESS",
     });
     persistUiPrefs(get);
@@ -796,6 +1185,62 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     }
   },
 
+  batchApplyAllSafeFixes: async (findingIds?: string[]) => {
+    set({ isBatchFixing: true, remediationError: null });
+    try {
+      const res = await batchApplyRemediations({
+        finding_ids: findingIds ?? [],
+      });
+      const latestPatchId =
+        res.applied_patch_ids && res.applied_patch_ids.length > 0
+          ? res.applied_patch_ids[res.applied_patch_ids.length - 1]
+          : null;
+      const latestFilepath =
+        res.patched_files && res.patched_files.length > 0
+          ? res.patched_files[res.patched_files.length - 1]
+          : null;
+      const latestFindingId =
+        res.applied_finding_ids && res.applied_finding_ids.length > 0
+          ? res.applied_finding_ids[res.applied_finding_ids.length - 1]
+          : null;
+
+      set((state) => ({
+        isBatchFixing: false,
+        lastBatchFixResult: res,
+        isDiffEditorOpen: false,
+        remediationPreview: null,
+        remediationError: null,
+        lastAppliedPatch:
+          res.applied_count > 0 && latestPatchId
+            ? {
+                patchId: latestPatchId,
+                findingId: latestFindingId || state.selectedFinding?.id || "batch",
+                filepath: latestFilepath || state.activeFilepath || "batch",
+                verifiedSevered: res.verified_severed_count > 0,
+              }
+            : state.lastAppliedPatch,
+      }));
+
+      await Promise.all([
+        get().fetchFindings(),
+        get().fetchMetrics(),
+        get().fetchAppTree(),
+        get().fetchProjects(),
+        get().fetchTrackChanges(),
+      ]);
+      void Promise.all([
+        get().fetchDeepDiveAnalytics(),
+        get().fetchRaciGovernance(),
+        get().fetchSastPlusSuite(),
+      ]);
+      return res;
+    } catch (err: any) {
+      const msg = err?.detail || err?.message || "Failed to batch-apply safe remediations.";
+      set({ isBatchFixing: false, remediationError: msg });
+      return null;
+    }
+  },
+
   hydrateUiPreferences: () => {
     if (typeof window === "undefined") return;
     try {
@@ -806,14 +1251,13 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
         if (typeof parsed.showPortalGate === "boolean") {
           updates.showPortalGate = parsed.showPortalGate;
-        } else if (typeof parsed.hasEnteredWorkspace === "boolean") {
-          updates.showPortalGate = !parsed.hasEnteredWorkspace;
+        } else {
+          updates.showPortalGate = false;
         }
 
-        if (parsed.appTheme && VALID_APP_THEMES.includes(parsed.appTheme)) {
-          updates.appTheme = parsed.appTheme;
-          applyDocumentTheme(parsed.appTheme);
-        }
+        const safeTheme = normalizeLightTheme(parsed.appTheme);
+        updates.appTheme = safeTheme;
+        applyDocumentTheme(safeTheme);
 
         if (
           parsed.backdropIntensity &&
@@ -838,6 +1282,22 @@ export const useAuditStore = create<AuditState>((set, get) => ({
             0.25,
             Math.min(0.75, Number(parsed.codeGraphRatio.toFixed(3)))
           );
+        }
+
+        if (
+          parsed.mapSubTab &&
+          ["SPIDER_360", "THREAT_BOUNDARIES"].includes(parsed.mapSubTab)
+        ) {
+          updates.mapSubTab = parsed.mapSubTab;
+        }
+
+        if (
+          parsed.aspmSubSection &&
+          ["POSTURE", "SAST_PLUS", "RULES_ENGINE", "GOVERNANCE", "EXPORTS"].includes(
+            parsed.aspmSubSection
+          )
+        ) {
+          updates.aspmSubSection = parsed.aspmSubSection;
         }
 
         if (
@@ -870,9 +1330,17 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         set(updates);
 
         if (
+          parsed.primaryStage &&
+          ["SCAN_REPOS", "TRIAGE_FIX", "MAP_360_THREATS", "ASPM_GOVERNANCE"].includes(
+            parsed.primaryStage
+          )
+        ) {
+          get().setPrimaryStage(parsed.primaryStage);
+        } else if (
           parsed.workspaceViewMode &&
           [
             "REMEDIATION_IDE",
+            "AUDIT_STUDIO",
             "THREAT_MODELING",
             "EXECUTIVE_ASPM",
             "PROJECTS_HUB",
@@ -889,17 +1357,34 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         return;
       }
 
-      const legacyTheme = localStorage.getItem("alastor_app_theme_v3") as AppThemeId | null;
-      if (legacyTheme && VALID_APP_THEMES.includes(legacyTheme)) {
-        set({ appTheme: legacyTheme });
-        applyDocumentTheme(legacyTheme);
-      }
+      // Migrate from any legacy v3 storage keys — force light-only theme & direct workspace entry
+      let legacyRawTheme =
+        localStorage.getItem("alastor_app_theme_v4") ||
+        localStorage.getItem("alastor_app_theme_v3");
+      try {
+        const legacyPrefsRaw = localStorage.getItem("alastor_ui_prefs_v3");
+        if (!legacyRawTheme && legacyPrefsRaw) {
+          const legacyParsed = JSON.parse(legacyPrefsRaw);
+          if (legacyParsed?.appTheme) {
+            legacyRawTheme = String(legacyParsed.appTheme);
+          }
+        }
+      } catch {}
+
+      const migratedTheme = normalizeLightTheme(legacyRawTheme);
+      set({
+        appTheme: migratedTheme,
+        showPortalGate: false,
+      });
+      applyDocumentTheme(migratedTheme);
+
       const legacyBackdrop = localStorage.getItem(
         "alastor_backdrop_intensity"
       ) as BackdropIntensity | null;
       if (legacyBackdrop && ["VIVID", "SUBTLE", "MINIMAL"].includes(legacyBackdrop)) {
         set({ backdropIntensity: legacyBackdrop });
       }
+      persistUiPrefs(get);
     } catch {}
   },
 
@@ -917,7 +1402,12 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
   setWorkspaceViewMode: (mode: WorkspaceViewMode) => {
     if (mode === "DEEP_DIVE") {
-      set({ workspaceViewMode: "EXECUTIVE_ASPM", executiveAspmTab: "ANALYTICS" });
+      set({
+        primaryStage: "ASPM_GOVERNANCE",
+        aspmSubSection: "POSTURE",
+        workspaceViewMode: "EXECUTIVE_ASPM",
+        executiveAspmTab: "ANALYTICS",
+      });
       persistUiPrefs(get);
       get().fetchTrackChanges();
       get().fetchDeepDiveAnalytics();
@@ -925,7 +1415,12 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       return;
     }
     if (mode === "RACI_GOVERNANCE") {
-      set({ workspaceViewMode: "EXECUTIVE_ASPM", executiveAspmTab: "RACI" });
+      set({
+        primaryStage: "ASPM_GOVERNANCE",
+        aspmSubSection: "GOVERNANCE",
+        workspaceViewMode: "EXECUTIVE_ASPM",
+        executiveAspmTab: "RACI",
+      });
       persistUiPrefs(get);
       get().fetchTrackChanges();
       get().fetchRaciGovernance();
@@ -936,7 +1431,12 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       const currentSastTab = get().sastPlusActiveTab;
       const mappedExecTab: ExecutiveAspmTab =
         currentSastTab === "THREAT_MODEL" ? "ATTACK_SURFACE" : currentSastTab;
-      set({ workspaceViewMode: "EXECUTIVE_ASPM", executiveAspmTab: mappedExecTab });
+      set({
+        primaryStage: "ASPM_GOVERNANCE",
+        aspmSubSection: "SAST_PLUS",
+        workspaceViewMode: "EXECUTIVE_ASPM",
+        executiveAspmTab: mappedExecTab,
+      });
       persistUiPrefs(get);
       get().fetchTrackChanges();
       get().fetchSastPlusSuite();
@@ -945,14 +1445,24 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       return;
     }
     if (mode === "RULE_ENGINE_PROFILES") {
-      set({ workspaceViewMode: "ENGINE_ACCESS", engineAccessTab: "RULE_PROFILES" });
+      set({
+        primaryStage: "ASPM_GOVERNANCE",
+        aspmSubSection: "RULES_ENGINE",
+        workspaceViewMode: "ENGINE_ACCESS",
+        engineAccessTab: "RULE_PROFILES",
+      });
       persistUiPrefs(get);
       get().fetchTrackChanges();
       get().fetchPlatformSettings();
       return;
     }
     if (mode === "USER_PROFILES") {
-      set({ workspaceViewMode: "ENGINE_ACCESS", engineAccessTab: "ACCOUNTS_RBAC" });
+      set({
+        primaryStage: "ASPM_GOVERNANCE",
+        aspmSubSection: "GOVERNANCE",
+        workspaceViewMode: "ENGINE_ACCESS",
+        engineAccessTab: "ACCOUNTS_RBAC",
+      });
       persistUiPrefs(get);
       get().fetchTrackChanges();
       get().fetchUserAccounts();
@@ -960,18 +1470,38 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       return;
     }
 
-    set({ workspaceViewMode: mode });
+    const normalizedMode: WorkspaceViewMode =
+      mode === "AUDIT_STUDIO" ? "REMEDIATION_IDE" : mode;
+    const syncedStage: PrimaryWorkflowStage =
+      normalizedMode === "PROJECTS_HUB"
+        ? "SCAN_REPOS"
+        : normalizedMode === "THREAT_MODELING"
+        ? "MAP_360_THREATS"
+        : normalizedMode === "EXECUTIVE_ASPM" || normalizedMode === "ENGINE_ACCESS"
+        ? "ASPM_GOVERNANCE"
+        : "TRIAGE_FIX";
+
+    set((state) => ({
+      workspaceViewMode: normalizedMode,
+      primaryStage: syncedStage,
+      ...(normalizedMode === "THREAT_MODELING"
+        ? { mapSubTab: "THREAT_BOUNDARIES" as MapSubTab }
+        : {}),
+      ...(normalizedMode === "REMEDIATION_IDE" && state.graphViewMode === "APP_TREE"
+        ? { graphViewMode: "FINDING_PATH" as GraphViewMode, ideLayoutMode: "SPLIT_BOTH" as const }
+        : {}),
+    }));
     persistUiPrefs(get);
     get().fetchTrackChanges();
-    if (mode === "PROJECTS_HUB") {
+    if (normalizedMode === "PROJECTS_HUB") {
       get().fetchProjects();
-    } else if (mode === "EXECUTIVE_ASPM") {
+    } else if (normalizedMode === "EXECUTIVE_ASPM") {
       get().fetchSastPlusSuite();
       get().fetchDeepDiveAnalytics();
       get().fetchRaciGovernance();
-    } else if (mode === "THREAT_MODELING") {
+    } else if (normalizedMode === "THREAT_MODELING") {
       get().fetchSastPlusSuite();
-    } else if (mode === "ENGINE_ACCESS") {
+    } else if (normalizedMode === "ENGINE_ACCESS") {
       get().fetchPlatformSettings();
       get().fetchUserAccounts();
       get().fetchIntegrations();
@@ -1011,7 +1541,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
   selectFinding: (finding: Finding) => {
     const firstNode = finding.path_nodes && finding.path_nodes.length > 0 ? finding.path_nodes[0] : null;
-    set({
+    set((state) => ({
       selectedFinding: finding,
       activePathStepIndex: 0,
       remediationPreview: null,
@@ -1019,7 +1549,12 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       activeFilepath: firstNode ? firstNode.filepath : null,
       activeStartLine: firstNode ? firstNode.start_line : null,
       activeEndLine: firstNode ? firstNode.end_line : null,
-    });
+      primaryStage: "TRIAGE_FIX",
+      workspaceViewMode: "REMEDIATION_IDE",
+      ...(state.graphViewMode === "APP_TREE"
+        ? { graphViewMode: "FINDING_PATH" as GraphViewMode, ideLayoutMode: "SPLIT_BOTH" as const }
+        : {}),
+    }));
     if (get().isDiffEditorOpen) {
       get().fetchRemediationPreview(finding);
     }
@@ -1030,22 +1565,27 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     if (!bfl) {
       get().selectFinding(finding);
       set({
+        primaryStage: "TRIAGE_FIX",
         workspaceViewMode: "REMEDIATION_IDE",
         ideLayoutMode: "SPLIT_BOTH",
         isSidebarCollapsed: false,
       });
       return;
     }
-    set({
+    set((state) => ({
       selectedFinding: finding,
       selectedGraphNodeId: bfl.node_id || null,
       activeFilepath: bfl.filepath,
       activeStartLine: bfl.line,
       activeEndLine: bfl.line,
+      primaryStage: "TRIAGE_FIX",
       workspaceViewMode: "REMEDIATION_IDE",
       ideLayoutMode: "SPLIT_BOTH",
       isSidebarCollapsed: false,
-    });
+      ...(state.graphViewMode === "APP_TREE"
+        ? { graphViewMode: "FINDING_PATH" as GraphViewMode }
+        : {}),
+    }));
     const rf = get().reactFlowInstance;
     if (rf && rf.getNode && bfl.node_id) {
       const flowNode = rf.getNode(bfl.node_id);
@@ -1098,15 +1638,19 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         );
       });
       if (byPathFinding) {
-        set({
+        set((state) => ({
           selectedFinding: byPathFinding,
           activeFilepath: byPathFinding.best_fix_location?.filepath || rawPath,
           activeStartLine: parsedLine || byPathFinding.best_fix_location?.line || 1,
           activeEndLine: parsedLine || byPathFinding.best_fix_location?.line || 1,
+          primaryStage: "TRIAGE_FIX",
           workspaceViewMode: "REMEDIATION_IDE",
           ideLayoutMode: "SPLIT_BOTH",
           isSidebarCollapsed: false,
-        });
+          ...(state.graphViewMode === "APP_TREE"
+            ? { graphViewMode: "FINDING_PATH" as GraphViewMode }
+            : {}),
+        }));
         return;
       }
     }
@@ -1130,14 +1674,18 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       }
     }
 
-    set({
+    set((state) => ({
       activeFilepath: resolvedFile,
       activeStartLine: parsedLine,
       activeEndLine: parsedLine,
+      primaryStage: "TRIAGE_FIX",
       workspaceViewMode: "REMEDIATION_IDE",
       ideLayoutMode: "SPLIT_BOTH",
       isSidebarCollapsed: false,
-    });
+      ...(state.graphViewMode === "APP_TREE"
+        ? { graphViewMode: "FINDING_PATH" as GraphViewMode }
+        : {}),
+    }));
   },
 
   selectTreeFile: (file: FilePurposeInfo) => {
@@ -1201,7 +1749,22 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         if (data.length === 0) {
           set({ selectedFinding: null, selectedGraphNodeId: null });
         } else if (updatedSel && (!curSel || curSel.id !== updatedSel.id)) {
-          get().selectFinding(updatedSel);
+          const firstNode =
+            updatedSel.path_nodes && updatedSel.path_nodes.length > 0
+              ? updatedSel.path_nodes[0]
+              : null;
+          set({
+            selectedFinding: updatedSel,
+            activePathStepIndex: 0,
+            remediationPreview: null,
+            selectedGraphNodeId: firstNode ? firstNode.id : null,
+            activeFilepath: firstNode ? firstNode.filepath : null,
+            activeStartLine: firstNode ? firstNode.start_line : null,
+            activeEndLine: firstNode ? firstNode.end_line : null,
+          });
+          if (get().isDiffEditorOpen) {
+            void get().fetchRemediationPreview(updatedSel);
+          }
         } else if (updatedSel && curSel) {
           set({ selectedFinding: updatedSel });
         }

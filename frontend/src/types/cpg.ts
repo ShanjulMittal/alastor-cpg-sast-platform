@@ -49,6 +49,7 @@ export interface CPGNode {
   is_sink: boolean;
   is_sanitizer: boolean;
   is_bfl?: boolean;
+  is_synthesized_context?: boolean;
   category?: string;
   purpose?: string;
   language?: string;
@@ -60,6 +61,23 @@ export interface CPGEdge {
   target_id: string;
   edge_type: EdgeType;
   var_name?: string | null;
+  flow_label?: string;
+  step_index?: number;
+}
+
+export interface GraphEdgeItem {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+  var_name?: string | null;
+  flow_label?: string;
+  step_index?: number;
+}
+
+export interface GraphDataResponse {
+  nodes: CPGNode[];
+  edges: GraphEdgeItem[];
 }
 
 export interface BestFixLocation {
@@ -104,6 +122,8 @@ export interface Finding {
     target: string;
     type: string;
     var_name?: string | null;
+    flow_label?: string;
+    step_index?: number;
   }>;
   scan_engine?: ScanEngineType;
   language?: string;
@@ -180,6 +200,14 @@ export interface DiscoveredElement {
   details: string;
 }
 
+export interface CrossFileEdge {
+  source_filepath: string;
+  target_filepath: string;
+  edge_type: string;
+  symbols: string[];
+  flow_label: string;
+}
+
 export interface FilePurposeInfo {
   filepath: string;
   filename: string;
@@ -193,6 +221,7 @@ export interface FilePurposeInfo {
   elements: DiscoveredElement[];
   is_cpg_supported: boolean;
   security_tags: string[];
+  imports_files?: string[];
 }
 
 export interface DirectoryTreeNode {
@@ -212,6 +241,7 @@ export interface AppTreeSummary {
   detected_tech_stack: string[];
   tree: DirectoryTreeNode;
   flat_files: FilePurposeInfo[];
+  cross_file_edges?: CrossFileEdge[];
 }
 
 export interface ScanResponse {
@@ -281,8 +311,31 @@ export type GraphViewMode =
   | "CFG_ONLY"
   | "APP_TREE";
 
+export type PrimaryWorkflowStage =
+  | "SCAN_REPOS"
+  | "TRIAGE_FIX"
+  | "MAP_360_THREATS"
+  | "ASPM_GOVERNANCE";
+
+export type MapSubTab = "SPIDER_360" | "THREAT_BOUNDARIES";
+
+export type AspmSubSection =
+  | "POSTURE"
+  | "SAST_PLUS"
+  | "RULES_ENGINE"
+  | "GOVERNANCE"
+  | "EXPORTS";
+
+export type AiDrawerTab =
+  | "VALIDATE"
+  | "CODE_AUDIT"
+  | "PATCH"
+  | "GRAPH"
+  | "SETTINGS";
+
 export type WorkspaceViewMode =
   | "REMEDIATION_IDE"
+  | "AUDIT_STUDIO"
   | "THREAT_MODELING"
   | "EXECUTIVE_ASPM"
   | "PROJECTS_HUB"
@@ -334,6 +387,19 @@ export interface RemediateUndoResponse {
   filepath: string;
   restored_sha256: string;
   active_findings_count: number;
+  message: string;
+}
+
+export interface BatchRemediateResponse {
+  status: string;
+  applied_count: number;
+  skipped_count: number;
+  applied_patch_ids: string[];
+  patched_files: string[];
+  applied_finding_ids: string[];
+  verified_severed_count: number;
+  remaining_findings_count: number;
+  unified_diff: string;
   message: string;
 }
 
@@ -587,12 +653,9 @@ export interface IntegrationHubStateResponse {
 }
 
 export type AppThemeId =
-  | "alastor-infernal"
   | "olympian-light"
   | "athena-parchment"
-  | "hyperborean-light"
-  | "hecate-arcane"
-  | "stygian-abyss";
+  | "hyperborean-light";
 
 export type BackdropIntensity = "VIVID" | "SUBTLE" | "MINIMAL";
 
@@ -890,4 +953,151 @@ export interface UserAccountsStateResponse {
   }>;
 }
 
+// ---------------------------------------------------------------------------
+// 10. Token-Efficient Multi-Provider BYOK Frontier AI Interfaces
+// ---------------------------------------------------------------------------
+export type AiProviderType =
+  | "gemini"
+  | "openai"
+  | "anthropic"
+  | "openai_compatible";
 
+export interface AiProviderInfo {
+  id: string;
+  label: string;
+  default_model: string;
+  models: string[];
+  requires_base_url: boolean;
+}
+
+export interface AiCumulativeTelemetry {
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  total_full_file_tokens_est: number;
+  total_tokens_saved: number;
+  overall_savings_pct: number;
+  cache_hits: number;
+  total_cache_hits?: number;
+  total_requests: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  full_file_tokens_est?: number;
+  tokens_saved?: number;
+  savings_pct?: number;
+}
+
+export interface AiTokenTelemetry {
+  prompt_tokens: number;
+  completion_tokens: number;
+  full_file_tokens_est: number;
+  tokens_saved: number;
+  savings_pct: number;
+  cache_hits: number;
+  total_requests: number;
+  total_prompt_tokens?: number;
+  total_completion_tokens?: number;
+  total_full_file_tokens_est?: number;
+  total_tokens_saved?: number;
+  overall_savings_pct?: number;
+  total_cache_hits?: number;
+}
+
+export interface AiPublicConfig {
+  provider: AiProviderType;
+  model: string;
+  base_url: string;
+  has_api_key: boolean;
+  masked_api_key: string;
+  persist_key: boolean;
+  available_providers: AiProviderInfo[];
+  token_telemetry: AiCumulativeTelemetry;
+}
+
+export type AiPublicConfigResponse = AiPublicConfig;
+
+export interface AiConfigUpdatePayload {
+  provider: AiProviderType;
+  model: string;
+  base_url?: string | null;
+  api_key?: string | null;
+  persist_key?: boolean;
+  clear_api_key?: boolean;
+}
+
+export interface AiConnectionTestResponse {
+  ok: boolean;
+  provider: string;
+  model: string;
+  latency_ms: number;
+  message: string;
+  error_code?: string | null;
+}
+
+export interface AiFindingVerdict {
+  finding_id: string;
+  verdict: "TRUE_POSITIVE" | "FALSE_POSITIVE" | "NEEDS_REVIEW";
+  confidence: number;
+  exploitability_summary: string;
+  recommended_action: string;
+  suggested_triage_status: TriageStatus;
+  slice_lines_count: number;
+  cache_hit: boolean;
+}
+
+export interface AiValidateFindingsResponse {
+  ok: boolean;
+  verdicts: AiFindingVerdict[];
+  token_telemetry: AiTokenTelemetry;
+  error_code?: string | null;
+  user_message?: string | null;
+}
+
+export interface AiCodeAuditObservation {
+  line_range: string;
+  severity: string;
+  title: string;
+  explanation: string;
+  remediation: string;
+}
+
+export interface AiCodeAuditResponse {
+  ok: boolean;
+  summary: string;
+  risk_level: string;
+  observations: AiCodeAuditObservation[];
+  secure_snippet: string;
+  token_telemetry: AiTokenTelemetry;
+  error_code?: string | null;
+  user_message?: string | null;
+}
+
+export interface AiPatchSynthesisResponse {
+  ok: boolean;
+  finding_id: string;
+  filepath: string;
+  explanation: string;
+  before_snippet: string;
+  after_snippet: string;
+  patched_full_content?: string | null;
+  token_telemetry: AiTokenTelemetry;
+  error_code?: string | null;
+  user_message?: string | null;
+}
+
+export interface AiGraphExplainPayload {
+  view_mode: string;
+  finding_id?: string | null;
+  nodes_digest: Array<Record<string, any>>;
+  edges_digest: Array<Record<string, any>>;
+}
+
+export interface AiGraphExplainResponse {
+  ok: boolean;
+  headline: string;
+  plain_english_story: string;
+  step_walkthrough: string[];
+  security_takeaway: string;
+  token_telemetry: AiTokenTelemetry;
+  error_code?: string | null;
+  user_message?: string | null;
+}

@@ -3,200 +3,110 @@
 @tailwind utilities;
 
 /* ============================================================================
-   ALASTOR MULTI-THEME ENGINE (Mythic Demon Dark + 3 Light Themes + Color Themes)
+   ALASTOR v4.0 HIGH-CONTRAST DAYLIGHT THEME ENGINE (Light-Only Architecture)
+   Exclusively provides crisp daylight themes with retired legacy dark modes removed.
+   Guarantees >= 4.5:1 WCAG AA/AAA readability across every surface & badge.
    ============================================================================ */
 
-/* 1. Default Theme: ALASTOR INFERNAL (Mythological Demon Crimson & Molten Gold Dark) */
+/* 1. Default Theme: OLYMPIAN DAYLIGHT (Crisp High-Contrast Slate & Pure White) */
 :root,
-html[data-theme="alastor-infernal"] {
-  --background: #0b0609;
-  --foreground: #fdf4f6;
-  --border: #331722;
-  --surface-void: #09090b;
-  --surface-panel: #101014;
-  --surface-elevated: #17171d;
-  --border-hairline: rgba(255, 255, 255, 0.08);
-  --ink-primary: #f4f4f6;
-  --ink-muted: #8e929f;
-  --sig-crimson: #e11d48;
-  --sig-gold: #f59e0b;
-  --sig-emerald: #10b981;
-  --sig-cyan: #06b6d4;
-  --alastor-glow-primary: rgba(225, 29, 72, 0.24);
-  --alastor-glow-secondary: rgba(245, 158, 11, 0.16);
-  --alastor-sigil-stroke: rgba(245, 158, 11, 0.28);
-
-  --z-950: 11 6 9;
-  --z-900: 22 11 16;
-  --z-800: 45 21 31;
-  --z-700: 72 33 47;
-  --z-600: 114 58 76;
-  --z-500: 156 104 120;
-  --z-400: 198 158 170;
-  --z-300: 228 202 210;
-  --z-200: 244 229 234;
-  --z-100: 253 244 246;
-  --z-50: 255 251 252;
-}
-
-/* 2. OLYMPIAN DAYLIGHT (Crisp Pure Light Theme — Alabaster White & Deep Slate Ink) */
+html,
 html[data-theme="olympian-light"] {
-  --background: #f3f6fb;
+  color-scheme: light;
+  --background: #f8fafc;
   --foreground: #0f172a;
-  --border: #d6e0ee;
-  --surface-void: #f4f6fa;
+  --border: #cbd5e1;
+  --surface-void: #f1f5f9;
   --surface-panel: #ffffff;
   --surface-elevated: #f8fafc;
-  --border-hairline: rgba(15, 23, 42, 0.10);
+  --border-hairline: rgba(15, 23, 42, 0.12);
   --ink-primary: #0f172a;
   --ink-muted: #475569;
   --sig-crimson: #be123c;
   --sig-gold: #b45309;
   --sig-emerald: #047857;
   --sig-cyan: #0e7490;
-  --alastor-glow-primary: rgba(225, 29, 72, 0.09);
-  --alastor-glow-secondary: rgba(14, 116, 144, 0.09);
-  --alastor-sigil-stroke: rgba(180, 83, 9, 0.22);
+  --alastor-glow-primary: rgba(225, 29, 72, 0.07);
+  --alastor-glow-secondary: rgba(14, 116, 144, 0.07);
+  --alastor-sigil-stroke: rgba(180, 83, 9, 0.20);
 
-  --z-950: 243 246 251;
+  --z-950: 248 250 252;
   --z-900: 255 255 255;
-  --z-800: 220 229 240;
-  --z-700: 191 205 222;
-  --z-600: 124 141 163;
-  --z-500: 82 97 119;
-  --z-400: 54 68 89;
-  --z-300: 33 45 64;
-  --z-200: 18 28 45;
-  --z-100: 9 15 28;
-  --z-50: 2 6 18;
+  --z-800: 226 232 240;
+  --z-700: 203 213 225;
+  --z-600: 100 116 139;
+  --z-500: 71 85 105;
+  --z-400: 51 65 85;
+  --z-300: 30 41 59;
+  --z-200: 15 23 42;
+  --z-100: 9 14 26;
+  --z-50: 2 6 23;
 }
 
-/* 3. ATHENA PARCHMENT (Warm Daylight Theme — Soft Ivory, Gold & Espresso Ink) */
+/* 2. ATHENA PARCHMENT (Warm Daylight Theme — Soft Ivory, Gold & Espresso Ink) */
 html[data-theme="athena-parchment"] {
+  color-scheme: light;
   --background: #f6f0e4;
   --foreground: #1c1510;
   --border: #ded2be;
   --surface-void: #f6f0e4;
   --surface-panel: #fefbf5;
   --surface-elevated: #f9f4ea;
-  --border-hairline: rgba(28, 21, 16, 0.11);
+  --border-hairline: rgba(28, 21, 16, 0.12);
   --ink-primary: #1c1510;
-  --ink-muted: #625342;
+  --ink-muted: #574838;
   --sig-crimson: #be123c;
   --sig-gold: #b45309;
   --sig-emerald: #047857;
   --sig-cyan: #0e7490;
-  --alastor-glow-primary: rgba(180, 83, 9, 0.11);
-  --alastor-glow-secondary: rgba(190, 18, 60, 0.08);
-  --alastor-sigil-stroke: rgba(146, 64, 14, 0.24);
+  --alastor-glow-primary: rgba(180, 83, 9, 0.09);
+  --alastor-glow-secondary: rgba(190, 18, 60, 0.07);
+  --alastor-sigil-stroke: rgba(146, 64, 14, 0.22);
 
   --z-950: 246 240 228;
   --z-900: 254 251 245;
   --z-800: 226 215 197;
   --z-700: 201 186 162;
-  --z-600: 138 122 100;
-  --z-500: 98 83 66;
-  --z-400: 69 57 44;
-  --z-300: 46 37 28;
-  --z-200: 29 22 16;
+  --z-600: 120 105 85;
+  --z-500: 87 72 56;
+  --z-400: 62 50 38;
+  --z-300: 42 33 25;
+  --z-200: 28 21 16;
   --z-100: 17 12 8;
   --z-50: 8 5 3;
 }
 
-/* 4. HYPERBOREAN FROST (Cool Glacier Light Theme — Ice Blue & Deep Navy) */
+/* 3. HYPERBOREAN FROST (Cool Glacier Light Theme — Ice Blue & Deep Navy) */
 html[data-theme="hyperborean-light"] {
+  color-scheme: light;
   --background: #ebf4fc;
   --foreground: #09192e;
   --border: #cbe0f5;
   --surface-void: #ebf4fc;
   --surface-panel: #fafdff;
   --surface-elevated: #f2f8fe;
-  --border-hairline: rgba(9, 25, 46, 0.10);
+  --border-hairline: rgba(9, 25, 46, 0.12);
   --ink-primary: #09192e;
-  --ink-muted: #456282;
+  --ink-muted: #3b5573;
   --sig-crimson: #be123c;
   --sig-gold: #b45309;
   --sig-emerald: #047857;
   --sig-cyan: #0284c7;
-  --alastor-glow-primary: rgba(2, 132, 199, 0.11);
-  --alastor-glow-secondary: rgba(99, 102, 241, 0.09);
+  --alastor-glow-primary: rgba(2, 132, 199, 0.09);
+  --alastor-glow-secondary: rgba(99, 102, 241, 0.08);
   --alastor-sigil-stroke: rgba(3, 105, 161, 0.22);
 
   --z-950: 235 244 252;
   --z-900: 250 253 255;
   --z-800: 207 225 244;
   --z-700: 172 199 228;
-  --z-600: 108 139 173;
-  --z-500: 69 98 130;
-  --z-400: 42 68 99;
+  --z-600: 96 125 158;
+  --z-500: 59 85 115;
+  --z-400: 38 62 92;
   --z-300: 23 45 74;
   --z-200: 13 30 54;
   --z-100: 6 17 34;
   --z-50: 2 9 20;
-}
-
-/* 5. HECATE ARCANE (Mythic Amethyst & Void Dark Theme) */
-html[data-theme="hecate-arcane"] {
-  --background: #090514;
-  --foreground: #f7f4ff;
-  --border: #2b1b4d;
-  --surface-void: #090514;
-  --surface-panel: #120b24;
-  --surface-elevated: #1b1234;
-  --border-hairline: rgba(255, 255, 255, 0.08);
-  --ink-primary: #f7f4ff;
-  --ink-muted: #9e90c2;
-  --sig-crimson: #e11d48;
-  --sig-gold: #f59e0b;
-  --sig-emerald: #10b981;
-  --sig-cyan: #06b6d4;
-  --alastor-glow-primary: rgba(168, 85, 247, 0.25);
-  --alastor-glow-secondary: rgba(236, 72, 153, 0.16);
-  --alastor-sigil-stroke: rgba(192, 132, 252, 0.28);
-
-  --z-950: 9 5 20;
-  --z-900: 18 11 36;
-  --z-800: 38 24 68;
-  --z-700: 62 40 105;
-  --z-600: 98 70 150;
-  --z-500: 140 116 190;
-  --z-400: 184 166 222;
-  --z-300: 218 206 244;
-  --z-200: 238 232 252;
-  --z-100: 249 246 255;
-  --z-50: 255 255 255;
-}
-
-/* 6. STYGIAN ABYSS (Classic Cyber Obsidian & Electric Cyan Dark Theme) */
-html[data-theme="stygian-abyss"] {
-  --background: #09090b;
-  --foreground: #fafafa;
-  --border: #27272a;
-  --surface-void: #09090b;
-  --surface-panel: #101014;
-  --surface-elevated: #18181b;
-  --border-hairline: rgba(255, 255, 255, 0.08);
-  --ink-primary: #fafafa;
-  --ink-muted: #a1a1aa;
-  --sig-crimson: #e11d48;
-  --sig-gold: #f59e0b;
-  --sig-emerald: #10b981;
-  --sig-cyan: #06b6d4;
-  --alastor-glow-primary: rgba(6, 182, 212, 0.2);
-  --alastor-glow-secondary: rgba(59, 130, 246, 0.15);
-  --alastor-sigil-stroke: rgba(34, 211, 238, 0.24);
-
-  --z-950: 9 9 11;
-  --z-900: 24 24 27;
-  --z-800: 39 39 42;
-  --z-700: 63 63 70;
-  --z-600: 82 82 91;
-  --z-500: 113 113 122;
-  --z-400: 161 161 170;
-  --z-300: 212 212 216;
-  --z-200: 228 228 231;
-  --z-100: 244 244 245;
-  --z-50: 250 250 250;
 }
 
 body {
@@ -204,11 +114,11 @@ body {
   background: var(--surface-void);
   font-family: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   overflow: hidden;
-  transition: background-color 0.22s ease, color 0.22s ease;
+  transition: background-color 0.18s ease, color 0.18s ease;
 }
 
 :focus-visible {
-  outline: 1.5px solid var(--sig-gold);
+  outline: 1.5px solid #2563eb;
   outline-offset: 2px;
 }
 
@@ -224,160 +134,536 @@ body {
 }
 
 /* ============================================================================
-   LIGHT-MODE SEMANTIC BADGE & CONTRAST HARMONIZATION
-   Ensures all status pills, severity chips, and accent surfaces look crisp
-   and ultra-legible when any Light Theme is active.
+   UNIVERSAL DAYLIGHT CONTRAST HARMONIZATION
+   Converts legacy dark Tailwind utilities (slate-950..800, bg-black/*,
+   *-950/* badges, pale *-200..400 text, and stray .text-white) into crisp
+   daylight surfaces with >= 4.5:1 dark readable typography while preserving
+   modal backdrop scrims and white text on solid saturated buttons.
    ============================================================================ */
-html[data-theme-mode="light"] h1.text-white,
-html[data-theme-mode="light"] h2.text-white,
-html[data-theme-mode="light"] h3.text-white,
-html[data-theme-mode="light"] h4.text-white {
-  color: rgb(var(--z-100)) !important;
+
+/* 1. Legacy Slate Surfaces, Borders, Hovers & Text */
+html :is(.bg-slate-950, [class^="bg-slate-950/"], [class*=" bg-slate-950/"]) {
+  background-color: #f8fafc !important;
 }
 
-html[data-theme-mode="light"] .bg-cyan-950,
-html[data-theme-mode="light"] .bg-cyan-950\/80,
-html[data-theme-mode="light"] .bg-cyan-950\/60,
-html[data-theme-mode="light"] .bg-cyan-950\/50,
-html[data-theme-mode="light"] .bg-cyan-950\/40,
-html[data-theme-mode="light"] .bg-cyan-950\/30,
-html[data-theme-mode="light"] .bg-cyan-950\/20,
-html[data-theme-mode="light"] .bg-cyan-950\/15 {
-  background-color: rgba(207, 250, 254, 0.85) !important;
+html :is(.bg-slate-900, [class^="bg-slate-900/"], [class*=" bg-slate-900/"]) {
+  background-color: #ffffff !important;
 }
-html[data-theme-mode="light"] .text-cyan-300,
-html[data-theme-mode="light"] .text-cyan-200,
-html[data-theme-mode="light"] .text-cyan-400 {
+
+html :is(.bg-slate-800, [class^="bg-slate-800/"], [class*=" bg-slate-800/"]) {
+  background-color: #f1f5f9 !important;
+}
+
+html :is(.bg-slate-700, [class^="bg-slate-700/"], [class*=" bg-slate-700/"]) {
+  background-color: #e2e8f0 !important;
+}
+
+html .hover\:bg-slate-900:hover,
+html .hover\:bg-slate-800:hover,
+html .hover\:bg-zinc-900:hover,
+html .hover\:bg-zinc-800:hover {
+  background-color: #e2e8f0 !important;
+}
+
+html .text-slate-50,
+html .text-slate-100,
+html .text-slate-200 {
+  color: #0f172a !important;
+}
+
+html .text-slate-300 {
+  color: #1e293b !important;
+}
+
+html .text-slate-400 {
+  color: #334155 !important;
+}
+
+html .text-slate-500 {
+  color: #475569 !important;
+}
+
+html :is(
+  .border-slate-900,
+  .border-slate-800,
+  .border-slate-700,
+  .border-slate-600,
+  [class^="border-slate-800/"],
+  [class*=" border-slate-800/"],
+  [class^="border-slate-700/"],
+  [class*=" border-slate-700/"]
+) {
+  border-color: #cbd5e1 !important;
+}
+
+/* 2. Card/Panel bg-black/* vs Modal Backdrop Scrims (fixed.inset-0) */
+html .bg-black,
+html .bg-black\/90,
+html .bg-black\/80,
+html .bg-black\/75,
+html .bg-black\/70,
+html .bg-black\/60,
+html .bg-black\/50,
+html .bg-black\/40,
+html .bg-black\/30,
+html .bg-black\/20,
+html :is([class^="bg-black/"], [class*=" bg-black/"]) {
+  background-color: #f1f5f9 !important;
+}
+
+html .fixed.inset-0.bg-black\/90,
+html .fixed.inset-0.bg-black\/80,
+html .fixed.inset-0.bg-black\/75,
+html .fixed.inset-0.bg-black\/70,
+html .fixed.inset-0.bg-black\/60,
+html .fixed.inset-0.bg-black\/50,
+html .fixed.inset-0.bg-black\/40,
+html .fixed.inset-0[class*="bg-black/"] {
+  background-color: rgba(15, 23, 42, 0.45) !important;
+}
+
+/* 3. Cyan & Sky Tinted Surfaces, Text & Borders */
+html :is(
+  .bg-cyan-950,
+  .bg-cyan-900,
+  [class^="bg-cyan-950/"],
+  [class*=" bg-cyan-950/"],
+  [class^="bg-cyan-900/"],
+  [class*=" bg-cyan-900/"]
+) {
+  background-color: rgba(207, 250, 254, 0.88) !important;
+}
+html .hover\:bg-cyan-950:hover,
+html .hover\:bg-cyan-900:hover {
+  background-color: #a5f3fc !important;
+}
+html :is(.text-cyan-100, .text-cyan-200, .text-cyan-300, .text-cyan-400) {
   color: #0e7490 !important;
 }
-html[data-theme-mode="light"] .border-cyan-800,
-html[data-theme-mode="light"] .border-cyan-700,
-html[data-theme-mode="light"] .border-cyan-700\/80,
-html[data-theme-mode="light"] .border-cyan-800\/70,
-html[data-theme-mode="light"] .border-cyan-900\/60 {
+html :is(
+  .border-cyan-900,
+  .border-cyan-800,
+  .border-cyan-700,
+  [class^="border-cyan-900/"],
+  [class*=" border-cyan-900/"],
+  [class^="border-cyan-800/"],
+  [class*=" border-cyan-800/"],
+  [class^="border-cyan-700/"],
+  [class*=" border-cyan-700/"]
+) {
   border-color: #67e8f9 !important;
 }
 
-html[data-theme-mode="light"] .bg-indigo-950,
-html[data-theme-mode="light"] .bg-indigo-950\/80,
-html[data-theme-mode="light"] .bg-indigo-950\/60,
-html[data-theme-mode="light"] .bg-indigo-950\/50,
-html[data-theme-mode="light"] .bg-indigo-950\/40,
-html[data-theme-mode="light"] .bg-indigo-950\/30,
-html[data-theme-mode="light"] .bg-indigo-950\/20 {
-  background-color: rgba(224, 231, 255, 0.88) !important;
+html :is(
+  .bg-sky-950,
+  .bg-sky-900,
+  [class^="bg-sky-950/"],
+  [class*=" bg-sky-950/"],
+  [class^="bg-sky-900/"],
+  [class*=" bg-sky-900/"]
+) {
+  background-color: #e0f2fe !important;
 }
-html[data-theme-mode="light"] .text-indigo-300,
-html[data-theme-mode="light"] .text-indigo-200,
-html[data-theme-mode="light"] .text-indigo-400 {
+html :is(.text-sky-100, .text-sky-200, .text-sky-300, .text-sky-400) {
+  color: #0369a1 !important;
+}
+html :is(
+  .border-sky-900,
+  .border-sky-800,
+  .border-sky-700,
+  [class^="border-sky-800/"],
+  [class*=" border-sky-800/"],
+  [class^="border-sky-700/"],
+  [class*=" border-sky-700/"]
+) {
+  border-color: #7dd3fc !important;
+}
+
+/* 4. Blue, Indigo, Violet & Purple Tinted Surfaces, Text & Borders */
+html :is(
+  .bg-blue-950,
+  .bg-blue-900,
+  [class^="bg-blue-950/"],
+  [class*=" bg-blue-950/"],
+  [class^="bg-blue-900/"],
+  [class*=" bg-blue-900/"]
+) {
+  background-color: #dbeafe !important;
+}
+html :is(.text-blue-100, .text-blue-200, .text-blue-300, .text-blue-400) {
+  color: #1d4ed8 !important;
+}
+html :is(.border-blue-900, .border-blue-800, .border-blue-700) {
+  border-color: #93c5fd !important;
+}
+
+html :is(
+  .bg-indigo-950,
+  .bg-indigo-900,
+  [class^="bg-indigo-950/"],
+  [class*=" bg-indigo-950/"],
+  [class^="bg-indigo-900/"],
+  [class*=" bg-indigo-900/"]
+) {
+  background-color: rgba(224, 231, 255, 0.9) !important;
+}
+html :is(.text-indigo-100, .text-indigo-200, .text-indigo-300, .text-indigo-400) {
   color: #3730a3 !important;
 }
-html[data-theme-mode="light"] .border-indigo-800,
-html[data-theme-mode="light"] .border-indigo-700,
-html[data-theme-mode="light"] .border-indigo-700\/80 {
+html :is(
+  .border-indigo-900,
+  .border-indigo-800,
+  .border-indigo-700,
+  [class^="border-indigo-800/"],
+  [class*=" border-indigo-800/"],
+  [class^="border-indigo-700/"],
+  [class*=" border-indigo-700/"]
+) {
   border-color: #a5b4fc !important;
 }
 
-html[data-theme-mode="light"] .bg-emerald-950,
-html[data-theme-mode="light"] .bg-emerald-950\/80,
-html[data-theme-mode="light"] .bg-emerald-950\/70,
-html[data-theme-mode="light"] .bg-emerald-950\/60,
-html[data-theme-mode="light"] .bg-emerald-950\/50,
-html[data-theme-mode="light"] .bg-emerald-950\/40,
-html[data-theme-mode="light"] .bg-emerald-950\/30,
-html[data-theme-mode="light"] .bg-emerald-950\/20,
-html[data-theme-mode="light"] .bg-emerald-950\/10 {
-  background-color: rgba(209, 250, 229, 0.85) !important;
+html :is(
+  .bg-violet-950,
+  .bg-violet-900,
+  [class^="bg-violet-950/"],
+  [class*=" bg-violet-950/"],
+  [class^="bg-violet-900/"],
+  [class*=" bg-violet-900/"]
+) {
+  background-color: #ede9fe !important;
 }
-html[data-theme-mode="light"] .text-emerald-300,
-html[data-theme-mode="light"] .text-emerald-200,
-html[data-theme-mode="light"] .text-emerald-400 {
-  color: #065f46 !important;
+html :is(.text-violet-100, .text-violet-200, .text-violet-300, .text-violet-400) {
+  color: #5b21b6 !important;
 }
-html[data-theme-mode="light"] .border-emerald-800,
-html[data-theme-mode="light"] .border-emerald-700,
-html[data-theme-mode="light"] .border-emerald-700\/80 {
-  border-color: #6ee7b7 !important;
-}
-
-html[data-theme-mode="light"] .bg-amber-950,
-html[data-theme-mode="light"] .bg-amber-950\/80,
-html[data-theme-mode="light"] .bg-amber-950\/60,
-html[data-theme-mode="light"] .bg-amber-950\/50,
-html[data-theme-mode="light"] .bg-amber-950\/30,
-html[data-theme-mode="light"] .bg-amber-950\/20,
-html[data-theme-mode="light"] .bg-amber-950\/10 {
-  background-color: rgba(254, 243, 199, 0.9) !important;
-}
-html[data-theme-mode="light"] .text-amber-300,
-html[data-theme-mode="light"] .text-amber-200,
-html[data-theme-mode="light"] .text-amber-400 {
-  color: #92400e !important;
-}
-html[data-theme-mode="light"] .border-amber-800,
-html[data-theme-mode="light"] .border-amber-700,
-html[data-theme-mode="light"] .border-amber-800\/80 {
-  border-color: #fcd34d !important;
+html :is(
+  .border-violet-900,
+  .border-violet-800,
+  .border-violet-700,
+  [class^="border-violet-800/"],
+  [class*=" border-violet-800/"],
+  [class^="border-violet-700/"],
+  [class*=" border-violet-700/"]
+) {
+  border-color: #c4b5fd !important;
 }
 
-html[data-theme-mode="light"] .bg-red-950,
-html[data-theme-mode="light"] .bg-red-950\/80,
-html[data-theme-mode="light"] .bg-red-950\/60,
-html[data-theme-mode="light"] .bg-red-950\/50,
-html[data-theme-mode="light"] .bg-red-950\/40,
-html[data-theme-mode="light"] .bg-red-950\/30,
-html[data-theme-mode="light"] .bg-red-950\/20,
-html[data-theme-mode="light"] .bg-red-950\/15 {
-  background-color: rgba(254, 226, 226, 0.88) !important;
+html :is(
+  .bg-purple-950,
+  .bg-purple-900,
+  [class^="bg-purple-950/"],
+  [class*=" bg-purple-950/"],
+  [class^="bg-purple-900/"],
+  [class*=" bg-purple-900/"]
+) {
+  background-color: rgba(243, 232, 255, 0.9) !important;
 }
-html[data-theme-mode="light"] .text-red-300,
-html[data-theme-mode="light"] .text-red-200,
-html[data-theme-mode="light"] .text-red-400 {
-  color: #991b1b !important;
-}
-html[data-theme-mode="light"] .border-red-800,
-html[data-theme-mode="light"] .border-red-700,
-html[data-theme-mode="light"] .border-red-800\/80,
-html[data-theme-mode="light"] .border-red-900\/60 {
-  border-color: #fca5a5 !important;
-}
-
-html[data-theme-mode="light"] .bg-purple-950,
-html[data-theme-mode="light"] .bg-purple-950\/80,
-html[data-theme-mode="light"] .bg-purple-950\/60,
-html[data-theme-mode="light"] .bg-purple-950\/50,
-html[data-theme-mode="light"] .bg-purple-950\/30,
-html[data-theme-mode="light"] .bg-purple-950\/20 {
-  background-color: rgba(243, 232, 255, 0.88) !important;
-}
-html[data-theme-mode="light"] .text-purple-300,
-html[data-theme-mode="light"] .text-purple-200,
-html[data-theme-mode="light"] .text-purple-400 {
+html :is(.text-purple-100, .text-purple-200, .text-purple-300, .text-purple-400) {
   color: #6b21a8 !important;
 }
-html[data-theme-mode="light"] .border-purple-800,
-html[data-theme-mode="light"] .border-purple-700 {
+html :is(.border-purple-900, .border-purple-800, .border-purple-700) {
   border-color: #d8b4fe !important;
 }
 
-html[data-theme-mode="light"] .bg-blue-950,
-html[data-theme-mode="light"] .bg-blue-950\/60,
-html[data-theme-mode="light"] .bg-blue-950\/40 {
-  background-color: rgba(219, 234, 254, 0.88) !important;
+/* 5. Emerald, Green & Teal Tinted Surfaces, Text & Borders */
+html :is(
+  .bg-emerald-950,
+  .bg-emerald-900,
+  .bg-green-950,
+  .bg-green-900,
+  [class^="bg-emerald-950/"],
+  [class*=" bg-emerald-950/"],
+  [class^="bg-emerald-900/"],
+  [class*=" bg-emerald-900/"]
+) {
+  background-color: rgba(209, 250, 229, 0.88) !important;
 }
-html[data-theme-mode="light"] .text-blue-300,
-html[data-theme-mode="light"] .text-blue-200,
-html[data-theme-mode="light"] .text-blue-400 {
-  color: #1e40af !important;
+html .hover\:bg-emerald-950:hover,
+html .hover\:bg-emerald-900:hover,
+html .hover\:bg-emerald-800:hover {
+  background-color: #a7f3d0 !important;
+}
+html :is(
+  .text-emerald-100,
+  .text-emerald-200,
+  .text-emerald-300,
+  .text-emerald-400,
+  .text-green-200,
+  .text-green-300,
+  .text-green-400,
+  [class^="text-emerald-200/"],
+  [class*=" text-emerald-200/"]
+) {
+  color: #065f46 !important;
+}
+html :is(
+  .border-emerald-900,
+  .border-emerald-800,
+  .border-emerald-700,
+  [class^="border-emerald-800/"],
+  [class*=" border-emerald-800/"],
+  [class^="border-emerald-700/"],
+  [class*=" border-emerald-700/"]
+) {
+  border-color: #6ee7b7 !important;
 }
 
-html[data-theme-mode="light"] .bg-yellow-950,
-html[data-theme-mode="light"] .bg-yellow-950\/60 {
-  background-color: rgba(254, 249, 195, 0.9) !important;
+html :is(
+  .bg-teal-950,
+  .bg-teal-900,
+  [class^="bg-teal-950/"],
+  [class*=" bg-teal-950/"],
+  [class^="bg-teal-900/"],
+  [class*=" bg-teal-900/"]
+) {
+  background-color: #ccfbf1 !important;
 }
-html[data-theme-mode="light"] .text-yellow-300,
-html[data-theme-mode="light"] .text-yellow-200 {
-  color: #854d0e !important;
+html :is(.text-teal-100, .text-teal-200, .text-teal-300, .text-teal-400) {
+  color: #0f766e !important;
+}
+html :is(.border-teal-900, .border-teal-800, .border-teal-700) {
+  border-color: #5eead4 !important;
+}
+
+/* 6. Amber, Yellow & Orange Tinted Surfaces, Text & Borders */
+html :is(
+  .bg-amber-950,
+  .bg-amber-900,
+  .bg-yellow-950,
+  .bg-yellow-900,
+  [class^="bg-amber-950/"],
+  [class*=" bg-amber-950/"],
+  [class^="bg-amber-900/"],
+  [class*=" bg-amber-900/"],
+  [class^="bg-yellow-950/"],
+  [class*=" bg-yellow-950/"]
+) {
+  background-color: rgba(254, 243, 199, 0.92) !important;
+}
+html .hover\:bg-amber-950:hover,
+html .hover\:bg-amber-900:hover {
+  background-color: #fde68a !important;
+}
+html :is(
+  .text-amber-100,
+  .text-amber-200,
+  .text-amber-300,
+  .text-amber-400,
+  .text-yellow-200,
+  .text-yellow-300,
+  .text-yellow-400,
+  [class^="text-amber-200/"],
+  [class*=" text-amber-200/"]
+) {
+  color: #92400e !important;
+}
+html :is(
+  .border-amber-900,
+  .border-amber-800,
+  .border-amber-700,
+  [class^="border-amber-800/"],
+  [class*=" border-amber-800/"],
+  [class^="border-amber-700/"],
+  [class*=" border-amber-700/"]
+) {
+  border-color: #fcd34d !important;
+}
+
+html :is(
+  .bg-orange-950,
+  .bg-orange-900,
+  [class^="bg-orange-950/"],
+  [class*=" bg-orange-950/"],
+  [class^="bg-orange-900/"],
+  [class*=" bg-orange-900/"]
+) {
+  background-color: #ffedd5 !important;
+}
+html :is(.text-orange-100, .text-orange-200, .text-orange-300, .text-orange-400) {
+  color: #9a3412 !important;
+}
+html :is(.border-orange-900, .border-orange-800, .border-orange-700) {
+  border-color: #fdba74 !important;
+}
+
+/* 7. Red & Rose Tinted Surfaces, Text & Borders */
+html :is(
+  .bg-red-950,
+  .bg-red-900,
+  [class^="bg-red-950/"],
+  [class*=" bg-red-950/"],
+  [class^="bg-red-900/"],
+  [class*=" bg-red-900/"]
+) {
+  background-color: rgba(254, 226, 226, 0.9) !important;
+}
+html :is(.text-red-100, .text-red-200, .text-red-300, .text-red-400) {
+  color: #991b1b !important;
+}
+html :is(
+  .border-red-900,
+  .border-red-800,
+  .border-red-700,
+  [class^="border-red-900/"],
+  [class*=" border-red-900/"],
+  [class^="border-red-800/"],
+  [class*=" border-red-800/"],
+  [class^="border-red-700/"],
+  [class*=" border-red-700/"]
+) {
+  border-color: #fca5a5 !important;
+}
+
+html :is(
+  .bg-rose-950,
+  .bg-rose-900,
+  [class^="bg-rose-950/"],
+  [class*=" bg-rose-950/"],
+  [class^="bg-rose-900/"],
+  [class*=" bg-rose-900/"]
+) {
+  background-color: #ffe4e6 !important;
+}
+html :is(.text-rose-100, .text-rose-200, .text-rose-300, .text-rose-400) {
+  color: #9f1239 !important;
+}
+html :is(
+  .border-rose-900,
+  .border-rose-800,
+  .border-rose-700,
+  [class^="border-rose-800/"],
+  [class*=" border-rose-800/"],
+  [class^="border-rose-700/"],
+  [class*=" border-rose-700/"]
+) {
+  border-color: #fda4af !important;
+}
+
+/* 8. Accidental .text-white Guardrail vs Solid Saturated Buttons/Pills */
+html .text-white,
+html .hover\:text-white:hover,
+html .group:hover .group-hover\:text-white {
+  color: #0f172a !important;
+}
+
+html :is(
+  .bg-blue-500,
+  .bg-blue-600,
+  .bg-blue-700,
+  .bg-indigo-500,
+  .bg-indigo-600,
+  .bg-indigo-700,
+  .bg-emerald-500,
+  .bg-emerald-600,
+  .bg-emerald-700,
+  .bg-green-500,
+  .bg-green-600,
+  .bg-green-700,
+  .bg-rose-500,
+  .bg-rose-600,
+  .bg-rose-700,
+  .bg-red-500,
+  .bg-red-600,
+  .bg-red-700,
+  .bg-amber-500,
+  .bg-amber-600,
+  .bg-amber-700,
+  .bg-purple-500,
+  .bg-purple-600,
+  .bg-purple-700,
+  .bg-violet-500,
+  .bg-violet-600,
+  .bg-violet-700,
+  .bg-cyan-500,
+  .bg-cyan-600,
+  .bg-cyan-700,
+  .bg-sky-500,
+  .bg-sky-600,
+  .bg-sky-700,
+  .bg-orange-500,
+  .bg-orange-600,
+  .bg-orange-700,
+  .bg-teal-500,
+  .bg-teal-600,
+  .bg-teal-700,
+  .from-indigo-600,
+  .from-blue-600,
+  .from-cyan-600,
+  .from-emerald-600,
+  .from-violet-600,
+  .from-rose-600,
+  [class^="bg-blue-600/"],
+  [class*=" bg-blue-600/"],
+  [class^="bg-indigo-600/"],
+  [class*=" bg-indigo-600/"],
+  [class^="bg-emerald-600/"],
+  [class*=" bg-emerald-600/"],
+  [class^="bg-cyan-600/"],
+  [class*=" bg-cyan-600/"],
+  .bg-\[var\(--sig-crimson\)\],
+  .bg-\[var\(--sig-emerald\)\],
+  .bg-\[var\(--sig-cyan\)\],
+  .bg-\[var\(--sig-gold\)\]
+).text-white,
+html :is(
+  .bg-blue-500,
+  .bg-blue-600,
+  .bg-blue-700,
+  .bg-indigo-500,
+  .bg-indigo-600,
+  .bg-indigo-700,
+  .bg-emerald-500,
+  .bg-emerald-600,
+  .bg-emerald-700,
+  .bg-green-500,
+  .bg-green-600,
+  .bg-green-700,
+  .bg-rose-500,
+  .bg-rose-600,
+  .bg-rose-700,
+  .bg-red-500,
+  .bg-red-600,
+  .bg-red-700,
+  .bg-amber-500,
+  .bg-amber-600,
+  .bg-amber-700,
+  .bg-purple-500,
+  .bg-purple-600,
+  .bg-purple-700,
+  .bg-violet-500,
+  .bg-violet-600,
+  .bg-violet-700,
+  .bg-cyan-500,
+  .bg-cyan-600,
+  .bg-cyan-700,
+  .bg-sky-500,
+  .bg-sky-600,
+  .bg-sky-700,
+  .bg-orange-500,
+  .bg-orange-600,
+  .bg-orange-700,
+  .bg-teal-500,
+  .bg-teal-600,
+  .bg-teal-700,
+  .from-indigo-600,
+  .from-blue-600,
+  .from-cyan-600,
+  .from-emerald-600,
+  .from-violet-600,
+  .from-rose-600,
+  [class^="bg-blue-600/"],
+  [class*=" bg-blue-600/"],
+  [class^="bg-indigo-600/"],
+  [class*=" bg-indigo-600/"],
+  [class^="bg-emerald-600/"],
+  [class*=" bg-emerald-600/"],
+  [class^="bg-cyan-600/"],
+  [class*=" bg-cyan-600/"],
+  .bg-\[var\(--sig-crimson\)\],
+  .bg-\[var\(--sig-emerald\)\],
+  .bg-\[var\(--sig-cyan\)\],
+  .bg-\[var\(--sig-gold\)\]
+) .text-white {
+  color: #ffffff !important;
 }
 
 /* Slow mythic rotation for Alastor arcane sigil rings */
@@ -407,36 +693,36 @@ html[data-theme-mode="light"] .text-yellow-200 {
   animation: alastorSigilReverseSpin 140s linear infinite;
 }
 
-/* Monaco vulnerability line highlight */
+/* Monaco vulnerability line highlight (Daylight High-Contrast) */
 .cpg-active-line-highlight {
-  background: rgba(239, 68, 68, 0.18) !important;
-  border-left: 3px solid #ef4444 !important;
+  background: rgba(225, 29, 72, 0.12) !important;
+  border-left: 3px solid #e11d48 !important;
 }
 
 /* Monaco BFL chokepoint line highlight */
 .cpg-bfl-line-highlight {
-  background: rgba(245, 158, 11, 0.18) !important;
-  border-left: 3px solid #f59e0b !important;
+  background: rgba(217, 119, 6, 0.14) !important;
+  border-left: 3px solid #d97706 !important;
 }
 
 /* Monaco severed thread line highlight */
 .cpg-severed-line-highlight {
-  background: rgba(16, 185, 129, 0.18) !important;
-  border-left: 3px solid #10b981 !important;
+  background: rgba(5, 150, 105, 0.14) !important;
+  border-left: 3px solid #059669 !important;
 }
 
 /* Monaco vulnerability glyph margin icon */
 .cpg-vuln-glyph {
-  background: #ef4444;
+  background: #e11d48;
   border-radius: 50%;
   width: 8px !important;
   height: 8px !important;
   margin-left: 5px;
   margin-top: 5px;
-  box-shadow: 0 0 8px #ef4444;
+  box-shadow: 0 0 6px rgba(225, 29, 72, 0.55);
 }
 
-/* Custom scrollbars adapting to active theme */
+/* Custom scrollbars adapting to active daylight theme */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
