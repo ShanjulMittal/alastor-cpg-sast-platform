@@ -53,6 +53,8 @@ import {
   ArrowDown,
   Monitor,
   Map as MapIcon,
+  ShieldCheck,
+  RotateCcw,
 } from "lucide-react";
 
 const NODE_WIDTH = 260;
@@ -64,11 +66,19 @@ const nodeTypes = {
 
 type AppTreeLayoutStyle = "SPIDER_WEB" | "MIND_MAP" | "HIERARCHY";
 
-function getEdgeStyle(edgeType: string, isSpider = false) {
+function getEdgeStyle(edgeType: string, isSpider = false, isSevered = false) {
+  if (isSevered) {
+    return {
+      stroke: "#10b981",
+      strokeWidth: 2.4,
+      strokeDasharray: "6 4",
+      animated: false,
+    };
+  }
   switch (edgeType) {
     case "DFG_FLOWS_TO":
       return {
-        stroke: "#ef4444",
+        stroke: "#e11d48",
         strokeWidth: 2.2,
         strokeDasharray: "5 5",
         animated: true,
@@ -85,7 +95,7 @@ function getEdgeStyle(edgeType: string, isSpider = false) {
       };
     case "CALLS":
       return {
-        stroke: "#a855f7",
+        stroke: "#f59e0b",
         strokeWidth: 2,
         animated: false,
       };
@@ -189,8 +199,22 @@ export function ReactFlowGraphPane() {
   const selectTreeFile = useAuditStore((s) => s.selectTreeFile);
   const selectFinding = useAuditStore((s) => s.selectFinding);
   const selectGraphNode = useAuditStore((s) => s.selectGraphNode);
+  const lastAppliedPatch = useAuditStore((s) => s.lastAppliedPatch);
+  const isApplyingPatch = useAuditStore((s) => s.isApplyingPatch);
+  const undoLastRemediationPatch = useAuditStore((s) => s.undoLastRemediationPatch);
   const appTheme = useAuditStore((s) => s.appTheme);
   const isLightTheme = isLightAppTheme(appTheme);
+
+  const isCurrentFindingSevered = Boolean(
+    lastAppliedPatch?.verifiedSevered &&
+      (lastAppliedPatch.findingId === selectedFinding?.id ||
+        !selectedFinding ||
+        (activeFilepath &&
+          lastAppliedPatch.filepath &&
+          (activeFilepath === lastAppliedPatch.filepath ||
+            activeFilepath.endsWith(lastAppliedPatch.filepath) ||
+            lastAppliedPatch.filepath.endsWith(activeFilepath))))
+  );
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -843,28 +867,41 @@ export function ReactFlowGraphPane() {
         (e) => validNodeIds.has(e.source) && validNodeIds.has(e.target)
       );
 
+      const applySeveredStyle =
+        graphViewMode === "FINDING_PATH" && isCurrentFindingSevered;
+
       const flowNodes: Node[] = clampedRawNodes.map((n) => ({
         id: String(n.id),
         type: "cpgNode",
         position: { x: 0, y: 0 },
-        data: n,
-      }));
-
-      const flowEdges: Edge[] = clampedRawEdges.map((e) => ({
-        id: String(e.id),
-        source: String(e.source),
-        target: String(e.target),
-        type: "smoothstep",
-        label: e.var_name ? `(${e.var_name})` : undefined,
-        style: getEdgeStyle(e.type),
-        animated: e.type === "DFG_FLOWS_TO",
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          color: getEdgeStyle(e.type).stroke,
-          width: 14,
-          height: 14,
+        data: {
+          ...n,
+          isSevered: applySeveredStyle,
         },
       }));
+
+      const flowEdges: Edge[] = clampedRawEdges.map((e) => {
+        const edgeStyle = getEdgeStyle(e.type, false, applySeveredStyle);
+        return {
+          id: String(e.id),
+          source: String(e.source),
+          target: String(e.target),
+          type: "smoothstep",
+          label: applySeveredStyle
+            ? "✓ SEVERED"
+            : e.var_name
+            ? `(${e.var_name})`
+            : undefined,
+          style: edgeStyle,
+          animated: !applySeveredStyle && e.type === "DFG_FLOWS_TO",
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            color: edgeStyle.stroke,
+            width: 14,
+            height: 14,
+          },
+        };
+      });
 
       if (flowNodes.length > 0) {
         const layouted = computeDagreLayout(
@@ -909,6 +946,7 @@ export function ReactFlowGraphPane() {
     spiderSearch,
     categoryFilter,
     isGraphFullscreen,
+    isCurrentFindingSevered,
     handleToggleCollapseDir,
     handleToggleFileElements,
     reactFlowInstance,
@@ -1083,8 +1121,8 @@ export function ReactFlowGraphPane() {
     <div
       className={
         isGraphFullscreen
-          ? "fixed inset-0 z-[100] w-screen h-screen bg-zinc-950/90 flex flex-col select-none"
-          : "flex flex-col h-full bg-zinc-950/60 border-l border-zinc-800"
+          ? "fixed inset-0 z-[100] w-screen h-screen bg-[var(--surface-void)] flex flex-col select-none"
+          : "flex flex-col h-full bg-[var(--surface-void)] border-l border-[var(--border-hairline)]"
       }
     >
       {/* EXECUTIVE FULL-SCREEN PRESENTATION HEADER BANNER */}
@@ -1198,10 +1236,10 @@ export function ReactFlowGraphPane() {
       )}
 
       {/* Canvas Top Bar with Self-Explanatory View Modes & Full-Screen Toggle */}
-      <div className="h-10 bg-zinc-900/90 border-b border-zinc-800 px-3 flex items-center justify-between text-xs text-zinc-300 gap-2 shrink-0">
+      <div className="h-10 bg-[var(--surface-panel)] border-b border-[var(--border-hairline)] px-3 flex items-center justify-between text-xs text-[var(--ink-primary)] gap-2 shrink-0">
         <div className="flex items-center gap-2 truncate">
-          <Layers className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-          <span className="font-semibold text-zinc-200 truncate">
+          <Layers className="w-3.5 h-3.5 text-[var(--sig-cyan)] shrink-0" />
+          <span className="font-semibold text-[var(--ink-primary)] truncate">
             {graphViewMode === "APP_TREE"
               ? "360° Spider App Map"
               : graphViewMode === "FINDING_PATH"
@@ -1212,14 +1250,14 @@ export function ReactFlowGraphPane() {
               ? "Attack Surface Entry Points Graph"
               : "Interactive Code Graph"}
           </span>
-          <span className="text-[11px] text-zinc-500 font-mono shrink-0">
+          <span className="text-[11px] text-[var(--ink-muted)] font-mono shrink-0">
             ({nodes.length} nodes, {edges.length} links)
           </span>
         </div>
 
         <div className="flex items-center gap-2 overflow-x-auto">
           {/* Self-Explanatory View Mode Tabs (Including Call Graph & Entry Points Graph) */}
-          <div className="flex items-center gap-1 bg-zinc-950 p-0.5 rounded-md border border-zinc-800 text-[10px]">
+          <div className="flex items-center gap-1 bg-[var(--surface-void)] p-0.5 rounded-md border border-[var(--border-hairline)] text-[10px]">
             {(
               [
                 {
@@ -1266,7 +1304,7 @@ export function ReactFlowGraphPane() {
                 className={`px-2 py-0.5 rounded font-mono whitespace-nowrap transition-colors ${
                   graphViewMode === item.mode
                     ? "bg-cyan-950 text-cyan-300 border border-cyan-700 font-bold"
-                    : "text-zinc-400 hover:text-zinc-200"
+                    : "text-[var(--ink-muted)] hover:text-[var(--ink-primary)]"
                 }`}
               >
                 {item.label}
@@ -1305,18 +1343,18 @@ export function ReactFlowGraphPane() {
       </div>
 
       {/* Plain-English Active View Explanation Strip */}
-      <div className="bg-zinc-900/50 border-b border-zinc-800/80 px-3 py-1 text-[11px] text-zinc-400 flex items-center justify-between gap-2 shrink-0">
+      <div className="bg-[var(--surface-elevated)] border-b border-[var(--border-hairline)] px-3 py-1 text-[11px] text-[var(--ink-muted)] flex items-center justify-between gap-2 shrink-0">
         <span className="truncate">
           {graphViewMode === "FINDING_PATH" &&
-            "Attack Story Path: Shows how untrusted input (Cyan) travels along data/control links to trigger the vulnerable sink (Red). Click any node to highlight its code."}
+            "Attack Story Path: Shows how untrusted input (Cyan) travels through BFL chokepoints (Gold) to the vulnerable sink (Crimson). Click any node to highlight its code."}
           {graphViewMode === "APP_TREE" &&
             "Decluttered 360° Spider Map: Auto-clusters deep clean folders on large apps and scales ring circumference so nodes never overlap. Click any folder to expand/collapse."}
           {graphViewMode === "CALL_GRAPH" &&
-            "Inter-Procedural Call Graph: Purple arrows connect caller functions to target callee functions (:CALLS) across the application."}
+            "Inter-Procedural Call Graph: Gold arrows connect caller functions to target callee functions (:CALLS) across the application."}
           {graphViewMode === "ENTRYPOINT_GRAPH" &&
             "Attack Surface Entry Points Graph: Traces exposed API routes, CLI handlers, and untrusted input sources directly to downstream execution sinks."}
           {graphViewMode === "DFG_ONLY" &&
-            "Data Flow View (DFG): Red dashed arrows trace how variable values and inputs flow from definitions to usages across the current file."}
+            "Data Flow View (DFG): Crimson dashed arrows trace how variable values and inputs flow from definitions to usages across the current file."}
           {graphViewMode === "CFG_ONLY" &&
             "Control Flow View (CFG): Cyan arrows trace sequential execution steps, conditional branches (True/False), and loop back-edges."}
           {graphViewMode === "FULL_CPG" &&
@@ -1325,7 +1363,7 @@ export function ReactFlowGraphPane() {
       </div>
 
       {/* UNIVERSAL INTERACTIVE CAMERA, LAYOUT & PRESENTATION TOOLBAR */}
-      <div className="bg-zinc-900/75 border-b border-zinc-800/90 px-3 py-1.5 flex items-center justify-between gap-2 flex-wrap text-[11px] shrink-0">
+      <div className="bg-[var(--surface-panel)] border-b border-[var(--border-hairline)] px-3 py-1.5 flex items-center justify-between gap-2 flex-wrap text-[11px] shrink-0">
         {/* Left Controls: Spider Layout + Smart Declutter Mode OR CPG Orientation Toggle */}
         {graphViewMode === "APP_TREE" ? (
           <div className="flex items-center gap-2 flex-wrap">
@@ -1589,19 +1627,67 @@ export function ReactFlowGraphPane() {
 
       {/* ReactFlow Canvas */}
       <div className="flex-1 w-full h-full relative overflow-hidden">
+        {/* FLOATING EMERALD "✓ THREAD SEVERED · 0 REACHABLE PATHS" VERIFICATION SEAL */}
+        {lastAppliedPatch && lastAppliedPatch.verifiedSevered && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 max-w-[92%] rounded-xl border border-emerald-500/80 bg-emerald-950/95 backdrop-blur-md px-3.5 py-2 shadow-2xl flex items-center justify-between gap-3 text-xs transition-all duration-300 select-none">
+            <div className="flex items-center gap-2 min-w-0 flex-wrap">
+              <span className="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-400 text-emerald-200 font-mono text-[10px] font-extrabold tracking-wider flex items-center gap-1 shrink-0">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                ✓ THREAD SEVERED · 0 REACHABLE PATHS
+              </span>
+              <span className="font-mono text-[11px] text-emerald-100 truncate">
+                CPG Verified Neutralized in{" "}
+                <strong className="text-white">{lastAppliedPatch.filepath}</strong>
+              </span>
+              <span className="font-mono text-[10px] px-1.5 py-0.2 rounded bg-zinc-950/80 border border-emerald-700/70 text-emerald-300">
+                patch:{lastAppliedPatch.patchId}
+              </span>
+            </div>
+
+            <button
+              type="button"
+              disabled={isApplyingPatch}
+              onClick={() => undoLastRemediationPatch()}
+              title="Restore exact pre-patch file bytes and re-verify CPG"
+              className="px-2.5 py-1 rounded bg-zinc-950 hover:bg-zinc-900 disabled:opacity-50 text-emerald-200 border border-emerald-500/80 font-mono text-[10px] font-bold flex items-center gap-1 shrink-0 transition-colors"
+            >
+              <RotateCcw className="w-3 h-3 text-emerald-400" />
+              <span>{isApplyingPatch ? "Restoring..." : "Undo Patch"}</span>
+            </button>
+          </div>
+        )}
+
         {nodes.length === 0 && (
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-10 text-zinc-500">
-            <Layers className="w-10 h-10 mb-3 opacity-30 text-zinc-400" />
-            <p className="text-sm font-medium text-zinc-400">
-              {graphViewMode === "FINDING_PATH"
-                ? "Select a vulnerability from the sidebar to inspect its taint path"
-                : "No graph nodes available for this view"}
-            </p>
-            <p className="text-xs text-zinc-600 mt-1">
-              {graphViewMode === "FINDING_PATH"
-                ? "Interactive CPG flow and source-to-sink AST nodes will be visualized here"
-                : "Switch view mode or select a file to view graph structure"}
-            </p>
+            {lastAppliedPatch && lastAppliedPatch.verifiedSevered ? (
+              <>
+                <ShieldCheck className="w-11 h-11 mb-3 text-emerald-400" />
+                <p className="text-sm font-bold text-emerald-300 font-mono">
+                  ✓ THREAD SEVERED · 0 REACHABLE PATHS IN CPG
+                </p>
+                <p className="text-xs text-zinc-400 mt-1 max-w-md text-center">
+                  The surgical BFL chokepoint patch in{" "}
+                  <span className="font-mono text-emerald-300">
+                    {lastAppliedPatch.filepath}
+                  </span>{" "}
+                  eliminated all source-to-sink attack paths.
+                </p>
+              </>
+            ) : (
+              <>
+                <Layers className="w-10 h-10 mb-3 opacity-30 text-zinc-400" />
+                <p className="text-sm font-medium text-zinc-400">
+                  {graphViewMode === "FINDING_PATH"
+                    ? "Select a vulnerability from the sidebar to inspect its taint path"
+                    : "No graph nodes available for this view"}
+                </p>
+                <p className="text-xs text-zinc-600 mt-1">
+                  {graphViewMode === "FINDING_PATH"
+                    ? "Interactive CPG flow and source-to-sink AST nodes will be visualized here"
+                    : "Switch view mode or select a file to view graph structure"}
+                </p>
+              </>
+            )}
           </div>
         )}
 
@@ -1755,23 +1841,23 @@ export function ReactFlowGraphPane() {
 
             <div className="space-y-1">
               <div className="text-[9px] text-zinc-500 uppercase font-bold">
-                Node Roles
+                Semantic Node Roles
               </div>
               <div className="flex items-center gap-2 text-zinc-300">
                 <span className="w-2.5 h-2.5 rounded-sm bg-cyan-500/30 border border-cyan-400 shrink-0" />
-                <span>Entry / Source / Spider Hub</span>
-              </div>
-              <div className="flex items-center gap-2 text-zinc-300">
-                <span className="w-2.5 h-2.5 rounded-sm bg-blue-500/30 border border-blue-400 shrink-0" />
-                <span>Data Propagation / Statement</span>
-              </div>
-              <div className="flex items-center gap-2 text-zinc-300">
-                <span className="w-2.5 h-2.5 rounded-sm bg-red-500/30 border border-red-500 shrink-0" />
-                <span>Vulnerable Sink / Flaw File</span>
+                <span>SOURCE (Untrusted Ingress)</span>
               </div>
               <div className="flex items-center gap-2 text-zinc-300">
                 <span className="w-2.5 h-2.5 rounded-sm bg-amber-500/30 border border-amber-400 shrink-0" />
-                <span>Symbol / Function Reference</span>
+                <span>BFL CHOKEPOINT (Best Fix)</span>
+              </div>
+              <div className="flex items-center gap-2 text-zinc-300">
+                <span className="w-2.5 h-2.5 rounded-sm bg-rose-500/30 border border-rose-500 shrink-0" />
+                <span>SINK (Vulnerable Execution)</span>
+              </div>
+              <div className="flex items-center gap-2 text-zinc-300">
+                <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500/30 border border-emerald-400 shrink-0" />
+                <span>VERIFIED SEVERED / SANITIZER</span>
               </div>
             </div>
 
@@ -1780,20 +1866,20 @@ export function ReactFlowGraphPane() {
                 Relationship Links
               </div>
               <div className="flex items-center gap-2 text-zinc-300">
-                <span className="w-5 h-0.5 border-b-2 border-dashed border-red-500 shrink-0" />
+                <span className="w-5 h-0.5 border-b-2 border-dashed border-rose-500 shrink-0" />
                 <span>DFG_FLOWS_TO (Data/Taint Flow)</span>
+              </div>
+              <div className="flex items-center gap-2 text-zinc-300">
+                <span className="w-5 h-0.5 border-b-2 border-dashed border-emerald-500 shrink-0" />
+                <span>SEVERED PATH (0 Reachable)</span>
               </div>
               <div className="flex items-center gap-2 text-zinc-300">
                 <span className="w-5 h-0.5 bg-cyan-400 shrink-0" />
                 <span>CFG_NEXT / CONTAINS (Control)</span>
               </div>
               <div className="flex items-center gap-2 text-zinc-300">
-                <span className="w-5 h-0.5 bg-purple-400 shrink-0" />
+                <span className="w-5 h-0.5 bg-amber-400 shrink-0" />
                 <span>CALLS (Function Invocation)</span>
-              </div>
-              <div className="flex items-center gap-2 text-zinc-300">
-                <span className="w-5 h-0.5 border-b border-dashed border-slate-400 shrink-0" />
-                <span>AST_CHILD (Syntax Structure)</span>
               </div>
             </div>
           </div>

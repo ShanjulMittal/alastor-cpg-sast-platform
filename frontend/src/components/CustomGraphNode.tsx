@@ -7,7 +7,6 @@ import {
   Folder,
   FolderOpen,
   FileCode,
-  Layers,
   Server,
   Layout,
   Terminal,
@@ -20,19 +19,20 @@ import {
   ChevronDown,
   Crosshair,
   GitBranch,
+  ShieldCheck,
 } from "lucide-react";
 
 const LABEL_COLORS: Record<string, string> = {
-  Function: "bg-purple-900/50 text-purple-300 border-purple-700/60",
-  Call: "bg-blue-900/50 text-blue-300 border-blue-700/60",
-  Variable: "bg-emerald-900/50 text-emerald-300 border-emerald-700/60",
-  Assignment: "bg-amber-900/50 text-amber-300 border-amber-700/60",
-  LoopBlock: "bg-pink-900/50 text-pink-300 border-pink-700/60",
-  ControlBlock: "bg-indigo-900/50 text-indigo-300 border-indigo-700/60",
-  Return: "bg-rose-900/50 text-rose-300 border-rose-700/60",
-  Entry: "bg-teal-900/50 text-teal-300 border-teal-700/60",
-  Exit: "bg-slate-800 text-slate-300 border-slate-700",
-  Literal: "bg-zinc-800 text-zinc-300 border-zinc-700",
+  Function: "bg-cyan-950/80 text-cyan-300 border-cyan-700/70",
+  Call: "bg-amber-950/80 text-amber-300 border-amber-700/70",
+  Variable: "bg-emerald-950/80 text-emerald-300 border-emerald-700/70",
+  Assignment: "bg-amber-950/80 text-amber-300 border-amber-700/70",
+  LoopBlock: "bg-rose-950/80 text-rose-300 border-rose-700/70",
+  ControlBlock: "bg-cyan-950/80 text-cyan-300 border-cyan-700/70",
+  Return: "bg-rose-950/80 text-rose-300 border-rose-700/70",
+  Entry: "bg-cyan-950/80 text-cyan-300 border-cyan-700/70",
+  Exit: "bg-zinc-900 text-zinc-300 border-zinc-700",
+  Literal: "bg-zinc-900 text-zinc-300 border-zinc-700",
   AppDirectory: "bg-cyan-950 text-cyan-300 border-cyan-800",
   AppFile: "bg-emerald-950 text-emerald-300 border-emerald-800",
   AppElement: "bg-amber-950 text-amber-300 border-amber-800",
@@ -49,10 +49,10 @@ function getCategoryStyle(category?: string) {
       };
     case "FRONTEND_VIEW":
       return {
-        border: "border-purple-500/70 hover:border-purple-400",
-        badge: "bg-purple-950 text-purple-300 border-purple-700",
-        glow: "shadow-purple-950/50",
-        icon: <Layout className="w-3.5 h-3.5 text-purple-400 shrink-0" />,
+        border: "border-cyan-500/70 hover:border-cyan-400",
+        badge: "bg-cyan-950 text-cyan-300 border-cyan-700",
+        glow: "shadow-cyan-950/50",
+        icon: <Layout className="w-3.5 h-3.5 text-cyan-400 shrink-0" />,
       };
     case "BUSINESS_LOGIC":
       return {
@@ -63,10 +63,10 @@ function getCategoryStyle(category?: string) {
       };
     case "INFRASTRUCTURE":
       return {
-        border: "border-blue-500/70 hover:border-blue-400",
-        badge: "bg-blue-950 text-blue-300 border-blue-700",
-        glow: "shadow-blue-950/50",
-        icon: <Terminal className="w-3.5 h-3.5 text-blue-400 shrink-0" />,
+        border: "border-amber-500/70 hover:border-amber-400",
+        badge: "bg-amber-950 text-amber-300 border-amber-700",
+        glow: "shadow-amber-950/50",
+        icon: <Terminal className="w-3.5 h-3.5 text-amber-400 shrink-0" />,
       };
     case "DEPENDENCY_MANIFEST":
       return {
@@ -99,6 +99,7 @@ export const CustomGraphNode = memo(({ data, id }: NodeProps<any>) => {
   const isSelected = selectedNodeId === id;
   const isSpider = Boolean(data.isSpiderMode);
   const isDimmed = Boolean(data.isDimmed);
+  const isSevered = Boolean(data.isSevered);
 
   const nodeLabel =
     data.label ||
@@ -133,9 +134,8 @@ export const CustomGraphNode = memo(({ data, id }: NodeProps<any>) => {
         }`}
       >
         <Handle type="target" position={Position.Top} style={centerHandleStyle} />
-        {/* Concentric decorative pulse ring */}
-        <div className="absolute inset-2 rounded-full border border-dashed border-cyan-500/40 pointer-events-none animate-spin [animation-duration:35s]" />
-        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/30 mb-1.5">
+        <div className="absolute inset-2 rounded-full border border-dashed border-cyan-500/40 pointer-events-none" />
+        <div className="w-10 h-10 rounded-full bg-cyan-600 flex items-center justify-center shadow-lg shadow-cyan-500/30 mb-1.5">
           <Cpu className="w-5 h-5 text-white" />
         </div>
         <span className="text-[9px] font-mono uppercase tracking-widest text-cyan-400 font-bold">
@@ -329,7 +329,7 @@ export const CustomGraphNode = memo(({ data, id }: NodeProps<any>) => {
           <div className="flex items-center gap-1 shrink-0">
             {flawCount > 0 && (
               <span
-                className="flex items-center gap-0.5 px-1.5 py-0.2 rounded-full bg-red-950 text-red-300 border border-red-700 text-[9px] font-mono font-bold animate-pulse"
+                className="flex items-center gap-0.5 px-1.5 py-0.2 rounded-full bg-red-950 text-red-300 border border-red-700 text-[9px] font-mono font-bold"
                 title={`${flawCount} security flaw(s) detected in this file`}
               >
                 <Flame className="w-2.5 h-2.5 text-red-400" />
@@ -390,24 +390,41 @@ export const CustomGraphNode = memo(({ data, id }: NodeProps<any>) => {
   }
 
   // 5. STANDARD CPG NODE RENDERING (AST / CFG / DFG / Call Graph)
+  // Semantic Roles: SOURCE (--sig-cyan), BFL CHOKEPOINT (--sig-gold), SINK (--sig-crimson), SEVERED/SANITIZER (--sig-emerald)
+  const semanticBorderClass = isSevered
+    ? "border-emerald-400 ring-2 ring-emerald-500/40 shadow-emerald-950/50"
+    : isSelected
+    ? "border-amber-400 ring-2 ring-amber-500/50 shadow-amber-900/40"
+    : data.is_bfl
+    ? "border-amber-400 ring-1 ring-amber-500/40 shadow-amber-950/40"
+    : data.is_sink
+    ? "border-rose-500/90 ring-1 ring-rose-500/30 shadow-rose-950/40"
+    : data.is_source
+    ? "border-cyan-400/90 ring-1 ring-cyan-500/30 shadow-cyan-950/40"
+    : data.is_sanitizer
+    ? "border-emerald-400/90 ring-1 ring-emerald-500/30 shadow-emerald-950/40"
+    : "border-zinc-800 hover:border-zinc-600 hover:shadow-black";
+
   return (
     <div
       onClick={() => selectGraphNode(data)}
-      className={`relative w-64 rounded-lg border bg-zinc-950/90 backdrop-blur-md p-3 shadow-xl transition-all duration-200 cursor-pointer text-left ${
-        isSelected
-          ? "border-cyan-400 ring-2 ring-cyan-500/50 shadow-cyan-900/40"
-          : data.is_bfl
-          ? "border-emerald-400 ring-1 ring-emerald-500/40 shadow-emerald-950/40"
-          : "border-zinc-800 hover:border-zinc-600 hover:shadow-black"
-      }`}
+      className={`relative w-64 rounded-lg border bg-zinc-950/95 backdrop-blur-md p-3 shadow-xl transition-all duration-300 cursor-pointer text-left ${semanticBorderClass}`}
     >
       <Handle
         type="target"
         position={Position.Top}
-        className="!w-2.5 !h-2.5 !bg-cyan-400 !border-2 !border-zinc-900"
+        className={`!w-2.5 !h-2.5 !border-2 !border-zinc-900 ${
+          isSevered
+            ? "!bg-emerald-400"
+            : data.is_bfl
+            ? "!bg-amber-400"
+            : data.is_sink
+            ? "!bg-rose-500"
+            : "!bg-cyan-400"
+        }`}
       />
 
-      {/* Header: Label and Badges */}
+      {/* Header: Label and Semantic Role Badges */}
       <div className="flex items-center justify-between gap-1 mb-2">
         <span
           className={`text-[10px] font-mono font-semibold px-2 py-0.5 rounded border ${labelColor}`}
@@ -416,23 +433,35 @@ export const CustomGraphNode = memo(({ data, id }: NodeProps<any>) => {
         </span>
 
         <div className="flex items-center gap-1 flex-wrap justify-end">
+          {isSevered && (
+            <span className="text-[9px] font-mono font-bold tracking-wider px-1.5 py-0.5 rounded bg-emerald-600 text-white border border-emerald-400 flex items-center gap-0.5">
+              <ShieldCheck className="w-2.5 h-2.5" />
+              SEVERED
+            </span>
+          )}
           {data.is_bfl && (
-            <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-emerald-600 text-white border border-emerald-400">
-              BEST FIX (BFL)
+            <span className="text-[9px] font-mono font-bold tracking-wider px-1.5 py-0.5 rounded bg-amber-500 text-zinc-950 border border-amber-300">
+              BFL CHOKEPOINT
             </span>
           )}
           {data.is_source && (
-            <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-red-600 text-white animate-pulse">
+            <span className="text-[9px] font-mono font-bold tracking-wider px-1.5 py-0.5 rounded bg-cyan-500 text-zinc-950 border border-cyan-300">
               SOURCE
             </span>
           )}
           {data.is_sink && (
-            <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-rose-500 text-white">
+            <span
+              className={`text-[9px] font-mono font-bold tracking-wider px-1.5 py-0.5 rounded border ${
+                isSevered
+                  ? "bg-emerald-950 text-emerald-300 border-emerald-600 line-through"
+                  : "bg-rose-600 text-white border-rose-400"
+              }`}
+            >
               SINK
             </span>
           )}
           {data.is_sanitizer && (
-            <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-teal-500 text-black">
+            <span className="text-[9px] font-mono font-bold tracking-wider px-1.5 py-0.5 rounded bg-emerald-500 text-zinc-950 border border-emerald-300">
               SANITIZER
             </span>
           )}
@@ -462,7 +491,15 @@ export const CustomGraphNode = memo(({ data, id }: NodeProps<any>) => {
       <Handle
         type="source"
         position={Position.Bottom}
-        className="!w-2.5 !h-2.5 !bg-cyan-400 !border-2 !border-zinc-900"
+        className={`!w-2.5 !h-2.5 !border-2 !border-zinc-900 ${
+          isSevered
+            ? "!bg-emerald-400"
+            : data.is_bfl
+            ? "!bg-amber-400"
+            : data.is_sink
+            ? "!bg-rose-500"
+            : "!bg-cyan-400"
+        }`}
       />
     </div>
   );

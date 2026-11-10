@@ -16,6 +16,7 @@ import { IntegrationHubModal } from "@/components/IntegrationHubModal";
 import { AlastorMythicBackground } from "@/components/AlastorBranding";
 import { AlastorPortalGate } from "@/components/AlastorPortalGate";
 import QuickCommandModal from "@/components/QuickCommandModal";
+import { useKeyboardNavigation } from "@/hooks/useKeyboardNavigation";
 import { useAuditStore } from "@/store/useAuditStore";
 import { WorkspaceViewMode } from "@/types/cpg";
 import { Loader2 } from "lucide-react";
@@ -52,6 +53,8 @@ const ReactFlowGraphPane = dynamic(
 );
 
 export default function AuditPage() {
+  useKeyboardNavigation();
+
   const workspaceViewMode = useAuditStore((s) => s.workspaceViewMode);
   const setWorkspaceViewMode = useAuditStore((s) => s.setWorkspaceViewMode);
   const showPortalGate = useAuditStore((s) => s.showPortalGate);
