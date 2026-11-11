@@ -773,7 +773,7 @@ export function FlawExplorerSidebar() {
                     type="button"
                     onClick={() => {
                       setActiveEngineFilter(eng);
-                      if (eng !== "ALL" && filterSecretsOnly) setFilterSecretsOnly(false);
+                      if (filterSecretsOnly) setFilterSecretsOnly(false);
                     }}
                     className={`py-0.5 px-1 rounded border text-center transition-colors ${
                       active
@@ -787,7 +787,13 @@ export function FlawExplorerSidebar() {
               })}
               <button
                 type="button"
-                onClick={() => setFilterSecretsOnly(!filterSecretsOnly)}
+                onClick={() => {
+                  const next = !filterSecretsOnly;
+                  setFilterSecretsOnly(next);
+                  if (next && activeEngineFilter !== "ALL") {
+                    setActiveEngineFilter("ALL");
+                  }
+                }}
                 title="Filter to show only Hardcoded Secret Keys, API Tokens & Credentials"
                 className={`py-0.5 px-1 rounded border text-center transition-colors flex items-center justify-center gap-0.5 ${
                   filterSecretsOnly

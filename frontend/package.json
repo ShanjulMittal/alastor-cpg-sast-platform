@@ -1,6 +1,6 @@
 {
   "name": "cpg-sast-frontend",
-  "version": "2.6.1",
+  "version": "4.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",

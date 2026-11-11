@@ -2,30 +2,29 @@
 
 <img src="./docs/screenshots/alastor_demon_logo.jpg" alt="ALASTOR Mythological Daimon Crest" width="190" />
 
-# ALASTOR (`Ἀλάστωρ`) `v3.0.0`
+# ALASTOR (`Ἀλάστωρ`) `v4.0.0`
 
-### **The Relentless Open-Source Code Property Graph (CPG), Zero-Noise SAST, Live BFL "Sever the Thread" Auto-Patcher, Public & Private GitHub Repo Scanner, Live Reachable SCA, CI/CD & IaC, Secret Vault, STRIDE Threat Modeling & Executive ASPM Platform**
+### **The Relentless Open-Source Code Property Graph (CPG), Zero-Noise SAST, 100% Directional 360° & Trust-Boundary Flow Graphs, One-Click Batch Auto-Patcher, Token-Efficient BYOK Frontier AI Copilot (`90–95%` Savings) & Executive ASPM Platform**
 
-*Stop drowning in regex false positives and six-figure SaaS lock-in. Paste any GitHub URL or select a local repo to compile your codebase into a mathematical **AST + CFG + DFG + Call Graph** inside **Neo4j** — 100% locally on your own hardware.*
+*Stop drowning in regex false positives, directionless graph hairballs, unreadable dark UIs, and six-figure SaaS lock-in. Paste any GitHub URL or select a local repo to compile your codebase into a mathematical **AST + CFG + DFG + Call Graph** inside **Neo4j** — 100% locally in a crisp, WCAG AA High-Contrast Daylight Studio.*
 
-[![Version: v3.0.0 Studio Enterprise](https://img.shields.io/badge/Release-v3.0.0%20Studio%20Enterprise-7c3aed?style=for-the-badge)](./CHANGELOG.md)
-[![Self-Audit: 0 Findings (20/20 Pass)](https://img.shields.io/badge/Self--Audit-0%20Findings%20(20%2F20%20Pass)-10b981?style=for-the-badge)](./verify_harness.py)
+[![Version: v4.0.0 Daylight Studio](https://img.shields.io/badge/Release-v4.0.0%20Daylight%20Studio-0284c7?style=for-the-badge)](./CHANGELOG.md)
+[![Self-Audit: 0 Findings (20/20 Pass)](https://img.shields.io/badge/Self--Audit-0%20Findings%20(20%2F20%20Pass)-059669?style=for-the-badge)](./verify_harness.py)
+[![Frontier AI: BYOK 90-95% Token Saved](https://img.shields.io/badge/Frontier%20AI%20BYOK-90--95%25%20Tokens%20Saved-4f46e5?style=for-the-badge)](#-2-token-efficient-multi-provider-byok-frontier-ai-copilot-9095-token-savings)
+[![Graphs: 100% Directional + Blast Radius](https://img.shields.io/badge/CPG%20%26%20360%C2%B0%20Graphs-100%25%20Directional%20Flows-0e7490?style=for-the-badge)](#-4-100-directional-cpg-360-spider--4-zone-trust-boundary-graphs)
 [![GitHub Scanner: Public URL & Private PAT](https://img.shields.io/badge/GitHub%20Scanner-Public%20URL%20%26%20Private%20PAT-2563eb?style=for-the-badge)](#-1c-instant-github-repository-scanner--open--public-paste-url-only-vs-private-pat-auth-required)
-[![False Positives: 0% AST-Verified](https://img.shields.io/badge/False%20Positives-0%25%20AST--Verified-059669?style=for-the-badge)](./backend/compiler/ast_parser.py)
-[![Semgrep Pro/OSS Parity: 0/0 Clean](https://img.shields.io/badge/Semgrep%20Pro%20%26%20OSS%20Audit-0%20Findings-06b6d4?style=for-the-badge)](./CHANGELOG.md)
-[![Live SCA: OSV.dev + CPG Reachability](https://img.shields.io/badge/Live%20SCA-OSV.dev%20%2B%20CPG%20Reachability-f59e0b?style=for-the-badge)](./backend/engine/osv_lockfile_scanner.py)
-[![OASIS SARIF: v2.1.0](https://img.shields.io/badge/OASIS-SARIF%20v2.1.0-0ea5e9?style=for-the-badge)](./backend/main.py)
-[![SBOM: CycloneDX v1.5](https://img.shields.io/badge/SBOM-CycloneDX%20v1.5-6366f1?style=for-the-badge)](./backend/engine/enterprise_manager.py)
+[![Live SCA: OSV.dev + CPG Reachability](https://img.shields.io/badge/Live%20SCA-OSV.dev%20%2B%20CPG%20Reachability-d97706?style=for-the-badge)](./backend/engine/osv_lockfile_scanner.py)
+[![Theme: WCAG AA Daylight Only](https://img.shields.io/badge/UI-WCAG%20AA%20High--Contrast%20Daylight-0369a1?style=for-the-badge)](#-7f-3-curated-wcag-aa-high-contrast-daylight-palettes)
 [![License: MIT](https://img.shields.io/badge/License-MIT-e11d48?style=for-the-badge)](./LICENSE)
 
 <br />
 
 [**⚡ 3-Minute Quick Start**](#-3-minute-quick-start-100-local--sovereign) •
-[**🐙 GitHub Public & Private Scanner**](#-1c-instant-github-repository-scanner--open--public-paste-url-only-vs-private-pat-auth-required) •
-[**🏆 Why Download ALASTOR?**](#-why-security-engineers--developers-switch-to-alastor) •
+[**✨ Frontier AI BYOK Copilot**](#-2-token-efficient-multi-provider-byok-frontier-ai-copilot-9095-token-savings) •
+[**🛠️ Batch Auto-Fix & BFL Diff**](#-3-stage-2--triage-one-click-batch-auto-fix--monaco-bfl-diffeditor) •
+[**🕸️ Directional 360° & Trust Graphs**](#-4-100-directional-cpg-360-spider--4-zone-trust-boundary-graphs) •
 [**⚔️ vs. Semgrep / Checkmarx / Snyk**](#️-head-to-head-competitive-benchmark) •
-[**🧠 7-Pass CPG Architecture**](#-compiler-grade-7-pass-cpg-architecture) •
-[**📸 Complete 31-Screen Visual Tour**](#-complete-visual-tour--every-option-module-graph--modal) •
+[**📸 Complete 33-Screen Daylight Visual Tour**](#-complete-visual-tour--every-stage-directional-graph-ai-workflow--export) •
 [**🛡️ All 21 Security Rules**](#️-complete-21-rule-deterministic-security-matrix) •
 [**📖 Full Master SOP**](./docs/ALASTOR_Master_SOP_and_Product_Guide.md)
 
@@ -33,284 +32,233 @@
 
 ---
 
-![ALASTOR Split Code & CPG Workbench in Alastor Infernal Dark Mythic Mode](./docs/screenshots/shot_03_code_review_dossier_and_diff.png)
+![ALASTOR v4.0 Guided 4-Stage Daylight Studio — Split Code, Directional Attack Path & Flow Story Bar](./docs/screenshots/shot_03_code_review_dossier_and_diff.png)
 
-> **Named after Alastor (`Ἀλάστωρ` — *"The Unforgetting Avenger"*)**, the ancient Greek mythological spirit of retribution who hunts down hidden corruptions so no flaw escapes judgment, **ALASTOR `v3.0.0`** unifies **8 enterprise security capabilities** inside a **5-Pillar Studio IDE** ([`StudioCommandHeader.tsx`](./frontend/src/components/StudioCommandHeader.tsx) + [`StudioStatusBar.tsx`](./frontend/src/components/StudioStatusBar.tsx) + [`LeftFunctionBar.tsx`](./frontend/src/components/LeftFunctionBar.tsx)):
-> 1. **Inter-Procedural Code Property Graph SAST** (`Tree-Sitter AST + CFG + DFG + :CALLS` over `Neo4j 5 + APOC`, `O(1)` Batched `UNWIND` Ingestion) with **1-Click Open/Public & Private GitHub Repo Scanning**
-> 2. **Live Best Fix Location (`BFL`) "Sever the Thread" Auto-Patcher** (Interactive Monaco `DiffEditor`, 1-click patch application with `.alastor_patches` SHA-256 undo journal, and instant CPG taint-severance verification)
-> 3. **AST-Verified Sanitizer Summary & CPG-Backed Web Intel Engine** (`0%` False Positives on custom enterprise path/SSRF/SQLi/log validators and live `OSV.dev` / `NVD` / `CISA KEV` advisories)
-> 4. **Live OSV.dev Transitive Lockfile SCA** with **CPG Import Reachability Proof** (`REACHABLE` vs. `DORMANT`)
-> 5. **Infrastructure-as-Code & GitHub Actions CI/CD Pipeline Security** (`Dockerfile`, `Compose`, `.github/workflows/*.yml`)
-> 6. **Cryptographic Secret Keys & Shannon Entropy Vault** with RBAC-gated unmasking
-> 7. **Automated Microsoft STRIDE Threat Modeling** (`✔ What Passed` vs. `✖ What Failed` + `PBOM` + Trust Boundaries)
-> 8. **Executive `SAST++++++` ASPM, Multi-Tenant RBAC & Issue Sync** (Plain-English Impact Translator, Live `CycloneDX v1.5` SBOM, `EPSS v4`, `PMI/COBIT RACI Matrix`, `Jira` & `GitHub Issues` 2-way sync, `OASIS SARIF v2.1.0`)
+> **Named after Alastor (`Ἀλάστωρ` — *"The Unforgetting Avenger"*)**, **ALASTOR `v4.0.0`** unifies **10 enterprise security capabilities** inside a streamlined **Guided 4-Stage High-Contrast Daylight Studio** ([`StudioCommandHeader.tsx`](./frontend/src/components/StudioCommandHeader.tsx) + [`FrontierAiCopilotDrawer.tsx`](./frontend/src/components/FrontierAiCopilotDrawer.tsx) + [`StudioStatusBar.tsx`](./frontend/src/components/StudioStatusBar.tsx)):
+> 1. **Guided 4-Stage Workflow Bar (Zero Clutter, Zero Feature Reduction)**: Effortless left-to-right flow across **`1. Scan & Repos`** $\rightarrow$ **`2. Triage & Fix`** $\rightarrow$ **`3. 360° Map & Threats`** $\rightarrow$ **`4. ASPM, Rules & Reports`**, rendered exclusively in crisp **`>= 4.5:1` WCAG AA Daylight Light Mode**.
+> 2. **100% Directional CPG, 360° Spider & 4-Zone Trust Boundary Graphs**: Perimeter-docked `18×18` outer-border arrowheads, circled step indices (`①`–`⑳`), cross-file `IMPORTS ▶` / `CALLS ▶` arcs, 3-step context synthesis for single-node findings, a plain-English **Flow Story Bar**, and interactive **Upstream/Downstream Blast-Radius** highlighting.
+> 3. **Token-Efficient Multi-Provider BYOK Frontier AI Copilot (`90–95%` Token Savings)**: Connect **Google Gemini**, **OpenAI**, **Anthropic Claude**, or **OpenAI-Compatible / OpenRouter / Local Ollama** via a `0o600` local BYOK vault (`frontier_ai_engine.py`) powered by **≤40-line CPG Micro-Slicing** and **SHA-256 Slice Caching (`0` tokens on cache hits)**.
+> 4. **One-Click `"Fix All Safe Issues"` Batch Auto-Patcher + Live BFL `DiffEditor`**: Atomically applies non-overlapping AST-verified patches bottom-up (`POST /api/remediate/batch-apply`), validates syntax (`ast.parse` / JS delimiter balance), journals `.alastor_patches` SHA-256 backups for 1-click undo, exports a `git apply` `.patch`, and re-scans the CPG to prove severance.
+> 5. **Inter-Procedural Code Property Graph SAST** (`Tree-Sitter AST + CFG + DFG + :CALLS` over `Neo4j 5 + APOC`) with **1-Click Open/Public & Private GitHub Repo Scanning**.
+> 6. **AST-Verified Sanitizer Summary & CPG-Backed Web Intel Engine** (`0%` False Positives on custom enterprise path/SSRF/SQLi/log validators and live `OSV.dev` / `NVD` / `CISA KEV` advisories).
+> 7. **Live OSV.dev Transitive Lockfile SCA** with **CPG Import Reachability Proof** (`REACHABLE` vs. `DORMANT`).
+> 8. **Infrastructure-as-Code & GitHub Actions CI/CD Pipeline Security** (`Dockerfile`, `Compose`, `.github/workflows/*.yml`).
+> 9. **Cryptographic Secret Keys & Shannon Entropy Vault** with RBAC-gated unmasking.
+> 10. **Automated Microsoft STRIDE Matrix, CycloneDX v1.5 SBOM, PMI/COBIT RACI & Executive Exports** (`SARIF v2.1.0`, Light-Mode `HTML`, `CSV`, `Markdown`, `.cdx.json`, `.patch`).
 
 ---
 
-## 🔥 Why Security Engineers & Developers Switch to ALASTOR
+## 🔥 What's New in `v4.0.0` & Why Teams Switch to ALASTOR
 
-| Legacy Scanner Pain Point | How ALASTOR `v3.0.0` Solves It Permanently |
+| Legacy Scanner Pain Point | How ALASTOR `v4.0.0` Solves It Permanently |
 | :--- | :--- |
-| **Regex Noise & Alert Fatigue**<br>*Pattern matchers flag sanitized variables, safe helper wrappers, and docstrings because they cannot verify AST guards across functions.* | **AST-Verified Sanitizer Summaries & CPG-Backed Web Intel**: ALASTOR inspects the actual AST body of every helper function in your repo and promotes it to `is_sanitizer=True` **only** if it mathematically enforces path confinement (`commonpath` / `is_relative_to`), DNS private-IP SSRF checks (`ipaddress`), or CR/LF stripping — and verifies live Web Intel advisories against real CPG AST/CFG/DFG sinks. Result: **100% True Positive recall with `0%` False Positives.** |
-| **Friction-Heavy GitHub Onboarding**<br>*Commercial tools demand OAuth org installs, CI runners, or leak PAT tokens inside `.git/config` clone URLs.* | **Instant GitHub Repo Scanner (`Public URL` + `Private PAT`)**: For **Open / Public** repos, just paste the GitHub URL (`https://github.com/owner/repo` or `owner/repo`) and scan with **zero tokens**. For **Private** repos, ALASTOR authenticates via **ephemeral `GIT_CONFIG_*` HTTP `Authorization: Basic` headers** (never stored in clone URLs, `.git/config`, or logs) with pre-flight access verification and optional `.alastor_vault` local persistence for 1-click **`Re-Scan & Track Changes`**. |
-| **Unreachable Dependency CVE Floods**<br>*SCA tools dump 200+ lockfile warnings without checking if your code ever imports the vulnerable library.* | **Live OSV.dev + CPG Import Reachability (`SCA-2`)**: Queries Google's `api.osv.dev` across `package-lock.json` and `requirements.txt`, then cross-references your Neo4j CPG `Import` AST nodes to separate **`RUNTIME REACHABLE`** exploits from **`UNREACHABLE / DORMANT`** transitive noise. |
-| **Cryptic Rule IDs With Zero Fix Guidance**<br>*Developers get a CWE number and waste hours figuring out which upstream line to patch.* | **Live BFL `"Sever the Thread"` Auto-Patcher + SHA-256 Undo**: Computes the single optimal dominance chokepoint line (`BFL`), previews the unified patch inside a live **Monaco `DiffEditor`** (`d`), applies it to disk with a `.alastor_patches` SHA-256 backup (`p`), re-runs the 7-pass CPG compiler to prove the taint thread is severed, and supports 1-click revert (`u`). |
-| **Mandatory Cloud Code Uploads & Per-Seat Pricing**<br>*Commercial SAST/ASPM platforms upload proprietary IP to vendor clouds and charge \$1,000+/dev/year.* | **100% Local-First, Sovereign & MIT Open Source**: Your source code, Neo4j CPG database, secret vault, and SBOM never leave `localhost`. Zero telemetry, zero seat limits, zero license keys. |
-| **Disconnected Tool Sprawl**<br>*Separate tools for SAST, SCA, Secrets, CI/CD, Threat Modeling, SBOM, and GRC.* | **5-Pillar Studio IDE + 7 Interactive CPG Graph Views**: Jump from a **STRIDE Threat Row** or **CycloneDX SBOM Component** straight to the exact **Monaco Source Line**, **Live BFL DiffEditor**, and **Neo4j Attack Path** in one click. |
+| **Directionless Graph "Hairballs"**<br>*Nodes connect at hidden center handles without visible arrowheads, cross-file import context, or single-node impact explanation.* | **100% Perimeter-Docked Arrowheads, Story Bar & Blast Radius**: Every edge across all 7 CPG/360° modes and the **4-Zone Trust Boundary Graph** docks cleanly at outer card borders with `18×18` arrowheads, `①`–`⑳` step badges, `IMPORTS ▶` / `CALLS ▶` pills, 3-step single-node synthesis (`Origin ▶ BFL ▶ Impact`), a plain-English **Flow Story Bar**, and 1-click **Blast Radius** highlighting. |
+| **Complex Nested Menus & Low-Contrast Dark UIs**<br>*Dark-on-dark panels strain eyes during long audits, and 7-level nested dropdowns bury critical tools.* | **Guided 4-Stage Workflow + Mandatory WCAG AA Daylight Theme**: Retires dark themes and nested menu rails in favor of **4 clear stages** (`1. Scan & Repos · 2. Triage & Fix · 3. 360° Map & Threats · 4. ASPM, Rules & Reports`) on crisp high-contrast Daylight surfaces (`>= 4.5:1` WCAG AA) with **100% feature preservation**. |
+| **Runaway LLM Token Bills & Full-File Context Leaks**<br>*Generic AI security tools dump entire 800-line source files into cloud LLMs on every click, burning tokens and exposing unrelated code.* | **CPG Micro-Slicing (`<= 40` Lines) + SHA-256 Verdict Cache (`90–95%` Savings)**: ALASTOR deterministically slices only the source, BFL chokepoint, sink, and 1-line cross-file call signatures before calling your chosen BYOK model (`Gemini`, `OpenAI`, `Anthropic`, or local `Ollama`), caching results by SHA-256 (`0` tokens on repeat slices). |
+| **One-by-One Manual Remediation Drudgery**<br>*Fixing 15 findings one file at a time shifts line numbers and breaks subsequent patches.* | **Atomic Bottom-Up Batch Auto-Fix (`"Fix All Safe Issues"`)**: Applies all safe AST-deterministic patches bottom-up (`target_line DESC`), verifies syntax before writing, rolls back atomically on any conflict, generates a `git apply` `.patch`, and re-verifies CPG severance in one click. |
+| **Regex Noise & Unreachable CVE Floods**<br>*Pattern matchers flag sanitized helpers and dump 200+ dormant transitive CVEs.* | **AST-Verified Sanitizer Summaries + OSV CPG Reachability**: Inspects helper AST bodies (`commonpath`, `ipaddress`, CRLF) for **`0%` False Positives** and cross-checks `OSV.dev` lockfile CVEs against Neo4j `Import` AST nodes (`RUNTIME REACHABLE` vs. `DORMANT`). |
 
 ---
 
 ## ⚔️ Head-to-Head Competitive Benchmark
 
-| Capability | **ALASTOR `v3.0.0`** | **Semgrep OSS** | **Semgrep Pro** | **Checkmarx / Fortify** | **Snyk Code + SCA** |
+| Capability | **ALASTOR `v4.0.0`** | **Semgrep OSS** | **Semgrep Pro** | **Checkmarx / Fortify** | **Snyk Code + SCA** |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Analysis Representation** | **Full CPG (`AST+CFG+DFG+:CALLS`) in Neo4j** | Single-file AST / pattern | Cross-file AST + taint | Proprietary AST/DFG | Proprietary semantic graph |
-| **Direct GitHub Scan (Public URL + Private PAT)** | ✅ **Paste Public URL (`No Token`) + Ephemeral PAT Header** | ⚠️ Manual local `git clone` | ☁️ Cloud GitHub App | ⚠️ Heavy server Git setup | ☁️ Cloud OAuth required |
-| **Custom Helper Sanitizer Body Verification** | ✅ **Automatic AST Verification (`0%` FP)** | ❌ Flags custom helpers | ⚠️ Requires manual rule YAML | ⚠️ Manual custom filters | ❌ Limited custom rules |
-| **Inter-Procedural Route $\rightarrow$ Helper Taint** | ✅ **Built-In (`FastAPI`, `Flask`, `Express`)** | ❌ Intra-procedural only | ✅ Paid Commercial Tier | ✅ Paid Enterprise Tier | ✅ Paid Cloud Tier |
+| **Directional 360° + 4-Zone Trust Boundary Graphs** | ✅ **Perimeter Arrows + Story Bar + Blast Radius** | ❌ CLI only | ❌ Static trace list | ⚠️ Legacy taint tree | ❌ Linear code flow only |
+| **Multi-Provider BYOK Frontier AI + Micro-Slicing** | ✅ **`Gemini`/`OpenAI`/`Claude`/`Ollama` (`90–95%` Saved)** | ❌ | ☁️ Vendor-locked AI | ☁️ Paid Cloud Add-On | ☁️ Vendor-locked AI |
+| **One-Click Multi-File Batch Auto-Patcher + Undo** | ✅ **Bottom-Up AST Batch Fix + `.patch` + SHA-256 Undo** | ❌ | ⚠️ Single-finding AI | ❌ BFL node only | ⚠️ Cloud PR suggestions |
+| **Direct GitHub Scan (Public URL + Private PAT)** | ✅ **Paste Public URL (`No Token`) + Ephemeral PAT Header** | ⚠️ Manual `git clone` | ☁️ Cloud GitHub App | ⚠️ Heavy server setup | ☁️ Cloud OAuth required |
+| **Custom Helper Sanitizer Body Verification** | ✅ **Automatic AST Verification (`0%` FP)** | ❌ Flags custom helpers | ⚠️ Manual rule YAML | ⚠️ Manual filters | ❌ Limited custom rules |
 | **Live Lockfile CVE + CPG Import Reachability** | ✅ **Built-In (`OSV.dev` + AST Imports)** | ❌ No SCA in OSS | ✅ Supply Chain Add-On | ✅ Paid SCA Add-On | ✅ Paid Cloud Tier |
-| **GitHub Actions CI/CD Workflow Security** | ✅ **Built-In (`IAC-3` SHA & Expression Injection)** | ⚠️ Community rules | ✅ Paid Tier | ⚠️ Partial | ❌ Separate IaC |
-| **Live BFL `"Sever the Thread"` Auto-Patcher + Undo** | ✅ **Monaco `DiffEditor` + 1-Click Apply/Undo (`SHA-256`)** | ❌ | ⚠️ AI autofix (Cloud) | ⚠️ BFL node only | ⚠️ Cloud suggestions |
-| **Automated Microsoft STRIDE Matrix (`OK` vs `Issue`)** | ✅ **Live File-Anchored Dossier + `PBOM`** | ❌ | ❌ | ❌ | ❌ |
-| **Plain-English Non-Coder / CISO Risk Translator** | ✅ **Built-In Analogies + Security Academy** | ❌ | ❌ | ❌ | ❌ |
-| **Interactive `7×9` PMI/COBIT RACI Matrix** | ✅ **Built-In with Golden-Rule Validator** | ❌ | ❌ | ❌ | ❌ |
-| **100% Offline / Sovereign Local Source Privacy** | ✅ **100% Local (`Neo4j` + `FastAPI` + `Next.js`)** | ✅ CLI only (no UI) | ❌ Cloud control plane | ⚠️ Heavy on-prem server | ❌ Cloud upload required |
+| **Automated Microsoft STRIDE Matrix + `PBOM` + `RACI`** | ✅ **Live File-Anchored Dossier + `7×9` RACI** | ❌ | ❌ | ❌ | ❌ |
+| **100% Local / Sovereign Execution (Zero Cloud Lock-In)** | ✅ **100% Local (`Neo4j` + `FastAPI` + `Next.js`)** | ✅ CLI only (no UI) | ❌ Cloud control plane | ⚠️ Heavy on-prem server | ❌ Cloud upload required |
 | **License & Cost** | **100% Free & Open Source (`MIT`)** | LGPL (CLI only) | \$\$\$ Per-Developer | \$\$\$\$ Six-Figure Annual | \$\$\$ Per-Developer |
 
 ---
 
-## 🧠 Compiler-Grade 7-Pass CPG Architecture
+## 🧠 Compiler-Grade 7-Pass CPG + Frontier AI Micro-Slice Architecture
 
 ```mermaid
 flowchart LR
-    subgraph IN["📂 Target Application / Public Git URL / Private PAT Repo / ZIP"]
+    subgraph IN["📂 Stage 1: Scan & Repos"]
         GIT["GitHub / GitLab / Bitbucket\nPublic URL (No Token) • Private PAT"]
-        SRC["Python • JS • TS • TSX"]
-        LOCK["package-lock.json • requirements.txt"]
-        INFRA["Dockerfile • Compose • .github/workflows"]
+        SRC["Local Folder • File • Snippet • ZIP\nPython • JS • TS • TSX • IaC"]
     end
 
-    subgraph COMPILER["⚙️ ALASTOR 7-Pass Deterministic Compiler (backend/compiler)"]
-        P1["Pass 1: Tree-Sitter AST Parser\nRoutes, Sinks, Secrets & Imports"]
-        P2["Pass 2: AST Sanitizer Verifier\nProves commonpath / IP / CRLF Guards"]
-        P3["Pass 3: Control-Flow Builder\nCFG_NEXT, Branches & Loop Back-Edges"]
-        P4["Pass 4: Data-Flow & Iterator Taint\nIntra + Call-Site Inter-Procedural DFG"]
-        P5["Pass 5: Cross-File Call Graph\n:CALLS Edges & Reachability Proof"]
+    subgraph COMPILER["⚙️ 7-Pass Deterministic CPG Compiler"]
+        P1["Pass 1-2: Tree-Sitter AST\n+ Sanitizer Body Verifier"]
+        P3["Pass 3-4: CFG Branches\n+ Inter-Procedural DFG"]
+        P5["Pass 5: Cross-File :CALLS\n& IMPORTS Dependency Graph"]
     end
 
-    subgraph GRAPH["🗄️ Neo4j 5 + APOC CPG"]
+    subgraph GRAPH["🗄️ Neo4j 5 + APOC"]
         NEO[("Unified Property Graph\nAST + CFG + DFG + :CALLS\nO(1) UNWIND Batch Ingest")]
     end
 
-    subgraph ENGINES["🛡️ Multi-Engine Audit, Live BFL Patcher & ASPM"]
-        R21["21 Deterministic Rules\nSAST • Secret • Logic • IaC • CI/CD"]
-        OSV["Live OSV.dev CVE Scanner\n+ CPG Import Reachability"]
-        BFL["Live BFL Auto-Patcher\nPreview • Apply • SHA-256 Undo"]
-        ASPM["STRIDE Matrix • CycloneDX v1.5\nEPSS v4 • CPG Web Intel • RACI"]
+    subgraph WORKFLOWS["🛡️ Stages 2–4: Triage, Directional 360° Maps, Batch Fix & BYOK AI"]
+        R21["21 Deterministic Rules\n+ OSV Reachable SCA + Web Intel"]
+        FLOW["Directional ReactFlow Engine\nPerimeter Arrows • Story Bar • Blast Radius\n4-Zone Trust Boundary Graph"]
+        PATCH["Single & Batch Auto-Patcher\nBottom-Up AST Fix • SHA-256 Undo • .patch"]
+        AI["BYOK Frontier AI Copilot\n<=40-Line Micro-Slice • SHA-256 Cache\nGemini • OpenAI • Claude • Ollama"]
     end
 
-    GIT --> SRC --> P1 --> P2 --> P3 --> P4 --> P5 --> NEO
-    NEO --> R21 --> BFL --> ASPM
-    LOCK --> OSV --> ASPM
-    INFRA --> R21
+    GIT --> P1
+    SRC --> P1
+    P1 --> P3 --> P5 --> NEO
+    NEO --> R21
+    R21 --> FLOW
+    R21 --> PATCH
+    R21 --> AI
 ```
 
 ---
 
-## 📸 Complete Visual Tour — Every Option, Module, Graph & Modal
+## 📸 Complete Visual Tour — Every Stage, Directional Graph, AI Workflow & Export
 
-Every screenshot below is captured live from **ALASTOR `v3.0.0` Studio IDE** at `2400×1500` Retina resolution scanning multi-service Python `FastAPI` + `React/TypeScript` + `Docker` + `GitHub Actions` repositories — showcasing **the 2-Bar Studio IDE (`StudioCommandHeader` + `StudioStatusBar`), 5-Pillar Composite Workspaces, Live BFL `"Sever the Thread"` Monaco `DiffEditor`, Public/Private GitHub repo scanner, all 7 CPG graph modes, and 6 themes** out of the box.
-
----
-
-### 🏛️ 1. Mythological Portal Gate, 2-Bar Studio Command Header, GitHub Repo Scanner & 5-Pillar Activity Rail
-
-#### 1A. ALASTOR `v3.0` Mythological Launch Portal (`Portal Gate`)
-Greets operators with live `Neo4j CPG Connected` telemetry, active project status, **Continuous Track Changes** deltas (`Fixed` / `New` / `Unchanged` since last scan), 1-click **`Open Workbench (Saved Scan)`**, **`Re-Scan Target`**, and direct launch cards for all **5 Unified Studio Workspaces**.
-
-![01 - ALASTOR Mythological Portal Gate](./docs/screenshots/shot_01_portal_gate.png)
-
-#### 1B. `44px` Studio Command Header (`Menu ▾` 7-Category Popover) + `56px` 5-Pillar Activity Rail + `26px` Telemetry Status Bar
-Designed as a precision security IDE with zero visual clutter:
-- **Top Studio Command Header** ([`StudioCommandHeader.tsx`](./frontend/src/components/StudioCommandHeader.tsx)): Houses the `[Ἀ] ALASTOR` Launch Hub trigger, compact **`Menu ▾` 7-Category Popover** (`1. File & Scan` • `2. Workspace` • `3. CPG & Graphs` • `4. Threat Model & Secrets` • `5. Rule Engine` • `6. Accounts` • `7. Reports & Exports`), Active Repo Selector, **`GitHub Scan`**, **`Ctrl+K` Omnibar**, segmented **`Code | Split | Graph`** layout switch, **`Preview Diff (d)`**, **`Scan Target`**, `Engineer / Executive` lens switch, and 6-Palette Theme Switcher.
-- **Left 5-Pillar Activity Rail** ([`LeftFunctionBar.tsx`](./frontend/src/components/LeftFunctionBar.tsx)): 1-click switching across the **5 Focused Studio Workspaces** (`1. Workbench`, `2. Threats`, `3. ASPM`, `4. Repos`, `5. Engine`), plus bottom quick-launchers (`Secrets`, `Call Graph`, `Explorer`, `Ctrl+K`, `Config`).
-- **Bottom Telemetry Status Bar** ([`StudioStatusBar.tsx`](./frontend/src/components/StudioStatusBar.tsx)): Live Neo4j Bolt status, active repository & branch, CPG Node/Edge telemetry, active Rule Profile chip, keyboard shortcut hint (`j/k Triage · d Diff · p Patch · u Undo`), Tenant Account badge, and 1-click `SARIF v2.1.0` export.
-
-![02 - Top Studio Command Menu and Left 5-Workspace Activity Rail](./docs/screenshots/shot_02_top_menu_and_left_rail.png)
-
-#### 1C. Instant GitHub Repository Scanner — Open / Public (Paste URL Only) vs. Private (PAT Auth Required)
-Click **`GitHub Scan`** in the top header (or `Menu ▾` $\rightarrow$ `1. File & Scan` $\rightarrow$ `Scan GitHub Repo`) to clone and audit any **GitHub**, **GitLab**, or **Bitbucket** repository directly into a UUID-isolated local sandbox with **DNS/IP SSRF protection**:
-- **🌐 Open / Public Repository (`NO TOKEN`)**: Simply paste `https://github.com/owner/repo` (or shorthand `owner/repo`), optionally click **`Verify Repo Access`** (`POST /api/github/verify-repo`) to confirm public visibility, default branch, and primary language, and hit **`Clone & Scan Repo`** — zero authentication or setup required! If you accidentally paste a private repo URL in Open mode, ALASTOR automatically detects it (`HTTP 401`), switches the modal to **Private Mode**, and prompts for your token.
-- **🔒 Private Repository (`AUTH REQUIRED`)**: Enforces a Personal Access Token (`ghp_...` Classic `repo` scope or `github_pat_...` Fine-Grained `Contents: Read-only`). Credentials are injected **exclusively via ephemeral `GIT_CONFIG_*` HTTP `Authorization: Basic` headers** (`GIT_TERMINAL_PROMPT=0`) — **never embedded in the clone URL, `.git/config`, process argv, or server logs** — with an optional local `.alastor_vault` toggle so **`Re-Scan & Track Changes`** works seamlessly on subsequent commits.
-
-![02b - GitHub Repository Scanner in Open Public Paste-URL-Only Mode](./docs/screenshots/shot_02b_github_public_repo_scanner.png)
-
-![02c - GitHub Repository Scanner in Private PAT Auth Required Mode](./docs/screenshots/shot_02c_github_private_repo_auth.png)
+Every screenshot below is captured live from **ALASTOR `v4.0.0` Daylight Studio** at `2400×1500` Retina resolution in high-contrast **Olympian Daylight** light mode — showcasing the **Guided 4-Stage Workflow Bar, BYOK Frontier AI Copilot with `90–95%` Token Efficiency Meter, One-Click Batch Auto-Fix, Perimeter-Arrow Directional CPG/360°/Trust-Boundary Graphs, and Executive ASPM Suite**.
 
 ---
 
-### 💻 2. Workspace 1 — Code, BFL Auto-Patcher & CPG Workbench (`REMEDIATION_IDE`)
+### 🏛️ 1. Launch Portal, Guided 4-Stage Command Header & Stage 1 (`1. Scan & Repos`)
 
-#### 2A. Resizable Split Source Inspector, Written Observation Dossier & Attack Path Graph
-Click any finding in the left explorer (or press `j` / `k` to step through findings) to synchronize **four views simultaneously**:
-1. **Written Observation Dossier** (Plain-English explanation, `RUNTIME REACHABLE` proof, `EPSS 30d` exploit percentile, RACI `R` & `A` owners, and effort estimate).
-2. **Monaco Source Code Editor** (Auto-scrolls and highlights the exact vulnerable statement with glyph markers, clickable symbol breadcrumbs, and the **`Best Fix Location (BFL)`** dominance chokepoint banner).
-3. **Interactive Bottom Storyboard** (`1. Attack Story` step-by-step source-to-sink narrative, `2. How to Fix`, `3. PoC & Artifacts`, `4. CWE / CVE`, plus `Mark As` triage suppression and `+ Jira / + GitHub` 1-click ticket buttons).
-4. **Live Neo4j Attack Path Graph** (`SOURCE` in cyan $\rightarrow$ `BEST FIX (BFL)` in gold/emerald $\rightarrow$ `SINK` in crimson, complete with a **`Play Step Tour`** animation and **`Sever the Thread`** chokepoint card!).
+#### 1A. ALASTOR `v4.0` Daylight Launch Portal (`Portal Gate`)
+Greets operators in crisp high-contrast daylight with live `Neo4j CPG Connected` telemetry, active project status, **Continuous Track Changes** deltas (`Fixed` / `New` / `Unchanged`), 1-click **`Open Workbench`**, and direct launch cards into the studio.
 
-![03 - Code & CPG Review Workbench with Written Observation Dossier and Attack Story](./docs/screenshots/shot_03_code_review_dossier_and_diff.png)
+![01 - ALASTOR v4.0 Daylight Launch Portal](./docs/screenshots/shot_01_portal_gate.png)
 
-#### 2B. Live BFL `"Sever the Thread"` Monaco `DiffEditor` & SHA-256 Undo Journal
-Press **`d`** (or click **`Preview Diff (d)`** / **`Preview & Sever Thread`**) to open the live side-by-side **Monaco `DiffEditor`** (`POST /api/remediate/preview`) comparing the vulnerable source (`- Original`) against the synthesized BFL chokepoint patch (`+ BFL Chokepoint Patch`). Press **`p`** (or click **`Apply Patch & Re-Scan`**) to write the fix (`POST /api/remediate/apply`), record a `.alastor_patches` SHA-256 backup, and automatically re-verify that the Neo4j CPG taint path is severed (`severed: true`) — or press **`u`** (`POST /api/remediate/undo`) to restore the exact pre-patch file!
+#### 1B. Streamlined `44px` Guided 4-Stage Workflow Header (`StudioCommandHeader.tsx`)
+Replaces complex nested menus and side rails with one intuitive left-to-right top bar:
+- **Left Cluster**: `[Ἀ] ALASTOR` Launch Hub crest + Active Repository Picker + Instant Saved-Snapshot Switcher.
+- **Center Guided 4-Stage Bar**: **`1. Scan & Repos`** $\rightarrow$ **`2. Triage & Fix`** $\rightarrow$ **`3. 360° Map & Threats`** $\rightarrow$ **`4. ASPM, Rules & Reports`**.
+- **Right Cluster**: One-click **`Scan`**, **`+F / +N` Track Changes**, **`⌘K` Command Omnibar**, **`⚙` Settings**, **3-Palette Daylight Switcher**, and **`✨ Frontier AI`** Copilot drawer toggle.
 
-![03b - Live BFL Sever the Thread Monaco DiffEditor and Chokepoint Patch](./docs/screenshots/shot_03b_before_after_code_diff.png)
+![02 - Guided 4-Stage Workflow Header and Split Triage Studio](./docs/screenshots/shot_02_top_menu_and_left_rail.png)
 
-#### 2C. 1-Click `Secrets` Filter & Cryptographic Credential Cards (`RULE-8`)
-Click **`Secrets`** on the left rail (or **`Keys`** in the findings filter bar) to isolate hardcoded API keys, JWT signing secrets, cloud tokens (`AKIA...`, `ghp_...`, `sk_...`), and DB passwords — complete with **Shannon Entropy (`bits/char`)**, **Secret Provider Type**, and **Masked Value Previews**.
+#### 1C. Stage 1 (`1. Scan & Repos`) — Multi-Repository Hub & Instant GitHub Scanner (`Public URL` vs. `Private PAT`)
+Paste a local path or GitHub URL directly in the Stage 1 quick-scan bar, manage saved repository snapshots with per-card **`Re-Scan`**, **`Open in Studio`**, **`Configure`**, and **`Delete`** actions, or launch the dual-mode GitHub Scanner:
+- **🌐 Open / Public Repository (`NO TOKEN`)**: Paste `https://github.com/owner/repo` and scan immediately with zero credentials.
+- **🔒 Private Repository (`AUTH REQUIRED`)**: Authenticates via **ephemeral `GIT_CONFIG_*` HTTP `Authorization: Basic` headers** (never written to `.git/config`, clone URLs, or logs) with optional `.alastor_vault` local persistence.
 
-![04 - Secret Keys Quick Filter and Credential Finding Cards](./docs/screenshots/shot_04_secret_filter_and_cards.png)
+![15 - Stage 1 Scan and Repos Hub](./docs/screenshots/shot_15_projects_hub_and_webhooks.png)
 
-#### 2D. Sidebar Tab `2. Web Intel` — CPG-Backed Zero-FP Multi-Site CVE & Advisory Extractor
-Pull real-time vulnerability advisories directly from **`OSV.dev`**, **`NIST NVD`**, **`CISA Known Exploited Vulnerabilities (KEV) / OWASP`**, or any custom security advisory URL and correlate them against verified CPG AST/CFG/DFG sinks in your active repository (`0%` substring false positives).
+![02b - GitHub Repository Scanner in Open Public Mode](./docs/screenshots/shot_02b_github_public_repo_scanner.png)
 
-![22 - Live Multi-Site Web CVE and Advisory Extractor](./docs/screenshots/shot_22_live_web_cve_intel.png)
-
----
-
-### 🕸️ 3. All 7 Interactive Code Property Graph (`CPG`) & Architecture Modes
-
-ALASTOR provides **7 specialized graph visualizations** inside [`ReactFlowGraphPane.tsx`](./frontend/src/components/ReactFlowGraphPane.tsx) so large repositories stay crystal-clear instead of turning into unreadable "hairballs":
-
-#### 3A. Decluttered `360° Application Architecture Spider Map` (`2. 360° Spider Map` / `APP_TREE`)
-Auto-classifies every file in your repository (`API_ROUTER`, `BUSINESS_LOGIC`, `FRONTEND_VIEW`, `DEPENDENCY_MANIFEST`, `INFRASTRUCTURE`) with smart folder clustering, flaw heat-badges, and 1-click source inspection.
-
-![05 - 360 Application Architecture Spider Map](./docs/screenshots/shot_05_graph_spider_map_360.png)
-
-#### 3B. Cross-File `Inter-Procedural Call Graph (:CALLS)` (`3. Call Graph` / `CALL_GRAPH`)
-Visualizes `:CALLS` edges connecting caller functions and HTTP endpoints to downstream helper functions across files (e.g., `payment_gateway.py` $\rightarrow$ `services/ledger_worker.py`), with toggles for **`Whole App Calls`** vs. **`Active File Calls`**.
-
-![06 - Inter-Procedural Cross-File Call Graph](./docs/screenshots/shot_06_graph_call_graph.png)
-
-#### 3C. `Attack Surface Entry Points Graph` (`4. Entry Points` / `ENTRYPOINT_GRAPH`)
-Maps every external ingress route (`@app.post`, `@app.get`, Express routes, CLI handlers) and highlights how untrusted parameters enter internal service logic.
-
-![07 - Attack Surface Entry Points Graph](./docs/screenshots/shot_07_graph_entrypoints.png)
-
-#### 3D. Full-Width `Unified Code Property Graph (AST + CFG + DFG)` (`7. Full CPG` in `Graph` Layout)
-Inspect the raw compiler graph stored in Neo4j — combining syntactic `AST` hierarchy edges, `CFG_NEXT` execution branches, and `DFG_FLOWS_TO` variable propagation edges on a zoomable, pannable canvas with MiniMap and full-screen presentation mode.
-
-![08 - Unified Full Code Property Graph AST CFG DFG in Graph Focus](./docs/screenshots/shot_08_graph_dfg_cfg_full_cpg.png)
+![02c - GitHub Repository Scanner in Private PAT Auth Mode](./docs/screenshots/shot_02c_github_private_repo_auth.png)
 
 ---
 
-### 🛡️ 4. Workspace 2 — Automated Microsoft STRIDE Threat Modeling, Secret Vault & PBOM (`THREAT_MODELING`)
+### ✨ 2. Token-Efficient Multi-Provider BYOK Frontier AI Copilot (`90–95%` Token Savings)
 
-#### 4A. Sub-Tab 1 — Executive STRIDE Count & Verdict Matrix (`✔ What is OK` vs. `✖ What is the Issue`)
-Automatically evaluates **Spoofing (`S`)**, **Tampering (`T`)**, **Repudiation (`R`)**, **Information Disclosure (`I`)**, **Denial of Service (`D`)**, and **Elevation of Privilege (`E`)** across your codebase, displaying exact passed counts (`✔ OK`), failed counts (`✖ Issue`), recorded file:line observations, and **`</> Inspect`** buttons that jump straight into Monaco!
+#### 2A. Multi-Provider BYOK Vault (`0o600`) & Live CPG Micro-Slice Token Efficiency Meter
+Click **`✨ Frontier AI`** in the top-right header to connect **Google Gemini**, **OpenAI**, **Anthropic Claude**, or **OpenAI-Compatible / OpenRouter / Local Ollama / vLLM** ([`FrontierAiCopilotDrawer.tsx`](./frontend/src/components/FrontierAiCopilotDrawer.tsx)):
+- **90–95% Prompt Token Reduction**: Instead of uploading entire source files, `build_cpg_micro_slice()` extracts `<= 40` lines covering only the taint source, BFL chokepoint, sink, and 1-line cross-file call signatures, plus **SHA-256 Slice Caching (`0` tokens on repeat slices)**.
+- **Zero-Leak Local Vault**: Keys are isolated per `(provider, host)` in `.alastor_vault/ai_config.json` (`0o600`), masked in `GET /api/ai/config`, protected against DNS/IP & `30x` redirect SSRF, and scrubbed from error strings.
 
-![09 - STRIDE Executive Count and Verdict Matrix](./docs/screenshots/shot_09_stride_threat_matrix_and_observations.png)
+![27 - Frontier AI BYOK Multi-Provider Vault and Token Efficiency Meter](./docs/screenshots/shot_27_frontier_ai_byok_vault.png)
 
-#### 4B. Sub-Tab 2 — Cryptographic Secret Keys & Credentials Vault
-Centralized audit ledger of every detected credential in source or IaC manifests, showing the variable identifier, masked token preview, secret provider classification, Shannon entropy score, rotation guidance, and RBAC-controlled **`Reveal / Mask`** actions.
+#### 2B. Batch TP/FP Validation Digest, Monaco Selection Audit, AI Patch Synthesis & Graph Story
+Run **`Batch AI Validate`** across up to 10 findings in a single compact micro-slice prompt to receive structured `TRUE_POSITIVE` / `FALSE_POSITIVE` / `NEEDS_HUMAN_REVIEW` verdicts, confidence scores, per-card `AI: TP 98%` chips, and 1-click **`Apply Triage Status`** — or highlight any lines in Monaco to click **`✨ AI Audit Selection (LX–LY)`**!
 
-![10 - Secret Keys and Credentials Vault](./docs/screenshots/shot_10_secret_keys_vault.png)
+![27b - Frontier AI Batch TP/FP Validation Digest and Per-Card Verdicts](./docs/screenshots/shot_27b_frontier_ai_validate_verdicts.png)
 
-#### 4C. Sub-Tab 3 — Architectural Trust Boundary Map
-Breaks down your application across **4 security zones** (*Zone 0: Untrusted Public Ingress*, *Zone 1: API Controllers & Routing*, *Zone 2: Core Business & Domain Workers*, *Zone 3: Execution Sinks, Filesystem & External Cloud APIs*) with per-zone risk posture.
+---
 
-![11 - Trust Boundary Architecture Map](./docs/screenshots/shot_11_trust_boundaries_map.png)
+### 🛠️ 3. Stage 2 (`2. Triage & Fix`) — One-Click Batch Auto-Fix & Monaco BFL `DiffEditor`
 
-#### 4D. Sub-Tab 4 — Attack Surface Entrypoints & CI/CD Pipeline Bill of Materials (`PBOM`)
-Catalogs every discovered HTTP/CLI entrypoint alongside **CI/CD Supply-Chain Integrity Controls** (lockfile pinning, non-root container execution, `.gitignore` secret hygiene, GitHub Actions immutable SHA pinning, and runtime security headers).
+#### 3A. Split Light Monaco Editor, Written Observation Dossier & Directional Attack Path
+Click any finding (or press `j` / `k`) to synchronize the **Written Observation Dossier**, **Light Monaco Code Inspector** (with selection-aware AI Audit & AI Patch triggers), **Attack Storyboard**, and **Directional Attack Path Graph** (`① SOURCE ──▶ ② BFL CHOKEPOINT ──▶ ③ SINK` + plain-English **Flow Story Bar**).
+
+![03 - Stage 2 Triage and Fix Split Code and Directional Attack Path](./docs/screenshots/shot_03_code_review_dossier_and_diff.png)
+
+#### 3B. One-Click `"Fix All Safe Issues"` Batch Auto-Fix & Unified `.patch` Export
+Click **`Fix All Safe Issues (N)`** in the Flaw Explorer (`POST /api/remediate/batch-apply`) to apply all non-overlapping AST-deterministic fixes bottom-up across your workspace, verify Python/JS syntax, record `.alastor_patches` SHA-256 undo backups, download a `git apply`-ready `.patch`, and immediately re-scan the CPG to confirm severed exploit paths!
+
+![28 - One-Click Batch Auto-Fix Verification Banner and Severed CPG Count](./docs/screenshots/shot_28_batch_autofix_and_patch.png)
+
+#### 3C. Single-Finding Live BFL `"Sever the Thread"` Monaco `DiffEditor` & Secret Keys Filter
+Press **`d`** (or click **`Preview BFL Diff`**) to inspect side-by-side before/after changes in the light **Monaco `DiffEditor`**, or filter **`Keys`** to inspect hardcoded secrets (`RULE-8`) with Shannon entropy scores and masked previews.
+
+![03b - Live BFL Sever the Thread Light Monaco DiffEditor](./docs/screenshots/shot_03b_before_after_code_diff.png)
+
+![04 - Secret Keys Filter and Cryptographic Credential Cards](./docs/screenshots/shot_04_secret_filter_and_cards.png)
+
+---
+
+### 🕸️ 4. 100% Directional CPG, 360° Spider & 4-Zone Trust Boundary Graphs
+
+Every graph in ALASTOR `v4.0` features **perimeter-docked `18×18` outer-border arrowheads**, **numbered flow steps (`①`–`⑳`)**, **human-readable edge pills (`TAINT ▶`, `CALLS ▶`, `IMPORTS ▶`)**, **plain-English Flow Story Bars**, and **BFS Blast-Radius highlighting**:
+
+#### 4A. Single-Node SCA / IaC / Secret Findings — Automatic 3-Step Attack-Context Flow Synthesis
+Single-node findings (`SCA-*`, `IAC-*`, `RULE-8`) never render as isolated boxes without arrows — ALASTOR synthesizes a crystal-clear 3-step **`① Origin ──▶ ② BFL Chokepoint ──▶ ③ Security Impact`** directional chain!
+
+![29 - Single-Node Finding Synthesized into 3-Step Directional Flow](./docs/screenshots/shot_29_single_node_3step_directional_flow.png)
+
+#### 4B. Stage 3 (`3. 360° Map & Threats`) — 360° Architecture Spider Map with Cross-File `IMPORTS ▶` Flows
+Visualizes every file by architectural role (`API_ROUTER`, `BUSINESS_LOGIC`, `FRONTEND_VIEW`, `DEPENDENCY_MANIFEST`, `INFRASTRUCTURE`) with purple **`IMPORTS ▶`** cross-file dependency arcs, smart folder clustering, and click-to-lock **Blast Radius** inspection.
+
+![05 - 360 Architecture Spider Map with Cross-File Directional Flows](./docs/screenshots/shot_05_graph_spider_map_360.png)
+
+#### 4C. Cross-File `Inter-Procedural Call Graph (:CALLS)`, `Entrypoints` & `Full CPG`
+Trace `CALLS ▶` invocations across modules, map external ingress routes (`ENTRYPOINT_GRAPH`), or inspect unified `AST + CFG + DFG` edges (`TRUE ▶`, `FALSE ▶`, `LOOP ↺`, `TAINT ▶`) in `Full CPG`.
+
+![06 - Directional Inter-Procedural Cross-File Call Graph](./docs/screenshots/shot_06_graph_call_graph.png)
+
+![07 - Directional Attack Surface Entrypoints Graph](./docs/screenshots/shot_07_graph_entrypoints.png)
+
+![08 - Full Code Property Graph AST CFG DFG](./docs/screenshots/shot_08_graph_dfg_cfg_full_cpg.png)
+
+#### 4D. Interactive 4-Zone Directional Trust Boundary Graph, STRIDE Matrix, Secret Vault & PBOM
+In Stage 3 $\rightarrow$ **`Trust Boundaries, STRIDE & PBOM`**, explore how untrusted traffic crosses **Zone 1 (External Ingress)** $\rightarrow$ **Zone 2 (API & CLI Entrypoints)** $\rightarrow$ **Zone 3 (Validation & BFL Chokepoints)** $\rightarrow$ **Zone 4 (Critical Sinks & Crown-Jewel Secrets)** with live red `UNSANITIZED ▶` vs. green `GUARDED ✓` directional arrows, plus full **STRIDE Verdict Dossiers**, **Secret Keys Vault**, and **CI/CD PBOM** tabs!
+
+![11 - Interactive 4-Zone Directional Trust Boundary ReactFlow Graph](./docs/screenshots/shot_11_trust_boundaries_map.png)
+
+![09 - Detailed Microsoft STRIDE Threat Matrix and Observations](./docs/screenshots/shot_09_stride_threat_matrix_and_observations.png)
+
+![10 - Cryptographic Secret Keys and Credentials Vault](./docs/screenshots/shot_10_secret_keys_vault.png)
 
 ![12 - Attack Surface Entrypoints and CI/CD PBOM](./docs/screenshots/shot_12_entrypoints_and_cicd_pbom.png)
 
 ---
 
-### ✨ 5. Workspace 3 — Executive `SAST++++++` ASPM, Compliance Analytics & RACI Command Center (`EXECUTIVE_ASPM`)
+### 📊 5. Stage 4 (`4. ASPM, Rules & Reports`) — Executive Posture, SBOM, 21-Rule Studio, Governance & Exports
 
-Unified inside [`ExecutiveAspmWorkspace.tsx`](./frontend/src/components/ExecutiveAspmWorkspace.tsx) with a sleek `38px` 7-Tab sub-navigation bar so **CISOs, Engineering Directors, Product Managers, Auditors, and Developers** can govern risk without reading raw AST/Cypher code:
+Organized under a clean 5-pill Stage 4 bar (**`1. Executive Posture`** • **`2. SAST+ Suite & SBOM`** • **`3. Rules, Cypher & Web CVE Intel`** • **`4. Governance, RBAC & Connectors`** • **`5. Export Center`**):
 
-#### 5A. Sub-Tab 1 — Plain-English Business Impact Translator
-Translates every technical vulnerability into a clear **What Happened**, **Real-World Non-Coder Analogy**, **Business & Financial Impact**, and **1-Click Jump to Chokepoint Fix**.
+#### 5A. Executive Compliance & SLA Analytics (`OWASP Top 10`, `PCI-DSS v4.0`, `NIST 800-53`, `SOC 2`)
+![16 - Executive Posture and OWASP PCI NIST SOC2 Compliance Analytics](./docs/screenshots/shot_16_deep_dive_analytics.png)
 
-![18 - ASPM Tab 1 Plain-English Business Impact Translator](./docs/screenshots/shot_18_aspm_plain_english_translator.png)
+#### 5B. Plain-English Business Impact Translator, Live `CycloneDX v1.5` SBOM, Attack Surface, Roadmap & Academy
+![18 - Plain-English Business Impact Translator](./docs/screenshots/shot_18_aspm_plain_english_translator.png)
 
-#### 5B. Sub-Tab 2 — Live `CycloneDX v1.5` Software Bill of Materials (`SBOM`)
-Generates a compliant **U.S. Executive Order 14028 `CycloneDX v1.5` SBOM** across `npm` and `PyPI` manifests with standardized `pkg:` URLs (`purl`), version-pinning status, ecosystem tags, and 1-click `.cdx.json` download.
+![19 - Live CycloneDX v1.5 SBOM Supply-Chain Inspector](./docs/screenshots/shot_19_aspm_live_cyclonedx_sbom.png)
 
-![19 - ASPM Tab 2 Live CycloneDX v1.5 SBOM Inspector](./docs/screenshots/shot_19_aspm_live_cyclonedx_sbom.png)
+![19b - API and Entrypoint Attack Surface Catalog](./docs/screenshots/shot_19b_aspm_attack_surface.png)
 
-#### 5C. Sub-Tab 3 — API & Entrypoint Attack Surface Catalog
-Inventories every discovered REST endpoint and entrypoint across your codebase with HTTP method badges, handler symbols, file locations, exposure posture, and linked CPG vulnerability counts.
+![20 - Phased Management Remediation Roadmap](./docs/screenshots/shot_20_aspm_remediation_roadmap.png)
 
-![19b - ASPM Tab 3 API and Entrypoint Attack Surface Catalog](./docs/screenshots/shot_19b_aspm_attack_surface.png)
+![21 - Non-Coder Security Academy and Executive Glossary](./docs/screenshots/shot_21_aspm_security_academy.png)
 
-#### 5D. Sub-Tab 4 — Deep-Dive Compliance & SLA Analytics
-Real-time severity distributions, scan engine breakdowns (`SAST`, `SCA`, `IaC`), SLA aging buckets, and automated compliance readiness mapping against **`OWASP Top 10 (2021)`**, **`PCI-DSS v4.0`**, **`NIST SP 800-53 Rev. 5`**, and **`SOC 2 Type II`**.
+#### 5C. 21-Rule Matrix, Custom Sanitizer & Cypher Studio, and Live Web CVE & Advisory Extractor
+![13 - Rule Profiles and 21-Rule Deterministic Security Matrix](./docs/screenshots/shot_13_rule_engine_profiles.png)
 
-![16 - ASPM Tab 4 Deep Dive Analytics and OWASP PCI NIST SOC2 Compliance](./docs/screenshots/shot_16_deep_dive_analytics.png)
+![24 - Custom AST Sanitizer and Live Neo4j Cypher Studio](./docs/screenshots/shot_24_cypher_query_and_sanitizer_studio.png)
 
-#### 5E. Sub-Tab 5 — Interactive PMI/COBIT `RACI` Security Governance Matrix
-Assign **Responsible (`R`)**, **Accountable (`A`)**, **Consulted (`C`)**, and **Informed (`I`)** ownership across **7 organizational roles × 9 security lifecycle activities**, backed by an automatic **PMI Golden-Rule Validator** (enforcing exactly one `A` and at least one `R` per row) and 1-click JSON governance export.
+![22 - CPG-Backed Live Web CVE and Advisory Extractor](./docs/screenshots/shot_22_live_web_cve_intel.png)
 
-![17 - ASPM Tab 5 Interactive RACI Security Governance Matrix](./docs/screenshots/shot_17_raci_governance_matrix.png)
-
-#### 5F. Sub-Tab 6 — Phased Management Remediation Roadmap
-Automatically groups open findings into **Phase 1: Immediate Release Blockers (`0–7 Days`)**, **Phase 2: Short-Term Hardening (`8–30 Days`)**, and **Phase 3: Structural Hygiene (`31–90 Days`)** with engineering effort estimates and RACI role assignments.
-
-![20 - ASPM Tab 6 Phased Management Remediation Roadmap](./docs/screenshots/shot_20_aspm_remediation_roadmap.png)
-
-#### 5G. Sub-Tab 7 — Built-In Non-Coder Security Academy & Executive Glossary
-Interactive educational cards teaching `SAST`, `SCA & SBOM`, `IaC`, `Code Property Graphs (AST+CFG+DFG)`, `Taint Analysis`, `Best Fix Location (BFL)`, `RACI`, and `CWE / CVE / CVSS / EPSS` with memorable real-world analogies.
-
-![21 - ASPM Tab 7 Non-Coder Security Academy and Glossary](./docs/screenshots/shot_21_aspm_security_academy.png)
-
----
-
-### 📂 6. Workspace 4 — Multi-Repository Projects Hub, GitHub Import & CI/CD Webhooks (`PROJECTS_HUB`)
-
-Auto-discovers local workspaces, imports **Open / Public GitHub URLs (`Paste URL Only`)** or **Private GitHub / GitLab / Bitbucket repositories (`Token Required`)** with live `[PUBLIC 🌐]` / `[PRIVATE 🔒]` pre-flight detection, scans uploaded `.zip`/folder archives inside UUID-isolated sandboxes, persists scan history snapshots (`Scan #1`, `Scan #2`, deltas) with per-card **`Re-Scan`**, **`Open in Studio`**, **`Configure`**, and **`Delete`** actions, and provides ready-to-wire CI/CD webhook endpoints.
-
-![15 - Projects Hub Saved Scans and CI/CD Webhooks](./docs/screenshots/shot_15_projects_hub_and_webhooks.png)
-
-![15b - Projects Hub Import GitHub Repository Modal with Open Public and Private Token Modes](./docs/screenshots/shot_15b_projects_hub_github_import.png)
-
----
-
-### ⚙️ 7. Workspace 5 — Engine & Access Studio (`ENGINE_ACCESS`), `Ctrl+K` Palette & 6 Curated Themes
-
-Unified inside [`EngineAccessWorkspace.tsx`](./frontend/src/components/EngineAccessWorkspace.tsx) across 4 studio tabs:
-
-#### 7A. Engine Sub-Tab 1 — Rule Profiles & 21-Rule Matrix (`21/21`)
-Switch instantaneously between **4 built-in scan profiles** (*Checkmarx-Style Optimized*, *Strict Zero-Trust Enterprise*, *Secret & Credential Hunter*, *Fast CI/CD PR Gate*), author your own custom test profiles, toggle `SAST` / `SCA` / `IaC` engines independently, and check or uncheck any individual rule across all **21 deterministic rules (`21/21`)**.
-
-![13 - Rule Engine and 21-Rule Test Profiles Matrix](./docs/screenshots/shot_13_rule_engine_profiles.png)
-
-#### 7B. Engine Sub-Tab 2 — Custom AST Sanitizer & Live Neo4j Cypher Query Studio
-Full glass-box transparency: inspect the exact **Neo4j Cypher CPG queries** powering ALASTOR, configure inter-procedural DFG hop depth (`8` / `12` / `16` / `24` hops), and register organization-specific AST sanitizer functions.
-
-![24 - Custom Sanitizer Studio and Live Cypher Query Viewer](./docs/screenshots/shot_24_cypher_query_and_sanitizer_studio.png)
-
-#### 7C. Engine Sub-Tab 3 — Multi-Tenant Account Separation & RBAC Clearance Matrix
-Built for enterprise security teams and MSSPs: isolate organizational enclaves (`Enterprise Security HQ`, `CISO & Executive Governance`, `Threat Intelligence & SecOps`, or custom accounts) with `STRICT` repository partitioning, 5 RBAC clearance tiers, live permission switches (`Reveal Secrets`, `Edit Rules`, `Triage Findings`, `Tenant Admin`), and an operator session audit log.
+#### 5D. PMI/COBIT `RACI` Matrix, Multi-Tenant `RBAC` Accounts & Bi-Directional `Jira / GitHub` Sync
+![17 - Interactive PMI COBIT RACI Governance Matrix](./docs/screenshots/shot_17_raci_governance_matrix.png)
 
 ![14 - Multi-Tenant Accounts and RBAC Clearance Matrix](./docs/screenshots/shot_14_user_accounts_and_rbac.png)
 
-#### 7D. Engine Sub-Tab 4 — Bi-Directional Atlassian Jira & GitHub Issues Sync
-Create rich Markdown tickets pre-populated with the **CPG Source-to-Sink Trace** and **Best Fix Location (`BFL`) Patch** in one click — working immediately out of the box with ALASTOR's built-in Local Issue Tracker and optional live **Jira Cloud / GitHub Issues REST API** sync.
+![23 - Bi-Directional Jira and GitHub Issues Sync](./docs/screenshots/shot_23_jira_github_connectors.png)
 
-![23 - Jira and GitHub Issues Bi-Directional Integration Hub](./docs/screenshots/shot_23_jira_github_connectors.png)
+#### 5E. Instant `Ctrl+K` Command Omnibar & 3 Curated WCAG AA High-Contrast Daylight Palettes
+Press **`Ctrl+K`** anywhere to jump across stages, findings, AI modes, or exports — and switch effortlessly among **3 WCAG AA (`>= 4.5:1`) Daylight Palettes** (*Olympian Daylight*, *Athena Parchment*, *Hyperborean Frost*).
 
-#### 7E. Instant `Ctrl+K` Command Palette (`QuickCommandModal.tsx`)
-Press **`Ctrl+K`** (or **`Cmd+K`**) from anywhere in the studio to fuzzy-search findings, jump to files, switch among the 5 workspaces or 11 sub-tabs, change graph modes, trigger a scan, or export `SARIF v2.1.0` / `CycloneDX SBOM` without lifting your hands from the keyboard.
+![25 - Instant Ctrl+K Command Omnibar](./docs/screenshots/shot_25_command_palette_ctrl_k.png)
 
-![25 - Instant Ctrl+K Command Palette](./docs/screenshots/shot_25_command_palette_ctrl_k.png)
-
-#### 7F. 6 Curated Mythic Dark & Executive Daylight Themes (`Olympian Daylight` Shown)
-Prefer crisp light mode for boardroom presentations or PDF reports? Toggle in 1 click between **3 Light Themes** (*Olympian Daylight*, *Athena Parchment*, *Hyperborean Frost*) and **3 Mythic Dark Themes** (*Alastor Infernal*, *Hecate Arcane*, *Stygian Abyss*), plus adjustable Demon Sanctuary backdrop intensity (*Vivid Art* / *Subtle* / *Minimal*).
-
-![26 - Olympian Daylight Light Mode and 6-Palette Theme Switcher](./docs/screenshots/shot_26_olympian_light_theme.png)
+![26 - 3 Curated High-Contrast WCAG AA Daylight Palettes](./docs/screenshots/shot_26_olympian_light_theme.png)
 
 ---
 
@@ -358,7 +306,7 @@ cd alastor-cpg-sast-platform
 docker compose up -d neo4j
 ```
 
-### Step 2 — Start the FastAPI CPG Compiler & ASPM Backend (`http://127.0.0.1:8000`)
+### Step 2 — Start the FastAPI CPG, Batch-Fix & Frontier AI Backend (`http://127.0.0.1:8000`)
 
 **Windows (PowerShell):**
 ```powershell
@@ -380,7 +328,7 @@ cd backend
 python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
-### Step 3 — Launch the Next.js Studio IDE (`http://localhost:3000`)
+### Step 3 — Launch the Next.js Daylight Studio (`http://localhost:3000`)
 Open a second terminal in `alastor-cpg-sast-platform/frontend`:
 ```bash
 cd frontend
@@ -388,67 +336,44 @@ npm ci
 npm run build
 npm run start
 ```
-Open **`http://localhost:3000`** in Chrome, Edge, Brave, or Firefox — select any local repository, click **`GitHub Scan`** to paste a Public GitHub URL or scan a Private repo with a PAT, or drag-and-drop a project archive!
-
-### Step 4 — Scanning GitHub Repositories (Public URL vs. Private Token)
-
-| Repo Visibility | UI Workflow (`http://localhost:3000`) | Headless REST API (`http://127.0.0.1:8000`) |
-| :--- | :--- | :--- |
-| **🌐 Open / Public Repo**<br>*(Zero Token Required)* | Click **`GitHub Scan`** $\rightarrow$ keep **`Open / Public Repository (NO TOKEN)`** selected $\rightarrow$ paste `https://github.com/owner/repo` (or `owner/repo`) $\rightarrow$ click **`Clone & Scan Repo`**. | `POST /api/scan` with `{"target_path": "https://github.com/owner/repo", "repo_visibility": "public"}` |
-| **🔒 Private Repo**<br>*(PAT / Auth Required)* | Click **`GitHub Scan`** $\rightarrow$ switch to **`Private Repository (AUTH REQUIRED)`** $\rightarrow$ paste URL + Personal Access Token (`Classic repo` or `Fine-Grained Contents: Read-only`) $\rightarrow$ click **`Authenticate, Clone & Scan`**. | `POST /api/scan` with `{"target_path": "https://github.com/org/private-repo", "repo_visibility": "private", "git_auth_token": "<YOUR_PAT>", "save_credentials": true}` |
-
-```bash
-# 1. Pre-flight check any GitHub / GitLab / Bitbucket repo (detects PUBLIC vs PRIVATE, default branch & language)
-curl -X POST http://127.0.0.1:8000/api/github/verify-repo \
-  -H "Content-Type: application/json" \
-  -d '{"repo_url": "https://github.com/ShanjulMittal/alastor-cpg-sast-platform"}'
-
-# 2. Scan an Open / Public GitHub repo (paste URL only — zero token needed)
-curl -X POST http://127.0.0.1:8000/api/scan \
-  -H "Content-Type: application/json" \
-  -d '{"target_path": "https://github.com/ShanjulMittal/alastor-cpg-sast-platform", "repo_visibility": "public"}'
-
-# 3. Scan a Private GitHub repo (token injected via ephemeral GIT_CONFIG_* HTTP header — never saved in .git/config)
-curl -X POST http://127.0.0.1:8000/api/scan \
-  -H "Content-Type: application/json" \
-  -d '{"target_path": "https://github.com/your-org/private-service", "repo_visibility": "private", "git_auth_token": "<YOUR_PAT>", "git_branch": "main", "save_credentials": true}'
-```
+Open **`http://localhost:3000`** in Chrome, Edge, Brave, or Firefox!
 
 ---
 
-## 🧪 Zero-Trust Proof: Run the 20-Assertion Autonomous Self-Audit
-
-Don't just take our word for it. ALASTOR ships with an autonomous end-to-end verification suite ([`verify_harness.py`](./verify_harness.py)) that boots the live CPG pipeline, verifies all **20 security assertions** (including `Assertion S` proving **100% True Positive detection and `0%` False Positive suppression** across sanitized vs. unsanitized endpoints for `RULE-8` through `RULE-16`, `Assertion T` verifying **Open/Public GitHub URL-only cloning + Private Repo `401` PAT enforcement**, `Assertion U` verifying **Live BFL Remediation (`preview` $\rightarrow$ `apply` severing the CPG taint path $\rightarrow$ `undo` restoring exact SHA-256)**, live OSV CVE reachability, STRIDE counts, RACI Golden Rules, CycloneDX v1.5 SBOM, Multi-Tenant RBAC, and SARIF v2.1.0), and concludes by **scanning ALASTOR's own production codebase (`cpg-sast-platform`) across both Core CPG and Web Intel — asserting `0` unpatched vulnerabilities**:
+## 🧪 Zero-Trust Proof: 31 Unit/Integration Tests + 20-Assertion Live Self-Audit
 
 ```powershell
-# Windows PowerShell
-.\.venv\Scripts\python.exe verify_harness.py
+# 1. Run the 31-test backend pytest suite (Frontier AI, Micro-Slicing, SSRF, 360° Imports & Batch Auto-Fix)
+cd backend
+..\.venv\Scripts\python.exe -m pytest tests/ -v
 
-# macOS / Linux
-./.venv/bin/python verify_harness.py
+# 2. Run the 20-assertion live E2E harness + full platform self-audit
+cd ..
+.\.venv\Scripts\python.exe verify_harness.py
 ```
 
 Expected result:
 ```text
+============================= 31 passed in 1.91s ==============================
 [PASS] 20 / 20 E2E Enterprise Assertions Verified (100%)
 [PASS] Self-Audit of cpg-sast-platform: 0 Active Findings (SAST: 0, SCA: 0, IaC: 0, Secrets: 0, Web Intel: 0)
 ```
 
 ---
 
-## 📤 Standards-Compliant Enterprise Exports & APIs
+## 📤 Standards-Compliant Enterprise Exports & v4.0 REST APIs
 
 | Export / API Endpoint | Standard / Format | Use Case |
 | :--- | :--- | :--- |
-| `POST /api/remediate/preview` / `apply` / `undo` | **Live BFL Patch & SHA-256 Undo Journal** | Preview unified diff, apply 1-click BFL chokepoint patch, re-verify CPG taint severance, or revert via SHA-256 backup |
-| `POST /api/github/verify-repo` | **GitHub / Git Remote Pre-Flight JSON** | Verify `public` vs. `private` visibility, default branch, language, and PAT access before cloning |
-| `POST /api/scan` & `POST /api/scan/track-changes` | **Public URL / Private PAT / Local Scan** | Scan local paths, Open/Public Git URLs (zero token), or Private repos (`GIT_CONFIG_*` header auth + delta tracking) |
-| `POST /api/vuln-intel/extract` | **CPG-Backed Live Web CVE & CWE Intel** | Extract advisories from `OSV.dev`, `NVD`, and `CISA KEV / OWASP` and verify hits against CPG AST/DFG sinks |
-| `GET /api/export/sarif` | **OASIS SARIF `v2.1.0`** | Upload directly to **GitHub Advanced Security Code Scanning**, Azure DevOps, or VS Code SARIF Viewer |
-| `GET /api/sast-plus` (`cyclonedx_json`) | **OWASP CycloneDX `v1.5` JSON** | Executive Order 14028 supply-chain compliance, Dependency-Track, & customer procurement audits |
-| `GET /api/export/report?format=html\|md\|json` | **Executive HTML / Markdown / JSON** | Board-ready penetration test & secure code review deliverable with `BFL` diffs |
-| `GET /api/raci-governance` | **PMI / COBIT RACI JSON** | GRC & SOC 2 / ISO 27001 security accountability evidence |
-| `POST /api/webhooks/{provider}` | **REST CI/CD Webhooks** | Automated pull-request gating in GitHub Actions, GitLab CI, or Jenkins |
+| `GET / POST /api/ai/config` & `/api/ai/test-connection` | **Zero-Leak `0o600` BYOK AI Vault** | Configure `Gemini`, `OpenAI`, `Anthropic`, or `OpenAI-Compatible / Ollama` with masked keys & SSRF protection |
+| `POST /api/ai/validate-findings` | **Batch CPG Micro-Slice TP/FP Digest** | Validate up to 10 findings per call (`90–95%` token savings + SHA-256 cache hits) |
+| `POST /api/ai/audit-code-selection` & `/synthesize-patch` | **Monaco Selection Audit & AI Patch** | Audit highlighted lines in Monaco or synthesize context-aware remediation diffs |
+| `POST /api/ai/explain-graph` | **AI Graph & Trust-Boundary Narrator** | Generate plain-English attack stories and blast-radius summaries for any graph |
+| `POST /api/remediate/batch-apply` | **Atomic Multi-Finding Batch Auto-Fix** | Bottom-up AST batch patching across files with rollback, `.patch` unified diff & CPG re-scan |
+| `POST /api/remediate/preview` / `apply` / `undo` | **Single-Finding BFL Patch & Undo** | Preview unified diff, apply 1-click BFL chokepoint patch, or revert via SHA-256 backup |
+| `GET /api/graph?view_mode=...` | **Directional CPG & 360° Topology** | Returns nodes + `step_index`-ordered directional edges + cross-file `IMPORTS` across all 7 modes |
+| `POST /api/scan` & `POST /api/github/verify-repo` | **Public URL / Private PAT / Local Scan** | Scan local paths, Open/Public Git URLs (zero token), or Private repos (`GIT_CONFIG_*` header auth) |
+| `GET /api/export/sarif` & `GET /api/sast-plus` | **OASIS SARIF `v2.1.0` & CycloneDX `v1.5`** | Upload to GitHub Advanced Security or generate EO 14028 SBOM attestations |
 
 ---
 
@@ -456,19 +381,19 @@ Expected result:
 
 | Version | Date | Key Milestones |
 | :--- | :---: | :--- |
-| **`v3.0.0`** | **2026-11-10** | **Studio IDE Overhaul (`StudioCommandHeader` + `StudioStatusBar` + 5-Pillar Composite Workspaces), Live BFL `"Sever the Thread"` Auto-Patcher (`POST /api/remediate/preview`, `/apply`, `/undo` with SHA-256 journal & instant CPG re-verification), 3 New Zero-FP CPG Rules (`RULE-14-CODE-INJECTION`, `RULE-15-XXE-TLS-BYPASS`, `RULE-16-INSECURE-RANDOM-OPEN-REDIRECT`), CPG-Backed Zero-FP Web Intel Engine (`0` FPs on self-audit), `O(1)` UNWIND Neo4j Batch Ingestion, and `20/20` E2E Self-Audit pass.** |
-| **`v2.6.2`** | 2026-10-27 | 1-Click GitHub Repository Scanner (`Open / Public` Paste-URL-Only with zero token + `Private` PAT-authenticated mode via ephemeral `GIT_CONFIG_*` HTTP headers), pre-flight `POST /api/github/verify-repo` visibility & branch detector, `.alastor_vault` local credential vault for 1-click `Re-Scan & Track Changes`, and 19/19 Self-Audit pass. |
-| **`v2.6.1`** | 2026-10-25 | AST-Verified Inter-Procedural Sanitizer Summary Engine (`0%` FP on custom helpers), `for`-loop iterator taint, call-site-routed inter-procedural DFG, DNS/IP SSRF guards, UUID-isolated scan sandboxes, and 100% Semgrep Pro & OSS `0`-finding parity. |
-| **`v2.6.0`** | 2026-10-25 | Live `OSV.dev` Lockfile CVE + CPG Import Reachability (`SCA-2`), GitHub Actions CI/CD Scanner (`IAC-3`), Inter-Procedural Route Taint (`RULE-10` Path Traversal, `RULE-11` SSRF, `RULE-12` Log Injection, `RULE-13` Deserialization/Crypto), Sanitizer-Aware SQLi (`RULE-7`), and Cloud/SDK Secret Hunter (`RULE-8`). |
-| **`v2.5.0`** | 2026-10-22 | Desktop Enterprise Shell (`AppMenuBar` + `LeftFunctionBar`), STRIDE Count & Observation Matrix (`✔ OK` vs `✖ Issue`), Secret Keys Vault, Rule Engine Profiles, Multi-Tenant RBAC Accounts, Cross-File Call Graph (`:CALLS`), Entrypoints Graph, and Decluttered 360° Spider Map. |
-| **`v2.0.0`** | 2026-10-19 | `SAST++++++` ASPM Suite, Written Observation Dossiers, Side-by-Side Before/After Code Diffs, `EPSS v4`, Interactive `RACI` Matrix, `CycloneDX v1.5` SBOM, and Continuous Track Changes Mode. |
-| **`v1.0.0`** | 2026-10-17 | Core Tree-Sitter `AST + CFG + DFG` Code Property Graph compiler over `Neo4j + APOC`, Best Fix Location (`BFL`) chokepoint engine, and OASIS `SARIF v2.1.0` export. |
+| **`v4.0.0`** | **2026-11-11** | **100% Directional CPG/360°/Trust-Boundary Flow Graphs (perimeter arrowheads, `①`–`⑳` step badges, cross-file `IMPORTS ▶`, 3-step single-node synthesis, Flow Story Bar & Blast Radius), Guided 4-Stage High-Contrast WCAG AA Daylight UI (`0` feature loss), One-Click Atomic `"Fix All Safe Issues"` Batch Auto-Patcher (`POST /api/remediate/batch-apply`), Multi-Provider BYOK Frontier AI Copilot (`Gemini`, `OpenAI`, `Anthropic`, `Ollama` with `90–95%` Micro-Slice token savings + SHA-256 cache), `31/31` pytest (`0` warnings), and `20/20` E2E Self-Audit pass (`0` findings).** |
+| **`v3.0.0`** | 2026-11-10 | Studio IDE Overhaul, Live BFL `"Sever the Thread"` Auto-Patcher (`preview`/`apply`/`undo`), 3 New Zero-FP CPG Rules (`RULE-14`, `RULE-15`, `RULE-16`), CPG-Backed Zero-FP Web Intel Engine, and `O(1)` UNWIND Neo4j Batch Ingestion. |
+| **`v2.6.2`** | 2026-10-27 | 1-Click GitHub Repository Scanner (`Open / Public` Paste-URL-Only + `Private` PAT via ephemeral `GIT_CONFIG_*` HTTP headers) & pre-flight `POST /api/github/verify-repo`. |
+| **`v2.6.1`** | 2026-10-25 | AST-Verified Inter-Procedural Sanitizer Summary Engine (`0%` FP on custom helpers), `for`-loop iterator taint, and 100% Semgrep Pro & OSS `0`-finding parity. |
+| **`v2.6.0`** | 2026-10-25 | Live `OSV.dev` Lockfile CVE + CPG Import Reachability (`SCA-2`), GitHub Actions CI/CD Scanner (`IAC-3`), and Inter-Procedural Route Taint (`RULE-10`–`RULE-13`). |
+| **`v2.5.0`** | 2026-10-22 | STRIDE Count & Observation Matrix, Secret Keys Vault, Rule Engine Profiles, Multi-Tenant RBAC, Call Graph (`:CALLS`), Entrypoints Graph, and 360° Spider Map. |
+| **`v2.0.0`–`v1.0.0`** | 2026-10-19 | `SAST++++++` ASPM Suite, `EPSS v4`, `RACI` Matrix, `CycloneDX v1.5` SBOM, Tree-Sitter `AST + CFG + DFG` Neo4j CPG compiler, and `SARIF v2.1.0`. |
 
 ---
 
 ## 📚 Documentation, Contributing & Security
 
-- **[📖 Master Product Guide & Standard Operating Procedure (SOP)](./docs/ALASTOR_Master_SOP_and_Product_Guide.md)** — Complete operator manual, CPG compiler deep-dive, and enterprise rollout guide.
+- **[📖 Master Product Guide & Standard Operating Procedure (SOP)](./docs/ALASTOR_Master_SOP_and_Product_Guide.md)** — Complete v4.0 operator manual, 4-stage workflow guide, Frontier AI BYOK setup, and CPG compiler deep-dive.
 - **[📋 Full Changelog (`CHANGELOG.md`)](./CHANGELOG.md)** — Detailed version-by-version engineering notes.
 - **[🔬 Contributing Guide (`CONTRIBUTING.md`)](./CONTRIBUTING.md)** — How to add new Tree-Sitter languages, Cypher CPG rules, and run `verify_harness.py`.
 - **[🛡️ Security Policy (`SECURITY.md`)](./SECURITY.md)** — Responsible disclosure guidelines and self-audit verification policy.
@@ -477,7 +402,7 @@ Expected result:
 
 <div align="center">
 
-### ⭐ Star ALASTOR on GitHub if you believe Compiler-Grade Code Security should be Open, Deterministic & Sovereign!
+### ⭐ Star ALASTOR on GitHub if you believe Compiler-Grade Code Security should be Open, Deterministic, Readable & Sovereign!
 
 Released under the **[MIT License](./LICENSE)** • Built with **Tree-Sitter**, **Neo4j + APOC**, **FastAPI**, **Next.js**, **Monaco Editor**, and **ReactFlow**.
 
