@@ -812,22 +812,31 @@ def _populate_secret_key_metadata(finding: Finding) -> None:
 
     setattr(finding, "secret_key_name", _ident_name)
     setattr(finding, "secret_value_raw", _raw_val)
-    setattr(finding, "secret_value_masked", _mask_secret_value(_raw_val))
-    setattr(finding, "secret_entropy", _compute_shannon_entropy(_raw_val))
+    if not getattr(finding, "secret_value_masked", None):
+        setattr(finding, "secret_value_masked", _mask_secret_value(_raw_val))
+    if getattr(finding, "secret_entropy", None) is None:
+        setattr(finding, "secret_entropy", _compute_shannon_entropy(_raw_val))
+    if not getattr(finding, "secret_source", None):
+        setattr(finding, "secret_source", "WORKING_TREE")
 
-    _k_upper = _ident_name.upper()
-    if "JWT" in _k_upper or "TOK" in _k_upper or _raw_val.startswith("eyJ"):
-        setattr(finding, "secret_type", "JWT / Bearer Authentication Credential")
-    elif "AWS" in _k_upper or _raw_val.startswith("AKIA"):
-        setattr(finding, "secret_type", "AWS Cloud Access Credential")
-    elif "STRIPE" in _k_upper or "OPENAI" in _k_upper or _raw_val.startswith("sk-"):
-        setattr(finding, "secret_type", "Third-Party API Credential")
-    elif "DB" in _k_upper or "NEO4J" in _k_upper or "PASS" in _k_upper or "MONGO" in _k_upper or "REDIS" in _k_upper:
-        setattr(finding, "secret_type", "Database / Service Credential")
-    elif "PRIVATE" in _k_upper or "RSA" in _k_upper:
-        setattr(finding, "secret_type", "Cryptographic Private Material")
-    else:
-        setattr(finding, "secret_type", "Hardcoded Application Credential")
+    if not getattr(finding, "secret_type", None):
+        _k_upper = _ident_name.upper()
+        if "JWT" in _k_upper or "TOK" in _k_upper or _raw_val.startswith("eyJ"):
+            setattr(finding, "secret_type", "JWT / Bearer Authentication Credential")
+        elif "AWS" in _k_upper or _raw_val.startswith("AKIA"):
+            setattr(finding, "secret_type", "AWS Cloud Access Credential")
+        elif "STRIPE" in _k_upper or "OPENAI" in _k_upper or _raw_val.startswith("sk-"):
+            setattr(finding, "secret_type", "Third-Party API Credential")
+        elif "DB" in _k_upper or "NEO4J" in _k_upper or "PASS" in _k_upper or "MONGO" in _k_upper or "REDIS" in _k_upper:
+            setattr(finding, "secret_type", "Database / Service Credential")
+        elif "PRIVATE" in _k_upper or "RSA" in _k_upper:
+            setattr(finding, "secret_type", "Cryptographic Private Material")
+        else:
+            setattr(finding, "secret_type", "Hardcoded Application Credential")
+
+    if getattr(finding, "secret_validation_status", None) == "VERIFIED_ACTIVE":
+        finding.severity = "CRITICAL"
+        finding.cvss_score = max(float(finding.cvss_score or 0.0), 9.8)
 
 
 class EnterpriseManager:
@@ -2390,8 +2399,11 @@ class EnterpriseManager:
         now = datetime.now()
 
         for idx, f in enumerate(raw_findings):
-            # Check if rule is enabled (allow EXT-* web intel findings unless SAST/SCA disabled)
-            if not f.rule_id.startswith("EXT-") and f.rule_id not in enabled_rule_ids:
+            # Check if rule is enabled (allow EXT-* web intel and SECRET-* hunter findings)
+            _is_cred_hunter_rule = f.rule_id.startswith("SECRET-") and (
+                "RULE-8-HARDCODED-SECRET" in enabled_rule_ids or f.rule_id in enabled_rule_ids
+            )
+            if not f.rule_id.startswith("EXT-") and not _is_cred_hunter_rule and f.rule_id not in enabled_rule_ids:
                 continue
 
             # Apply any user edits from Query Customization Engine
@@ -2402,6 +2414,9 @@ class EnterpriseManager:
                     f.severity = q_rule.severity
                     f.cvss_score = q_rule.cvss_score
                     f.remediation = q_rule.remediation or f.remediation
+            if getattr(f, "secret_validation_status", None) == "VERIFIED_ACTIVE":
+                f.severity = "CRITICAL"
+                f.cvss_score = max(float(f.cvss_score or 0.0), 9.8)
 
             if f.scan_engine not in self.enabled_engines:
                 continue
@@ -4758,7 +4773,7 @@ class EnterpriseManager:
             f for f in active_findings
             if f.scan_engine == "IaC"
             or f.cwe_id in ("CWE-250", "CWE-798", "CWE-829")
-            or f.rule_id in ("IAC-1-COMPOSE-SECRET", "IAC-2-CONTAINER-ROOT", "IAC-3-CICD-WORKFLOW-SECURITY", "RULE-8-HARDCODED-SECRET")
+            or f.rule_id in ("IAC-1-COMPOSE-SECRET", "IAC-2-CONTAINER-ROOT", "IAC-3-CICD-WORKFLOW-SECURITY", "RULE-8-HARDCODED-SECRET", "SECRET-GIT-HISTORY-LEAK")
         ]
         dos_f = [
             f for f in active_findings
@@ -4812,6 +4827,17 @@ class EnterpriseManager:
         def _make_finding_obs(f: Finding, stride_letter: str, domain: str, idx: int) -> StrideObservationItem:
             fp, ln, snip = _extract_loc_from_findings([f], first_real_file, 1)
             sev = f.severity if f.severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW") else "MEDIUM"
+            val_status = getattr(f, "secret_validation_status", None)
+            val_ident = getattr(f, "secret_verified_identity", None)
+            val_sha = getattr(f, "secret_commit_sha", None)
+            val_suffix = ""
+            if val_status:
+                val_suffix = f" [Validation: {val_status}"
+                if val_ident:
+                    val_suffix += f" — {val_ident}"
+                if val_sha:
+                    val_suffix += f" • commit {val_sha}"
+                val_suffix += "]"
             return StrideObservationItem(
                 id=f"obs-{stride_letter}-issue-{idx}-{f.id[:8]}",
                 stride_letter=stride_letter,
@@ -4822,10 +4848,10 @@ class EnterpriseManager:
                 filepath=fp,
                 line=ln,
                 code_snippet=snip,
-                observation_detail=f.description or f.plain_english_summary,
+                observation_detail=(f.description or f.plain_english_summary) + val_suffix,
                 why_ok_or_issue=(
                     f"ISSUE DETECTED ({f.rule_id} / {f.cwe_id or 'Security Flaw'}): "
-                    f"{f.plain_english_summary or f.description}"
+                    f"{f.plain_english_summary or f.description}{val_suffix}"
                 ),
                 risk_impact=f.business_impact or f"CVSS {f.cvss_score} ({f.severity}) — Violates STRIDE [{stride_letter}] {domain}.",
                 corrective_action=(

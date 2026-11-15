@@ -64,6 +64,18 @@ class BestFixLocation(BaseModel):
     after_code_block: str = ""
 
 
+_CredentialValidationStatus = Literal[
+    "VERIFIED_ACTIVE",
+    "REVOKED_OR_INVALID",
+    "OFFLINE_STRUCTURALLY_VALID",
+    "TEST_OR_PLACEHOLDER",
+    "VERIFICATION_ERROR",
+]
+SecretValidationStatus = _CredentialValidationStatus
+_FindingLocationOrigin = Literal["WORKING_TREE", "GIT_HISTORY"]
+_DEFAULT_ORIGIN: _FindingLocationOrigin = "WORKING_TREE"
+
+
 class Finding(BaseModel):
     id: str
     rule_id: str
@@ -140,6 +152,14 @@ class Finding(BaseModel):
     secret_value_raw: Optional[str] = None
     secret_type: Optional[str] = None
     secret_entropy: Optional[float] = None
+    secret_validation_status: Optional[SecretValidationStatus] = None
+    secret_detector_id: Optional[str] = None
+    secret_verified_identity: Optional[str] = None
+    secret_validation_message: Optional[str] = None
+    secret_verified_at: Optional[str] = None
+    secret_source: Optional[_FindingLocationOrigin] = _DEFAULT_ORIGIN
+    secret_commit_sha: Optional[str] = None
+    secret_commit_author: Optional[str] = None
 
 
 
@@ -1257,6 +1277,40 @@ class AiGraphExplainResponse(BaseModel):
     token_telemetry: AiTokenTelemetry = Field(default_factory=AiTokenTelemetry)
     error_code: Optional[str] = None
     user_message: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# 11. Native TruffleHog-Grade Secret Scanner & Live Key Validator Models
+# ---------------------------------------------------------------------------
+class SecretScannerConfig(BaseModel):
+    live_verification_enabled: bool = True
+    scan_git_history: bool = True
+    max_git_commits: int = 50
+    supported_detectors_count: int = 14
+
+
+class SecretScannerConfigUpdate(BaseModel):
+    live_verification_enabled: Optional[bool] = None
+    scan_git_history: Optional[bool] = None
+    max_git_commits: Optional[int] = None
+
+
+class SecretVerifyRequest(BaseModel):
+    finding_ids: List[str] = Field(default_factory=list)
+    force_refresh: bool = False
+    allow_live_network: Optional[bool] = None
+
+
+class SecretInventoryResponse(BaseModel):
+    config: SecretScannerConfig = Field(default_factory=SecretScannerConfig)
+    total_secrets: int = 0
+    verified_active_count: int = 0
+    revoked_count: int = 0
+    structurally_valid_count: int = 0
+    test_placeholder_count: int = 0
+    git_history_count: int = 0
+    secrets: List[Finding] = Field(default_factory=list)
+
 
 
 

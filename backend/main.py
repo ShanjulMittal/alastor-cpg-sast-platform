@@ -50,6 +50,8 @@ from models import (
     AiCodeAuditRequest, AiCodeAuditResponse,
     AiPatchSynthesisRequest, AiPatchSynthesisResponse,
     AiGraphExplainRequest, AiGraphExplainResponse,
+    SecretScannerConfig, SecretScannerConfigUpdate,
+    SecretVerifyRequest, SecretInventoryResponse,
 )
 from database.neo4j_client import Neo4jClient
 from database.batch_ingestor import BatchIngestor
@@ -57,6 +59,7 @@ from engine.rule_executor import RuleExecutor
 from engine.vuln_extractor import VulnExtractorEngine
 from engine.enterprise_manager import EnterpriseManager
 from engine.frontier_ai_engine import FrontierAiEngine
+from engine.secret_validator_engine import get_secret_validator_engine
 from engine.remediation_patcher import (
     apply_workspace_patch,
     batch_apply_workspace_patches,
@@ -136,6 +139,7 @@ enterprise_mgr = EnterpriseManager.get_instance()
 frontier_ai_engine = FrontierAiEngine(
     vault_dir=os.path.join(enterprise_mgr.platform_root, ".alastor_vault")
 )
+secret_validator_engine = get_secret_validator_engine(enterprise_mgr.platform_root)
 current_scan_dir: str = enterprise_mgr.platform_root
 current_app_tree: Optional[AppTreeSummary] = None
 
@@ -1701,7 +1705,10 @@ def get_or_compute_findings(force_refresh: bool = False) -> List[Finding]:
                                     except Exception:
                                         pass
                 sca_iac_findings = enterprise_mgr.run_sca_and_iac_scanners(target_dir)
-                _cached_findings = sast_findings + sca_iac_findings
+                combined_before_enrich = sast_findings + sca_iac_findings
+                _cached_findings = secret_validator_engine.scan_and_validate_workspace(
+                    target_dir, combined_before_enrich
+                )
                 _cached_findings_time = now
 
     combined: List[Finding] = [f.model_copy(deep=True) for f in (_cached_findings or [])]
@@ -3989,5 +3996,56 @@ def explain_graph_with_frontier_ai(req: AiGraphExplainRequest):
                 edges_digest=list(matched.path_edges or []),
             )
     return frontier_ai_engine.explain_graph(eff_req)
+
+
+# ---------------------------------------------------------------------------
+# Native TruffleHog-Grade Secret Scanner, Git-History Hunter & Live Validator
+# ---------------------------------------------------------------------------
+@app.get("/api/secrets/config", response_model=SecretScannerConfig)
+def get_secret_scanner_config():
+    """Returns persistent TruffleHog-grade secret scanner & live validator configuration."""
+    return secret_validator_engine.get_config()
+
+
+@app.post("/api/secrets/config", response_model=SecretScannerConfig)
+def update_secret_scanner_config(req: SecretScannerConfigUpdate):
+    """Updates Live Verification / Offline Mode and Git-History Hunter configuration in `.alastor_vault`."""
+    return secret_validator_engine.update_config(req)
+
+
+@app.get("/api/secrets/inventory", response_model=SecretInventoryResponse)
+def get_secret_inventory():
+    """Returns all active working-tree and git-history secret findings with validation breakdowns."""
+    findings = get_or_compute_findings()
+    return secret_validator_engine.build_inventory_response(findings)
+
+
+@app.post("/api/secrets/verify", response_model=SecretInventoryResponse)
+def verify_secret_findings(req: SecretVerifyRequest):
+    """Executes live or structural secret verification across requested (or all) secret findings in place."""
+    global _cached_findings, _cached_external_findings
+    if _cached_findings is None:
+        get_or_compute_findings()
+    active_dir = current_scan_dir or enterprise_mgr.platform_root
+    with _findings_lock:
+        if _cached_findings:
+            secret_validator_engine.verify_selected_findings(
+                _cached_findings,
+                finding_ids=req.finding_ids,
+                target_dir=active_dir,
+                allow_live=req.allow_live_network,
+                force_refresh=req.force_refresh,
+            )
+        if _cached_external_findings:
+            secret_validator_engine.verify_selected_findings(
+                _cached_external_findings,
+                finding_ids=req.finding_ids,
+                target_dir=active_dir,
+                allow_live=req.allow_live_network,
+                force_refresh=req.force_refresh,
+            )
+    refreshed = get_or_compute_findings(force_refresh=False)
+    return secret_validator_engine.build_inventory_response(refreshed)
+
 
 
