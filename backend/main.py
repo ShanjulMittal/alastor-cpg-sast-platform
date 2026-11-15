@@ -2858,7 +2858,10 @@ def get_graph(
     if view_mode == "ENTRYPOINT_GRAPH":
         _target_dir = current_scan_dir or enterprise_mgr.platform_root
         _findings = get_or_compute_findings()
-        _suite = enterprise_mgr.get_sast_plus_suite(_target_dir, _findings)
+        _active_findings = [
+            _fl for _fl in _findings if getattr(_fl, "triage_status", "TO_VERIFY") != "NOT_EXPLOITABLE"
+        ]
+        _ops_report = api_operations_engine.analyze_workspace_api_operations(_target_dir, _active_findings)
         _ep_nodes: List[Dict[str, Any]] = []
         _ep_edges: List[Dict[str, Any]] = []
         _seen_nid = set()
@@ -2871,7 +2874,7 @@ def get_graph(
             "label": "Entry",
             "ast_type": "ingress_gateway",
             "name": f"🌐 External Attack Surface ({_app_label})",
-            "code": f"{len(_suite.endpoints)} Discovered Entrypoints • {len(_findings)} Active Findings",
+            "code": f"{_ops_report.total_endpoints} HTTP Entrypoints • {len(_active_findings)} Active Findings",
             "filepath": _app_label,
             "start_line": 1,
             "end_line": 1,
@@ -2884,98 +2887,248 @@ def get_graph(
         })
         _seen_nid.add(_gw_id)
 
-        for _idx, _ep in enumerate(_suite.endpoints[:24]):
-            _ep_id = f"ep-route:{_ep.id}:{_idx}"
-            if _ep_id not in _seen_nid:
-                _seen_nid.add(_ep_id)
-                _ep_nodes.append({
-                    "id": _ep_id,
-                    "label": "Entry",
-                    "ast_type": "http_entrypoint",
-                    "name": f"[{_ep.method}] {_ep.route_path}",
-                    "code": f"Handler: {_ep.handler_name}() • {_ep.auth_posture}",
-                    "filepath": _ep.filepath,
-                    "start_line": _ep.line_number,
-                    "end_line": _ep.line_number,
-                    "start_col": 0,
-                    "end_col": 40,
-                    "scope_id": _ep.filepath,
-                    "is_source": True,
-                    "is_sink": False,
-                    "is_sanitizer": False,
-                })
-                _ep_edges.append({
-                    "id": f"ep-edge-gw-{_idx}",
-                    "source": _gw_id,
-                    "target": _ep_id,
-                    "type": "CFG_NEXT",
-                    "var_name": _ep.method,
-                })
+        if _ops_report.endpoints:
+            _sorted_dossiers = sorted(
+                _ops_report.endpoints,
+                key=lambda d: (
+                    0 if d.linked_findings_count > 0 else 1,
+                    0 if d.is_mutating else 1,
+                    0 if d.operations else 1,
+                    d.filepath,
+                    d.start_line,
+                ),
+            )[:14]
 
-            _fn_id = f"ep-handler:{_ep.filepath}:{_ep.handler_name}:{_ep.line_number}"
-            if _fn_id not in _seen_nid:
-                _seen_nid.add(_fn_id)
-                _ep_nodes.append({
-                    "id": _fn_id,
-                    "label": "Function",
-                    "ast_type": "function_definition",
-                    "name": f"{_ep.handler_name}()",
-                    "code": _ep.plain_english_purpose or f"Controller in {_ep.filepath}:L{_ep.line_number}",
-                    "filepath": _ep.filepath,
-                    "start_line": _ep.line_number,
-                    "end_line": _ep.line_number,
-                    "start_col": 0,
-                    "end_col": 40,
-                    "scope_id": _ep.filepath,
-                    "is_source": False,
-                    "is_sink": _ep.linked_findings_count > 0,
-                    "is_sanitizer": False,
-                })
-            _ep_edges.append({
-                "id": f"ep-edge-fn-{_idx}",
-                "source": _ep_id,
-                "target": _fn_id,
-                "type": "CALLS",
-                "var_name": "dispatches",
-            })
-
-            # Connect handler to any findings in the same file
-            _file_flaws = [
-                _fl for _fl in _findings
-                if any(
-                    (_pn.get("filepath") or "") == _ep.filepath
-                    or (_ep.filepath or "").endswith(_pn.get("filepath") or "__none__")
-                    for _pn in (_fl.path_nodes or [])
+            for _idx, _ep in enumerate(_sorted_dossiers):
+                _ep_id = f"ep-route:{_ep.id}:{_idx}"
+                _auth_lbl = (
+                    f"Authenticated ({', '.join(_ep.auth_mechanisms[:2])})"
+                    if _ep.auth_status == "AUTHENTICATED" and _ep.auth_mechanisms
+                    else (_ep.auth_status.replace("_", " ").title())
                 )
-            ]
-            for _f_idx, _fl in enumerate(_file_flaws[:2]):
-                _sink_n = (_fl.path_nodes or [{}])[-1]
-                _sink_id = f"ep-sink:{_fl.id}"
-                if _sink_id not in _seen_nid:
-                    _seen_nid.add(_sink_id)
+                if _ep_id not in _seen_nid:
+                    _seen_nid.add(_ep_id)
                     _ep_nodes.append({
-                        "id": _sink_id,
-                        "label": "Call",
-                        "ast_type": "vulnerable_sink",
-                        "name": f"🚨 [{_fl.severity}] {_fl.rule_id}",
-                        "code": str(_sink_n.get("code") or _fl.title)[:100],
-                        "filepath": str(_sink_n.get("filepath") or _ep.filepath),
-                        "start_line": int(_sink_n.get("start_line") or _ep.line_number),
-                        "end_line": int(_sink_n.get("end_line") or _ep.line_number),
+                        "id": _ep_id,
+                        "label": "Entry",
+                        "ast_type": "http_entrypoint",
+                        "name": f"[{_ep.method}] {_ep.route_path}",
+                        "code": f"Handler: {_ep.handler_name}() • {_auth_lbl}",
+                        "filepath": _ep.filepath,
+                        "start_line": _ep.start_line,
+                        "end_line": _ep.end_line,
+                        "start_col": 0,
+                        "end_col": 40,
+                        "scope_id": _ep.filepath,
+                        "is_source": True,
+                        "is_sink": False,
+                        "is_sanitizer": _ep.auth_status == "AUTHENTICATED",
+                    })
+                    _ep_edges.append({
+                        "id": f"ep-edge-gw-{_idx}",
+                        "source": _gw_id,
+                        "target": _ep_id,
+                        "type": "CFG_NEXT",
+                        "var_name": _ep.method,
+                    })
+
+                _fn_id = f"ep-handler:{_ep.filepath}:{_ep.handler_name}:{_ep.start_line}"
+                if _fn_id not in _seen_nid:
+                    _seen_nid.add(_fn_id)
+                    _ep_nodes.append({
+                        "id": _fn_id,
+                        "label": "Function",
+                        "ast_type": "function_definition",
+                        "name": f"{_ep.handler_name}()",
+                        "code": _ep.plain_english_story or f"Controller in {_ep.filepath}:L{_ep.start_line}",
+                        "filepath": _ep.filepath,
+                        "start_line": _ep.start_line,
+                        "end_line": _ep.end_line,
                         "start_col": 0,
                         "end_col": 40,
                         "scope_id": _ep.filepath,
                         "is_source": False,
-                        "is_sink": True,
+                        "is_sink": _ep.linked_findings_count > 0,
                         "is_sanitizer": False,
                     })
                 _ep_edges.append({
-                    "id": f"ep-edge-sink-{_idx}-{_f_idx}",
-                    "source": _fn_id,
-                    "target": _sink_id,
-                    "type": "DFG_FLOWS_TO",
-                    "var_name": _fl.cwe_id or "taint",
+                    "id": f"ep-edge-fn-{_idx}",
+                    "source": _ep_id,
+                    "target": _fn_id,
+                    "type": "CALLS",
+                    "var_name": "dispatches",
                 })
+
+                # Attach primary downstream runtime operation if present so each route shows concrete CPG effects
+                _non_guard_ops = [op for op in (_ep.operations or []) if op.category != "AUTH_GUARD"]
+                if _non_guard_ops:
+                    _op = _non_guard_ops[0]
+                    _op_is_sink = bool(
+                        _op.is_mutating
+                        or _op.category in ("DATABASE_WRITE", "OS_COMMAND_EXEC", "FILESYSTEM_IO", "EXTERNAL_HTTP_OR_AI")
+                    )
+                    _op_id = f"ep-op:{_op.filepath}:{_op.line_number}:{_op.operation_verb}"
+                    if _op_id not in _seen_nid:
+                        _seen_nid.add(_op_id)
+                        _ep_nodes.append({
+                            "id": _op_id,
+                            "label": "Call",
+                            "ast_type": _op.category.lower(),
+                            "name": f"{_op.operation_verb} ({_op.target_resource})" if _op.target_resource else _op.operation_verb,
+                            "code": _op.code_snippet or _op.risk_note or _op.operation_verb,
+                            "filepath": _op.filepath,
+                            "start_line": _op.line_number,
+                            "end_line": _op.line_number,
+                            "start_col": 0,
+                            "end_col": 40,
+                            "scope_id": _op.filepath,
+                            "is_source": False,
+                            "is_sink": _op_is_sink,
+                            "is_sanitizer": _op.category == "INPUT_VALIDATION",
+                        })
+                    _ep_edges.append({
+                        "id": f"ep-edge-op-{_idx}",
+                        "source": _fn_id,
+                        "target": _op_id,
+                        "type": "DFG_FLOWS_TO" if _op_is_sink else "CALLS",
+                        "var_name": _op.category.lower(),
+                    })
+
+                _linked_ids = set(_ep.linked_finding_ids or [])
+                _ep_flaws = [_fl for _fl in _active_findings if _fl.id in _linked_ids]
+                if not _ep_flaws:
+                    _ep_flaws = [
+                        _fl for _fl in _active_findings
+                        if any(
+                            (_pn.get("filepath") or "") == _ep.filepath
+                            or (_ep.filepath or "").endswith(_pn.get("filepath") or "__none__")
+                            for _pn in (_fl.path_nodes or [])
+                        )
+                    ]
+                for _f_idx, _fl in enumerate(_ep_flaws[:2]):
+                    _sink_n = (_fl.path_nodes or [{}])[-1]
+                    _sink_id = f"ep-sink:{_fl.id}"
+                    if _sink_id not in _seen_nid:
+                        _seen_nid.add(_sink_id)
+                        _ep_nodes.append({
+                            "id": _sink_id,
+                            "label": "Call",
+                            "ast_type": "vulnerable_sink",
+                            "name": f"🚨 [{_fl.severity}] {_fl.rule_id}",
+                            "code": str(_sink_n.get("code") or _fl.title)[:100],
+                            "filepath": str(_sink_n.get("filepath") or _ep.filepath),
+                            "start_line": int(_sink_n.get("start_line") or _ep.start_line),
+                            "end_line": int(_sink_n.get("end_line") or _ep.end_line),
+                            "start_col": 0,
+                            "end_col": 40,
+                            "scope_id": _ep.filepath,
+                            "is_source": False,
+                            "is_sink": True,
+                            "is_sanitizer": False,
+                        })
+                    _ep_edges.append({
+                        "id": f"ep-edge-sink-{_idx}-{_f_idx}",
+                        "source": _fn_id,
+                        "target": _sink_id,
+                        "type": "DFG_FLOWS_TO",
+                        "var_name": _fl.cwe_id or "taint",
+                    })
+        else:
+            # Non-HTTP CLI / Worker / Library / IaC fallback: synthesize callable & module entrypoints
+            if current_app_tree is None and _target_dir and os.path.exists(_target_dir):
+                current_app_tree = AppTreeAnalyzer(_target_dir).analyze()
+            _fb_files = list(current_app_tree.flat_files) if current_app_tree else []
+            _fb_files.sort(
+                key=lambda ff: (
+                    0 if ff.elements else (1 if ff.extension in (".py", ".ts", ".tsx", ".js", ".go", ".java") else 2),
+                    ff.filepath,
+                )
+            )
+            _added_entries = 0
+            for _m_idx, _ff in enumerate(_fb_files[:10]):
+                if _added_entries >= 14:
+                    break
+                _mod_id = f"ep-mod:{_ff.filepath}"
+                if _mod_id not in _seen_nid:
+                    _seen_nid.add(_mod_id)
+                    _ep_nodes.append({
+                        "id": _mod_id,
+                        "label": "Entry",
+                        "ast_type": "module_entrypoint",
+                        "name": _ff.filename,
+                        "code": _ff.purpose or _ff.filepath,
+                        "filepath": _ff.filepath,
+                        "start_line": 1,
+                        "end_line": max(1, _ff.line_count),
+                        "start_col": 0,
+                        "end_col": 30,
+                        "scope_id": _ff.filepath,
+                        "is_source": True,
+                        "is_sink": False,
+                        "is_sanitizer": False,
+                    })
+                    _ep_edges.append({
+                        "id": f"ep-edge-gw-mod-{_m_idx}",
+                        "source": _gw_id,
+                        "target": _mod_id,
+                        "type": "CFG_NEXT",
+                        "var_name": "loads",
+                    })
+
+                _callable_specs: List[Tuple[str, int, str]] = [
+                    (_el.name, max(1, _el.line_number), _el.signature or _el.details or _el.name)
+                    for _el in (_ff.elements or [])[:3]
+                ]
+                if not _callable_specs and _ff.extension in (".go", ".java", ".py", ".ts", ".tsx", ".js"):
+                    try:
+                        _cand_abs = _safe_resolve_under(
+                            os.path.dirname(_target_dir) if os.path.isfile(_target_dir) else _target_dir,
+                            _ff.filepath,
+                        )
+                        if os.path.isfile(_cand_abs):
+                            with open(_cand_abs, "r", encoding="utf-8", errors="replace") as _fh:
+                                for _ln_i, _raw_ln in enumerate(_fh.read().splitlines(), start=1):
+                                    _m_fn = re.match(
+                                        r"^\s*(?:func\s+(?:\([^)]*\)\s*)?|public\s+(?:static\s+)?[\w<>[\]]+\s+|export\s+(?:async\s+)?function\s+|def\s+)([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                                        _raw_ln,
+                                    )
+                                    if _m_fn:
+                                        _callable_specs.append((_m_fn.group(1), _ln_i, _raw_ln.strip()[:90]))
+                                        if len(_callable_specs) >= 3:
+                                            break
+                    except Exception:
+                        pass
+
+                for _c_idx, (_fn_name, _fn_ln, _fn_sig) in enumerate(_callable_specs):
+                    _fn_id = f"ep-callable:{_ff.filepath}:{_fn_name}:{_fn_ln}"
+                    if _fn_id not in _seen_nid:
+                        _seen_nid.add(_fn_id)
+                        _ep_nodes.append({
+                            "id": _fn_id,
+                            "label": "Function",
+                            "ast_type": "function_definition",
+                            "name": f"{_fn_name}()",
+                            "code": _fn_sig,
+                            "filepath": _ff.filepath,
+                            "start_line": _fn_ln,
+                            "end_line": _fn_ln,
+                            "start_col": 0,
+                            "end_col": 35,
+                            "scope_id": _ff.filepath,
+                            "is_source": False,
+                            "is_sink": False,
+                            "is_sanitizer": False,
+                        })
+                    _ep_edges.append({
+                        "id": f"ep-edge-mod-fn-{_m_idx}-{_c_idx}",
+                        "source": _mod_id,
+                        "target": _fn_id,
+                        "type": "CALLS",
+                        "var_name": "invokes",
+                    })
+                    _added_entries += 1
+
+            _ep_nodes[0]["code"] = f"{_added_entries or len(_fb_files[:10])} Module Entrypoints • {len(_active_findings)} Active Findings"
 
         return {"nodes": _ep_nodes, "edges": _humanize_graph_edges(_ep_edges)}
 
@@ -3079,7 +3232,7 @@ def get_graph(
                         WITH collect(DISTINCT properties(s)) AS s_nodes,
                              collect(DISTINCT properties(t)) AS t_nodes,
                              [cf IN collect(DISTINCT callerFn) WHERE cf IS NOT NULL | properties(cf)] AS cf_nodes,
-                             collect(DISTINCT {{id: r.id, source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS call_edges,
+                             collect(DISTINCT {{id: toString(coalesce(r.id, elementId(r))), source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS call_edges,
                              [ce IN collect(DISTINCT CASE WHEN callerFn IS NOT NULL THEN {{id: 'def-' + callerFn.id + '-' + s.id, source: callerFn.id, target: s.id, type: 'DEFINES', var_name: 'calls'}} ELSE NULL END) WHERE ce IS NOT NULL] AS def_edges
                         RETURN (s_nodes + t_nodes + cf_nodes) AS all_nodes,
                                (call_edges + def_edges) AS all_edges
@@ -3089,17 +3242,17 @@ def get_graph(
                         _std_q = f"""
                         MATCH (s:CPGNode)-[r{rel_filter}]->(t:CPGNode)
                         {_w_stmt}
-                        WITH s, r, t LIMIT 120
+                        WITH s, r, t LIMIT 240
                         RETURN collect(DISTINCT properties(s)) + collect(DISTINCT properties(t)) AS all_nodes,
-                               collect(DISTINCT {{id: r.id, source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS all_edges
+                               collect(DISTINCT {{id: toString(coalesce(r.id, elementId(r))), source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS all_edges
                         """
                         return session.run(_std_q, **_q_params).single()
                     _full_q = f"""
                     MATCH (s:CPGNode)-[r]->(t:CPGNode)
                     {_w_stmt}
-                    WITH s, r, t LIMIT 120
+                    WITH s, r, t LIMIT 180
                     RETURN collect(DISTINCT properties(s)) + collect(DISTINCT properties(t)) AS all_nodes,
-                           collect(DISTINCT {{id: r.id, source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS all_edges
+                           collect(DISTINCT {{id: toString(coalesce(r.id, elementId(r))), source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS all_edges
                     """
                     return session.run(_full_q, **_q_params).single()
 
@@ -3115,29 +3268,119 @@ def get_graph(
     except Exception as neo_cpg_err:
         logger.warning("CPG graph query degraded (%s): %s", _sanitize_log(view_mode), _sanitize_log(neo_cpg_err))
 
-    # Deduplicate
-    unique_nodes = {}
+    # Deduplicate nodes & normalize non-empty edge IDs
+    unique_nodes: Dict[str, Dict[str, Any]] = {}
     for n in raw_nodes:
         if isinstance(n, list):
             for item in n:
-                if isinstance(item, dict) and "id" in item:
-                    unique_nodes[item["id"]] = item
-        elif isinstance(n, dict) and "id" in n:
-            unique_nodes[n["id"]] = n
+                if isinstance(item, dict) and item.get("id"):
+                    unique_nodes[str(item["id"])] = item
+        elif isinstance(n, dict) and n.get("id"):
+            unique_nodes[str(n["id"])] = n
 
-    unique_edges = {}
-    for e in raw_edges:
-        if isinstance(e, dict) and "id" in e and e.get("source") in unique_nodes and e.get("target") in unique_nodes:
-            unique_edges[e["id"]] = e
+    unique_edges: Dict[str, Dict[str, Any]] = {}
+    for _e_idx, e in enumerate(raw_edges):
+        if not isinstance(e, dict):
+            continue
+        _src = str(e.get("source") or "")
+        _tgt = str(e.get("target") or "")
+        if _src not in unique_nodes or _tgt not in unique_nodes:
+            continue
+        _raw_eid = e.get("id")
+        _etype = str(e.get("type") or view_mode)
+        _eid = str(_raw_eid).strip() if _raw_eid is not None and str(_raw_eid).strip() else f"edge:{_src}->{_tgt}:{_etype}:{_e_idx}"
+        _ec = dict(e)
+        _ec["id"] = _eid
+        _ec["source"] = _src
+        _ec["target"] = _tgt
+        unique_edges[_eid] = _ec
 
-    # Fallback synthesis if viewing a cached project not currently in Neo4j or a project with 0 CALLS in Neo4j
+    # Prioritize multi-hop connected chains and bound total CPG view nodes to <= 60 for crisp layout readability
+    _max_cpg_nodes = 60
+    if len(unique_nodes) > _max_cpg_nodes and unique_edges:
+        _adj: Dict[str, List[str]] = {nid: [] for nid in unique_nodes}
+        for _ed in unique_edges.values():
+            _u, _v = _ed["source"], _ed["target"]
+            if _v not in _adj[_u]:
+                _adj[_u].append(_v)
+            if _u not in _adj[_v]:
+                _adj[_v].append(_u)
+
+        _visited_comp = set()
+        _components: List[List[str]] = []
+        for _nid in unique_nodes:
+            if _nid in _visited_comp or not _adj.get(_nid):
+                continue
+            _comp: List[str] = []
+            _queue = [_nid]
+            _visited_comp.add(_nid)
+            _q_head = 0
+            while _q_head < len(_queue):
+                _cur = _queue[_q_head]
+                _q_head += 1
+                _comp.append(_cur)
+                for _nb in _adj.get(_cur, []):
+                    if _nb not in _visited_comp:
+                        _visited_comp.add(_nb)
+                        _queue.append(_nb)
+            _components.append(_comp)
+
+        def _comp_rank(comp_nids: List[str]) -> Tuple[int, int, int, str, int]:
+            has_sec = any(
+                bool(unique_nodes[c].get("is_source") or unique_nodes[c].get("is_sink"))
+                for c in comp_nids
+            )
+            has_chain = len(comp_nids) >= 3
+            first_n = unique_nodes[comp_nids[0]]
+            return (
+                0 if has_sec else 1,
+                0 if has_chain else 1,
+                -min(len(comp_nids), 18),
+                str(first_n.get("filepath") or ""),
+                int(first_n.get("start_line") or 0),
+            )
+
+        _components.sort(key=_comp_rank)
+        _selected_nids: List[str] = []
+        _selected_set = set()
+        for _comp in _components:
+            if len(_selected_nids) >= _max_cpg_nodes:
+                break
+            _remaining = _max_cpg_nodes - len(_selected_nids)
+            for _cn in _comp[:_remaining]:
+                if _cn not in _selected_set:
+                    _selected_set.add(_cn)
+                    _selected_nids.append(_cn)
+
+        unique_edges = {
+            eid: ed
+            for eid, ed in unique_edges.items()
+            if ed["source"] in _selected_set and ed["target"] in _selected_set
+        }
+        unique_nodes = {nid: unique_nodes[nid] for nid in _selected_nids if nid in unique_nodes}
+
+    # Fallback synthesis if viewing a cached project not currently in Neo4j or a project with 0 matching CPG edges
     if len(unique_nodes) < 2 and current_app_tree:
         _synth_nodes: List[Dict[str, Any]] = []
         _synth_edges: List[Dict[str, Any]] = []
         _fn_files = [
             _ff for _ff in current_app_tree.flat_files
-            if _ff.elements and (not filepath or _ff.filepath == filepath or len(current_app_tree.flat_files) > 0)
-        ][:18]
+            if _ff.elements and (not filepath or _ff.filepath == filepath)
+        ]
+        if not _fn_files:
+            _fn_files = [_ff for _ff in current_app_tree.flat_files if _ff.elements]
+        _fn_files = _fn_files[:12]
+
+        if view_mode == "DFG_ONLY":
+            _intra_type, _intra_var = "DFG_FLOWS_TO", "data"
+            _cross_type, _cross_var = "DFG_FLOWS_TO", "payload"
+        elif view_mode == "CFG_ONLY":
+            _intra_type, _intra_var = "CFG_NEXT", None
+            _cross_type, _cross_var = "CFG_TRUE", None
+        else:
+            _intra_type, _intra_var = "CALLS", "invokes"
+            _cross_type, _cross_var = "CALLS", "calls"
+
         _prev_fn_id: Optional[str] = None
         for _f_i, _ff in enumerate(_fn_files):
             _mod_id = f"cg-mod:{_ff.filepath}"
@@ -3157,6 +3400,7 @@ def get_graph(
                 "is_sink": False,
                 "is_sanitizer": False,
             })
+            _prev_in_file_id: str = _mod_id
             for _e_i, _el in enumerate(_ff.elements[:4]):
                 _el_id = f"cg-fn:{_ff.filepath}:{_el.name}:{_el.line_number}:{_e_i}"
                 _synth_nodes.append({
@@ -3175,21 +3419,23 @@ def get_graph(
                     "is_sink": False,
                     "is_sanitizer": False,
                 })
+                _src_for_el = _prev_in_file_id if view_mode in ("DFG_ONLY", "CFG_ONLY") else _mod_id
                 _synth_edges.append({
                     "id": f"cg-edge-mod-{_f_i}-{_e_i}",
-                    "source": _mod_id,
+                    "source": _src_for_el,
                     "target": _el_id,
-                    "type": "CALLS" if view_mode == "CALL_GRAPH" else "CFG_NEXT",
-                    "var_name": "invokes" if view_mode == "CALL_GRAPH" else None,
+                    "type": _intra_type,
+                    "var_name": _intra_var,
                 })
                 if _prev_fn_id and _e_i == 0:
                     _synth_edges.append({
                         "id": f"cg-edge-cross-{_f_i}",
                         "source": _prev_fn_id,
                         "target": _el_id,
-                        "type": "CALLS",
-                        "var_name": "calls",
+                        "type": _cross_type,
+                        "var_name": _cross_var,
                     })
+                _prev_in_file_id = _el_id
                 _prev_fn_id = _el_id
         return {"nodes": _synth_nodes, "edges": _humanize_graph_edges(_synth_edges)}
 

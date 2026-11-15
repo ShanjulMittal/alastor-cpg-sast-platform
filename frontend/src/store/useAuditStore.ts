@@ -75,6 +75,8 @@ import {
 export const UI_PREFS_STORAGE_KEY = "alastor_ui_prefs_v4";
 
 let _hasHydratedUiPrefs = false;
+let _inflightSastSuitePromise: Promise<void> | null = null;
+const _inflightApiOpsPromises = new Map<string, Promise<ApiOperationsReportResponse | null>>();
 
 const VALID_APP_THEMES: AppThemeId[] = [
   "olympian-light",
@@ -2164,9 +2166,15 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           projectPath: data.root_path || state.projectPath,
         }));
         if (data.flat_files.length > 0 && !get().selectedTreeFile) {
-          set({ selectedTreeFile: data.flat_files[0] });
+          const preferredFile =
+            data.flat_files.find(
+              (f) => f.is_cpg_supported && (f.elements?.length || 0) > 0
+            ) ||
+            data.flat_files.find((f) => f.is_cpg_supported) ||
+            data.flat_files[0];
+          set({ selectedTreeFile: preferredFile });
           if (!get().activeFilepath) {
-            set({ activeFilepath: data.flat_files[0].filepath, activeStartLine: 1 });
+            set({ activeFilepath: preferredFile.filepath, activeStartLine: 1 });
           }
         }
       }
@@ -2900,15 +2908,23 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   },
 
   fetchSastPlusSuite: async () => {
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/aspm/suite`);
-      if (res.ok) {
-        const data: SastPlusSuiteResponse = await res.json();
-        set({ sastPlusSuite: data });
-      }
-    } catch (err) {
-      console.error("Failed to fetch SAST++++++ ASPM suite:", err);
+    if (_inflightSastSuitePromise) {
+      return _inflightSastSuitePromise;
     }
+    _inflightSastSuitePromise = (async () => {
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/aspm/suite`);
+        if (res.ok) {
+          const data: SastPlusSuiteResponse = await res.json();
+          set({ sastPlusSuite: data });
+        }
+      } catch (err) {
+        console.error("Failed to fetch SAST++++++ ASPM suite:", err);
+      } finally {
+        _inflightSastSuitePromise = null;
+      }
+    })();
+    return _inflightSastSuitePromise;
   },
 
   fetchTrackChanges: async (projectPath?: string) => {
@@ -3097,19 +3113,30 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   },
 
   fetchApiOperationsState: async (projectPath?: string) => {
-    set({ isLoadingApiOperations: true });
-    try {
-      const report = await fetchApiOperationsReport(projectPath);
-      set({
-        apiOperationsReport: report,
-        isLoadingApiOperations: false,
-      });
-      return report;
-    } catch (err) {
-      console.error("Failed to fetch API operations report:", err);
-      set({ apiOperationsReport: null, isLoadingApiOperations: false });
-      return null;
+    const inflightKey = (projectPath || "__active__").trim();
+    const existing = _inflightApiOpsPromises.get(inflightKey);
+    if (existing) {
+      return existing;
     }
+    set({ isLoadingApiOperations: true });
+    const reqPromise = (async () => {
+      try {
+        const report = await fetchApiOperationsReport(projectPath);
+        set({
+          apiOperationsReport: report,
+          isLoadingApiOperations: false,
+        });
+        return report;
+      } catch (err) {
+        console.error("Failed to fetch API operations report:", err);
+        set({ apiOperationsReport: null, isLoadingApiOperations: false });
+        return null;
+      } finally {
+        _inflightApiOpsPromises.delete(inflightKey);
+      }
+    })();
+    _inflightApiOpsPromises.set(inflightKey, reqPromise);
+    return reqPromise;
   },
 
   triggerScan: async (targetPath?: string, options?: GitRepoScanOptions) => {

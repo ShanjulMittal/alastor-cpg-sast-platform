@@ -10,10 +10,12 @@ SAST/SCA/IaC findings, and synthesize CPG directional flow graphs.
 from __future__ import annotations
 
 import ast
+from collections import OrderedDict
 import hashlib
 import os
 import posixpath
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -902,6 +904,72 @@ class ApiOperationsEngine:
     operations tracer. Runs 100% natively in Python stdlib without Neo4j or external binaries.
     """
 
+    _MAX_CACHE_ENTRIES = 16
+
+    def __init__(self) -> None:
+        self._cache_lock = threading.Lock()
+        self._report_cache: OrderedDict[Tuple[str, str, str], ApiOperationsReportResponse] = OrderedDict()
+        self._inflight_locks: Dict[Tuple[str, str, str], threading.Lock] = {}
+
+    def _compute_workspace_stat_digest(
+        self,
+        root_real: str,
+        single_file_real: Optional[str] = None,
+    ) -> str:
+        hasher = hashlib.sha256()
+        is_synth_root = os.path.basename(root_real).lower() == "synthetic_test_target"
+
+        if single_file_real is not None:
+            ext = os.path.splitext(single_file_real)[1].lower()
+            if ext in _SOURCE_EXTENSIONS:
+                try:
+                    if os.path.commonpath([root_real, single_file_real]) == root_real:
+                        st = os.stat(single_file_real)
+                        rel_fp = os.path.basename(single_file_real).replace("\\", "/")
+                        hasher.update(f"{rel_fp}|{st.st_mtime_ns}|{st.st_size}\n".encode("utf-8"))
+                except OSError:
+                    pass
+            return hasher.hexdigest()
+
+        for dirpath, dirnames, filenames in os.walk(root_real):
+            dirnames[:] = sorted(
+                d
+                for d in dirnames
+                if d.lower() not in _EXCLUDED_WALK_DIRS
+                and not d.startswith(".")
+                and (is_synth_root or d.lower() != "synthetic_test_target")
+            )
+            for fname in sorted(filenames):
+                f_low = fname.lower()
+                if f_low in _EXCLUDED_FILENAMES or fname.startswith("._"):
+                    continue
+                ext = os.path.splitext(fname)[1].lower()
+                if ext not in _SOURCE_EXTENSIONS:
+                    continue
+                try:
+                    file_real = os.path.realpath(os.path.join(dirpath, fname))
+                    if os.path.commonpath([root_real, file_real]) != root_real:
+                        continue
+                    st = os.stat(file_real)
+                    rel_fp = os.path.relpath(file_real, root_real).replace("\\", "/")
+                    hasher.update(f"{rel_fp}|{st.st_mtime_ns}|{st.st_size}\n".encode("utf-8"))
+                except OSError:
+                    continue
+        return hasher.hexdigest()
+
+    @staticmethod
+    def _compute_findings_digest(findings: Optional[List[Finding]]) -> str:
+        hasher = hashlib.sha256()
+        if findings:
+            rows = sorted(
+                f"{f.id}|{getattr(f, 'triage_status', 'TO_VERIFY')}|{f.severity}|{f.rule_id}"
+                for f in findings
+            )
+            for row in rows:
+                hasher.update(row.encode("utf-8"))
+                hasher.update(b"\n")
+        return hasher.hexdigest()
+
     def analyze_workspace_api_operations(
         self,
         target_dir: str,
@@ -923,8 +991,59 @@ class ApiOperationsEngine:
         real_input = os.path.realpath(target_dir)
         is_single_file = os.path.isfile(real_input)
         root_real = os.path.dirname(real_input) if is_single_file else real_input
+        single_arg = real_input if is_single_file else None
 
-        files_map = self._enumerate_confined_sources(root_real, real_input if is_single_file else None)
+        ws_digest = self._compute_workspace_stat_digest(root_real, single_arg)
+        findings_digest = self._compute_findings_digest(findings)
+        cache_key = (real_input, ws_digest, findings_digest)
+
+        with self._cache_lock:
+            cached = self._report_cache.get(cache_key)
+            if cached is not None:
+                self._report_cache.move_to_end(cache_key)
+                cloned = cached.model_copy(deep=True)
+                cloned.project_path = target_dir
+                return cloned
+            key_lock = self._inflight_locks.get(cache_key)
+            if key_lock is None:
+                key_lock = threading.Lock()
+                self._inflight_locks[cache_key] = key_lock
+
+        with key_lock:
+            with self._cache_lock:
+                cached = self._report_cache.get(cache_key)
+                if cached is not None:
+                    self._report_cache.move_to_end(cache_key)
+                    cloned = cached.model_copy(deep=True)
+                    cloned.project_path = target_dir
+                    return cloned
+
+            try:
+                report = self._compute_workspace_api_operations_uncached(
+                    target_dir=target_dir,
+                    root_real=root_real,
+                    single_file_real=single_arg,
+                    findings=findings,
+                )
+                with self._cache_lock:
+                    self._report_cache[cache_key] = report
+                    self._report_cache.move_to_end(cache_key)
+                    while len(self._report_cache) > self._MAX_CACHE_ENTRIES:
+                        self._report_cache.popitem(last=False)
+                return report.model_copy(deep=True)
+            finally:
+                with self._cache_lock:
+                    if self._inflight_locks.get(cache_key) is key_lock:
+                        self._inflight_locks.pop(cache_key, None)
+
+    def _compute_workspace_api_operations_uncached(
+        self,
+        target_dir: str,
+        root_real: str,
+        single_file_real: Optional[str],
+        findings: Optional[List[Finding]],
+    ) -> ApiOperationsReportResponse:
+        files_map = self._enumerate_confined_sources(root_real, single_file_real)
         graph = _WorkspaceSymbolGraph(root_real, files_map)
 
         py_asts: Dict[str, ast.Module] = {}

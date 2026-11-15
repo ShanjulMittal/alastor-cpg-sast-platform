@@ -152,44 +152,172 @@ function computeDagreLayout(
   rankdir: "TB" | "LR" = "LR"
 ): { nodes: Node[]; edges: Edge[] } {
   const safeNodes = nodes.length > 180 ? nodes.slice(0, 180) : nodes;
-  const safeNodeIds = new Set(safeNodes.map((n) => n.id));
+  if (safeNodes.length === 0) {
+    return { nodes: [], edges: [] };
+  }
+
+  const nodeMap = new Map<string, Node>(safeNodes.map((n) => [n.id, n]));
   const safeEdges = edges.filter(
-    (e) => safeNodeIds.has(e.source) && safeNodeIds.has(e.target)
+    (e) => nodeMap.has(e.source) && nodeMap.has(e.target)
   );
 
-  const dagreGraph = new dagre.graphlib.Graph();
-  dagreGraph.setDefaultEdgeLabel(() => ({}));
-  dagreGraph.setGraph({
-    rankdir,
-    nodesep: rankdir === "LR" ? 64 : 84,
-    ranksep: rankdir === "LR" ? 165 : 118,
+  // Partition into weakly-connected components so disconnected subgraphs pack into a balanced 2D grid
+  // instead of a 10,000px vertical Dagre column that zooms out to microscopic specks.
+  const undirectedAdj = new Map<string, string[]>();
+  safeNodes.forEach((n) => undirectedAdj.set(n.id, []));
+  safeEdges.forEach((e) => {
+    undirectedAdj.get(e.source)?.push(e.target);
+    undirectedAdj.get(e.target)?.push(e.source);
   });
 
-  safeNodes.forEach((node) => {
-    const dim = getNodeDimensions(node);
-    dagreGraph.setNode(node.id, { width: dim.w, height: dim.h });
+  const visited = new Set<string>();
+  const components: { compNodes: Node[]; compEdges: Edge[] }[] = [];
+
+  for (const startNode of safeNodes) {
+    if (visited.has(startNode.id)) continue;
+    const compIds = new Set<string>();
+    const queue: string[] = [startNode.id];
+    visited.add(startNode.id);
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      compIds.add(cur);
+      for (const nb of undirectedAdj.get(cur) || []) {
+        if (!visited.has(nb)) {
+          visited.add(nb);
+          queue.push(nb);
+        }
+      }
+    }
+    const compNodes = safeNodes.filter((n) => compIds.has(n.id));
+    const compEdges = safeEdges.filter(
+      (e) => compIds.has(e.source) && compIds.has(e.target)
+    );
+    components.push({ compNodes, compEdges });
+  }
+
+  // Place multi-node connected flows ahead of isolated singletons
+  components.sort((a, b) => {
+    const aMulti = a.compNodes.length >= 2 ? 0 : 1;
+    const bMulti = b.compNodes.length >= 2 ? 0 : 1;
+    if (aMulti !== bMulti) return aMulti - bMulti;
+    return b.compNodes.length - a.compNodes.length;
   });
 
-  safeEdges.forEach((edge) => {
-    dagreGraph.setEdge(edge.source, edge.target);
+  interface LayoutedCompBox {
+    nodes: { node: Node; relX: number; relY: number; w: number; h: number }[];
+    width: number;
+    height: number;
+  }
+
+  const boxes: LayoutedCompBox[] = components.map(({ compNodes, compEdges }) => {
+    if (compNodes.length === 1) {
+      const only = compNodes[0];
+      const dim = getNodeDimensions(only);
+      return {
+        nodes: [{ node: only, relX: 0, relY: 0, w: dim.w, h: dim.h }],
+        width: dim.w,
+        height: dim.h,
+      };
+    }
+
+    const g = new dagre.graphlib.Graph();
+    g.setDefaultEdgeLabel(() => ({}));
+    const isLargeComp = compNodes.length > 20;
+    g.setGraph({
+      rankdir,
+      nodesep: rankdir === "LR" ? (isLargeComp ? 38 : 56) : isLargeComp ? 52 : 76,
+      ranksep: rankdir === "LR" ? (isLargeComp ? 138 : 158) : isLargeComp ? 96 : 114,
+    });
+
+    compNodes.forEach((n) => {
+      const dim = getNodeDimensions(n);
+      g.setNode(n.id, { width: dim.w, height: dim.h });
+    });
+    compEdges.forEach((e) => {
+      g.setEdge(e.source, e.target);
+    });
+
+    dagre.layout(g);
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    const rawPlaced = compNodes.map((n) => {
+      const dim = getNodeDimensions(n);
+      const pos = g.node(n.id);
+      const x = pos && Number.isFinite(pos.x) ? pos.x - dim.w / 2 : 0;
+      const y = pos && Number.isFinite(pos.y) ? pos.y - dim.h / 2 : 0;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + dim.w);
+      maxY = Math.max(maxY, y + dim.h);
+      return { node: n, x, y, w: dim.w, h: dim.h };
+    });
+
+    const normMinX = Number.isFinite(minX) ? minX : 0;
+    const normMinY = Number.isFinite(minY) ? minY : 0;
+    const boxW = Math.max(264, (Number.isFinite(maxX) ? maxX : 264) - normMinX);
+    const boxH = Math.max(106, (Number.isFinite(maxY) ? maxY : 106) - normMinY);
+
+    return {
+      nodes: rawPlaced.map((p) => ({
+        node: p.node,
+        relX: p.x - normMinX,
+        relY: p.y - normMinY,
+        w: p.w,
+        h: p.h,
+      })),
+      width: boxW,
+      height: boxH,
+    };
   });
 
-  dagre.layout(dagreGraph);
+  // Shelf-pack component bounding boxes into a compact ~16:10 aspect ratio
+  const GAP_X = 112;
+  const GAP_Y = 88;
+  const totalArea = boxes.reduce(
+    (acc, b) => acc + (b.width + GAP_X) * (b.height + GAP_Y),
+    0
+  );
+  const maxBoxWidth = boxes.reduce((m, b) => Math.max(m, b.width), 264);
+  const targetRowWidth = Math.max(
+    maxBoxWidth,
+    1420,
+    Math.ceil(Math.sqrt(totalArea * 1.48))
+  );
 
   const posMap = new Map<string, Node>();
-  const layoutedNodes = safeNodes.map((node) => {
-    const dim = getNodeDimensions(node);
-    const nodeWithPosition = dagreGraph.node(node.id);
-    const positioned: Node = {
-      ...node,
-      position: {
-        x: nodeWithPosition ? nodeWithPosition.x - dim.w / 2 : 0,
-        y: nodeWithPosition ? nodeWithPosition.y - dim.h / 2 : 0,
-      },
-    };
-    posMap.set(positioned.id, positioned);
-    return positioned;
-  });
+  let cursorX = 0;
+  let cursorY = 0;
+  let currentRowHeight = 0;
+
+  for (const box of boxes) {
+    if (cursorX > 0 && cursorX + box.width > targetRowWidth) {
+      cursorX = 0;
+      cursorY += currentRowHeight + GAP_Y;
+      currentRowHeight = 0;
+    }
+
+    for (const item of box.nodes) {
+      const positioned: Node = {
+        ...item.node,
+        width: item.w,
+        height: item.h,
+        position: {
+          x: Math.round(cursorX + item.relX),
+          y: Math.round(cursorY + item.relY),
+        },
+      };
+      posMap.set(positioned.id, positioned);
+    }
+
+    cursorX += box.width + GAP_X;
+    currentRowHeight = Math.max(currentRowHeight, box.height);
+  }
+
+  const layoutedNodes = safeNodes.map((n) => posMap.get(n.id) || n);
 
   const handlesMode = rankdir === "LR" ? "LR" : "TB";
   const routedEdges = safeEdges.map((edge) => {
@@ -506,6 +634,7 @@ export function ReactFlowGraphPane() {
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [isLoadingGraph, setIsLoadingGraph] = useState<boolean>(false);
 
   // Layout, Cross-File Flow & Layer Controls
   const [treeLayoutStyle, setTreeLayoutStyle] =
@@ -818,10 +947,26 @@ export function ReactFlowGraphPane() {
   // Primary Graph Builder Effect (APP_TREE + FINDING_PATH + CPG Backend Views)
   useEffect(() => {
     let isCancelled = false;
+    const fitTimers: ReturnType<typeof setTimeout>[] = [];
+
+    const scheduleReliableFitView = (padding: number, duration: number) => {
+      for (const delayMs of [30, 140, 320]) {
+        const timer = setTimeout(() => {
+          if (!isCancelled && reactFlowInstance) {
+            reactFlowInstance.fitView({
+              padding,
+              duration: delayMs === 30 ? 0 : duration,
+            });
+          }
+        }, delayMs);
+        fitTimers.push(timer);
+      }
+    };
 
     async function loadGraph() {
       // CASE 1: Interactive 360° Spider-Web / Mind-Map / Hierarchy App Tree
       if (graphViewMode === "APP_TREE" && appTree) {
+        setIsLoadingGraph(false);
         const spiderNodes: Node[] = [];
         const spiderTreeEdges: Edge[] = [];
         const isSpider = treeLayoutStyle === "SPIDER_WEB";
@@ -1331,13 +1476,13 @@ export function ReactFlowGraphPane() {
         }));
 
         if (!isCancelled) {
-          setNodes(positionedNodes);
+          const sizedTreeNodes = positionedNodes.map((pn) => {
+            const dim = getNodeDimensions(pn);
+            return { ...pn, width: pn.width ?? dim.w, height: pn.height ?? dim.h };
+          });
+          setNodes(sizedTreeNodes);
           setEdges(densityTaggedEdges);
-          setTimeout(() => {
-            if (reactFlowInstance) {
-              reactFlowInstance.fitView({ padding: 0.22, duration: 450 });
-            }
-          }, 60);
+          scheduleReliableFitView(0.22, 360);
         }
         return;
       }
@@ -1347,6 +1492,7 @@ export function ReactFlowGraphPane() {
       let rawEdges: GraphEdgeItem[] = [];
 
       if (graphViewMode === "FINDING_PATH") {
+        setIsLoadingGraph(false);
         if (activeFindingFlow) {
           rawNodes = activeFindingFlow.nodes;
           rawEdges = activeFindingFlow.edges;
@@ -1358,6 +1504,7 @@ export function ReactFlowGraphPane() {
           return;
         }
       } else {
+        setIsLoadingGraph(true);
         try {
           const shouldPassFilepath =
             Boolean(activeFilepath) &&
@@ -1374,6 +1521,10 @@ export function ReactFlowGraphPane() {
           }
         } catch (err) {
           console.error("Failed to load graph view:", err);
+        } finally {
+          if (!isCancelled) {
+            setIsLoadingGraph(false);
+          }
         }
       }
 
@@ -1456,15 +1607,7 @@ export function ReactFlowGraphPane() {
         );
         setNodes(layouted.nodes);
         setEdges(layouted.edges);
-
-        setTimeout(() => {
-          if (reactFlowInstance) {
-            reactFlowInstance.fitView({
-              padding: isGraphFullscreen ? 0.18 : 0.24,
-              duration: 400,
-            });
-          }
-        }, 50);
+        scheduleReliableFitView(isGraphFullscreen ? 0.16 : 0.2, 340);
       } else {
         setNodes([]);
         setEdges([]);
@@ -1475,6 +1618,7 @@ export function ReactFlowGraphPane() {
 
     return () => {
       isCancelled = true;
+      fitTimers.forEach(clearTimeout);
     };
   }, [
     activeFindingFlow,
@@ -1806,15 +1950,31 @@ export function ReactFlowGraphPane() {
       return `Attack Surface Entrypoints: Traces exposed routes & handlers across ${nodes.length} nodes and ${displayEdges.length} directional hops into downstream execution sinks.`;
     }
 
+    const distinctNodeFiles = Array.from(
+      new Set(
+        nodes
+          .map((n) => String(n.data?.filepath || "").trim())
+          .filter(Boolean)
+      )
+    );
+    const scopeSuffix =
+      distinctNodeFiles.length === 1
+        ? ` in ${basenameOf(distinctNodeFiles[0])}`
+        : distinctNodeFiles.length > 1
+        ? ` across ${distinctNodeFiles.length} files`
+        : activeFilepath
+        ? ` in ${basenameOf(activeFilepath)}`
+        : "";
+
     if (graphViewMode === "DFG_ONLY") {
-      return `Data-Flow Graph (DFG): ${displayEdges.length} variable & taint propagation links (TAINT ▶) across ${nodes.length} statements${activeFilepath ? ` in ${basenameOf(activeFilepath)}` : ""}.`;
+      return `Data-Flow Graph (DFG): ${displayEdges.length} variable & taint propagation links (TAINT ▶) across ${nodes.length} statements${scopeSuffix}.`;
     }
 
     if (graphViewMode === "CFG_ONLY") {
-      return `Control-Flow Graph (CFG): ${displayEdges.length} execution & branch transitions (TRUE ▶, FALSE ▶, LOOP ↺) across ${nodes.length} statements${activeFilepath ? ` in ${basenameOf(activeFilepath)}` : ""}.`;
+      return `Control-Flow Graph (CFG): ${displayEdges.length} execution & branch transitions (TRUE ▶, FALSE ▶, LOOP ↺) across ${nodes.length} statements${scopeSuffix}.`;
     }
 
-    return `Full Code Property Graph (CPG): Unified syntax (AST), control flow (CFG), and data flow (DFG) across ${nodes.length} nodes and ${displayEdges.length} directional edges.`;
+    return `Full Code Property Graph (CPG): Unified syntax (AST), control flow (CFG), and data flow (DFG) across ${nodes.length} nodes and ${displayEdges.length} directional edges${scopeSuffix}.`;
   }, [
     graphViewMode,
     selectedFinding,
@@ -1822,7 +1982,7 @@ export function ReactFlowGraphPane() {
     isCurrentFindingSevered,
     lastAppliedPatch,
     appTree,
-    nodes.length,
+    nodes,
     displayEdges.length,
     allCrossFileEdges.length,
     callGraphScope,
@@ -2604,9 +2764,26 @@ export function ReactFlowGraphPane() {
           </div>
         )}
 
+        {isLoadingGraph && displayNodes.length > 0 && (
+          <div className="absolute top-3 right-3 z-20 rounded-lg border border-cyan-300 bg-white/95 px-2.5 py-1 shadow-sm flex items-center gap-1.5 text-[10.5px] font-mono font-bold text-cyan-900 pointer-events-none">
+            <Loader2 className="w-3.5 h-3.5 text-cyan-700 animate-spin" />
+            <span>Loading {graphViewMode.replace(/_/g, " ")}...</span>
+          </div>
+        )}
+
         {displayNodes.length === 0 && (
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-10 text-slate-600">
-            {lastAppliedPatch && lastAppliedPatch.verifiedSevered ? (
+            {isLoadingGraph ? (
+              <>
+                <Loader2 className="w-9 h-9 mb-3 text-cyan-700 animate-spin" />
+                <p className="text-sm font-bold text-slate-800 font-mono">
+                  Loading {graphViewMode.replace(/_/g, " ")} CPG Topology...
+                </p>
+                <p className="text-xs text-slate-600 mt-1">
+                  Building directional nodes, edges, and balanced viewport layout
+                </p>
+              </>
+            ) : lastAppliedPatch && lastAppliedPatch.verifiedSevered ? (
               <>
                 <ShieldCheck className="w-11 h-11 mb-3 text-emerald-700" />
                 <p className="text-sm font-extrabold text-emerald-900 font-mono">
