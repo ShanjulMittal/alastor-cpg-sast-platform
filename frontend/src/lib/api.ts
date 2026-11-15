@@ -249,8 +249,9 @@ export async function fetchApiOperationsReport(
   projectPath?: string | null
 ): Promise<ApiOperationsReportResponse> {
   const qs = new URLSearchParams();
-  if (projectPath && projectPath.trim()) {
-    qs.set("project_path", projectPath.trim());
+  const trimmed = (projectPath || "").trim();
+  if (trimmed && !/^(https?:\/\/|git@)/i.test(trimmed)) {
+    qs.set("project_path", trimmed);
   }
   const suffix = qs.toString() ? `?${qs.toString()}` : "";
   return apiFetchJson<ApiOperationsReportResponse>(

@@ -46,6 +46,7 @@ import {
   Download,
   RefreshCw,
   GitCommit,
+  Lock,
 } from "lucide-react";
 
 function getSecretValidationBadgeMeta(
@@ -199,8 +200,16 @@ export function FlawExplorerSidebar() {
   const setFilterSecretsOnly = useAuditStore((s) => s.setFilterSecretsOnly);
   const verifySecretsLive = useAuditStore((s) => s.verifySecretsLive);
   const isVerifyingSecrets = useAuditStore((s) => s.isVerifyingSecrets);
+  const userAccountsState = useAuditStore((s) => s.userAccountsState);
   const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>({});
   const [verifyingSecretId, setVerifyingSecretId] = useState<string | null>(null);
+
+  const activeRbacUser = userAccountsState?.users?.find(
+    (u) => u.id === userAccountsState.active_user_id
+  );
+  const canRevealSecrets = activeRbacUser
+    ? activeRbacUser.can_reveal_secrets
+    : true;
 
   const appTree = useAuditStore((s) => s.appTree);
   const selectedTreeFile = useAuditStore((s) => s.selectedTreeFile);
@@ -248,6 +257,16 @@ export function FlawExplorerSidebar() {
       el.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
   }, [selectedFinding?.id]);
+
+  useEffect(() => {
+    if (!canRevealSecrets) {
+      setRevealedSecrets({});
+    }
+  }, [canRevealSecrets]);
+
+  useEffect(() => {
+    setRevealedSecrets({});
+  }, [projectPath]);
 
   const safeFixableFindings = useMemo(() => {
     return findings.filter(
@@ -1234,6 +1253,8 @@ export function FlawExplorerSidebar() {
                                 const isThisVerifying =
                                   isVerifyingSecrets &&
                                   (verifyingSecretId === null || verifyingSecretId === f.id);
+                                const isCardSecretRevealed =
+                                  canRevealSecrets && Boolean(revealedSecrets[f.id]);
                                 return (
                                   <div className="p-1.5 rounded bg-amber-50 border border-amber-300 space-y-1">
                                     {/* TruffleHog Validation Verdict + Git Provenance + Detector Pills */}
@@ -1297,27 +1318,38 @@ export function FlawExplorerSidebar() {
                                           />
                                           <span>Verify Key</span>
                                         </button>
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setRevealedSecrets((prev) => ({
-                                              ...prev,
-                                              [f.id]: !prev[f.id],
-                                            }));
-                                          }}
-                                          className="px-1.5 py-0.5 rounded bg-white hover:bg-amber-100 text-amber-950 border border-amber-400 flex items-center gap-0.5 font-sans font-bold"
-                                        >
-                                          {revealedSecrets[f.id] ? (
-                                            <>
-                                              <EyeOff className="w-2.5 h-2.5" /> Mask
-                                            </>
-                                          ) : (
-                                            <>
-                                              <Eye className="w-2.5 h-2.5" /> Reveal Key
-                                            </>
-                                          )}
-                                        </button>
+                                        {canRevealSecrets ? (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              if (!canRevealSecrets) return;
+                                              setRevealedSecrets((prev) => ({
+                                                ...prev,
+                                                [f.id]: !prev[f.id],
+                                              }));
+                                            }}
+                                            className="px-1.5 py-0.5 rounded bg-white hover:bg-amber-100 text-amber-950 border border-amber-400 flex items-center gap-0.5 font-sans font-bold"
+                                          >
+                                            {isCardSecretRevealed ? (
+                                              <>
+                                                <EyeOff className="w-2.5 h-2.5" /> Mask
+                                              </>
+                                            ) : (
+                                              <>
+                                                <Eye className="w-2.5 h-2.5" /> Reveal Key
+                                              </>
+                                            )}
+                                          </button>
+                                        ) : (
+                                          <span
+                                            title="RBAC policy restricts raw credential reveal for the active user"
+                                            className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-800 border border-slate-300 inline-flex items-center gap-0.5 font-sans font-bold"
+                                          >
+                                            <Lock className="w-2.5 h-2.5 text-slate-700" />
+                                            <span>RBAC Masked</span>
+                                          </span>
+                                        )}
                                       </div>
                                     </div>
 
@@ -1328,7 +1360,7 @@ export function FlawExplorerSidebar() {
                                       </span>
                                       <span className="text-slate-700"> = </span>
                                       <span className="text-rose-800 font-semibold">
-                                        {revealedSecrets[f.id]
+                                        {isCardSecretRevealed
                                           ? f.secret_value_raw ||
                                             f.secret_value_masked ||
                                             firstNode?.code ||

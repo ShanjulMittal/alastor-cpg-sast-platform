@@ -139,19 +139,10 @@ function mergeSecretFindingsIntoStore(
   }
   let nextFindings = currentFindings;
   if (currentFindings.length > 0) {
-    const seenIds = new Set<string>();
-    const updated = currentFindings.map((f) => {
-      seenIds.add(f.id);
+    nextFindings = currentFindings.map((f) => {
       const refreshed = secretById.get(f.id);
       return refreshed ? { ...f, ...refreshed } : f;
     });
-    for (const s of inventorySecrets) {
-      if (s && s.id && !seenIds.has(s.id)) {
-        updated.push(s);
-        seenIds.add(s.id);
-      }
-    }
-    nextFindings = updated;
   }
   const nextSelected =
     currentSelected && secretById.has(currentSelected.id)
@@ -1474,6 +1465,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         });
         await Promise.all([
           get().fetchFindings(),
+          get().fetchSecretInventoryState(),
           get().fetchMetrics(),
           get().fetchProjects(),
           get().fetchTrackChanges(),
@@ -1482,7 +1474,6 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchDeepDiveAnalytics(),
           get().fetchRaciGovernance(),
           get().fetchSastPlusSuite(),
-          get().fetchSecretInventoryState(),
           get().fetchApiOperationsState(),
         ]);
         return data;
@@ -1526,6 +1517,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         });
         await Promise.all([
           get().fetchFindings(),
+          get().fetchSecretInventoryState(),
           get().fetchMetrics(),
           get().fetchProjects(),
           get().fetchTrackChanges(),
@@ -1534,7 +1526,6 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchDeepDiveAnalytics(),
           get().fetchRaciGovernance(),
           get().fetchSastPlusSuite(),
-          get().fetchSecretInventoryState(),
           get().fetchApiOperationsState(),
         ]);
         const currentSelected = get().selectedFinding;
@@ -1590,6 +1581,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
       await Promise.all([
         get().fetchFindings(),
+        get().fetchSecretInventoryState(),
         get().fetchMetrics(),
         get().fetchAppTree(),
         get().fetchProjects(),
@@ -1599,7 +1591,6 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         get().fetchDeepDiveAnalytics(),
         get().fetchRaciGovernance(),
         get().fetchSastPlusSuite(),
-        get().fetchSecretInventoryState(),
         get().fetchApiOperationsState(),
       ]);
       return res;
@@ -2245,7 +2236,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
                 get().fetchSastPlusSuite(),
                 get().fetchTrackChanges(),
                 get().fetchSecretInventoryState(),
-                get().fetchApiOperationsState(proj.target_path),
+                get().fetchApiOperationsState(),
               ]
             : []),
         ]);
@@ -2292,6 +2283,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         ...p,
         is_active: p.id === projectId,
       })),
+      secretInventory: null,
+      apiOperationsReport: null,
       ...(existingProj?.target_path ? { projectPath: existingProj.target_path } : {}),
     }));
 
@@ -2317,6 +2310,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           activeFilepath: null,
           activeStartLine: null,
           activeEndLine: null,
+          secretInventory: null,
+          apiOperationsReport: null,
         }));
         if (needsScan) {
           const hasLocalCheckout =
@@ -2345,6 +2340,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         }
         await Promise.all([
           get().fetchFindings(),
+          get().fetchSecretInventoryState(),
           get().fetchMetrics(),
           get().fetchAppTree(),
           get().fetchProjects(),
@@ -2354,8 +2350,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchRaciGovernance(),
           get().fetchSastPlusSuite(),
           get().fetchTrackChanges(),
-          get().fetchSecretInventoryState(),
-          get().fetchApiOperationsState(proj.target_path),
+          get().fetchApiOperationsState(),
         ]);
       }
     } catch (err) {
@@ -3041,6 +3036,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       return inv;
     } catch (err) {
       console.error("Failed to fetch secret inventory:", err);
+      set({ secretInventory: null });
       return null;
     }
   },
@@ -3085,7 +3081,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       return report;
     } catch (err) {
       console.error("Failed to fetch API operations report:", err);
-      set({ isLoadingApiOperations: false });
+      set({ apiOperationsReport: null, isLoadingApiOperations: false });
       return null;
     }
   },
@@ -3098,6 +3094,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     set({
       isScanning: true,
       gitScanErrorBanner: null,
+      secretInventory: null,
+      apiOperationsReport: null,
       scanStatusMessage: `Initiating analysis for: ${path}...`,
       scanProgress: {
         is_scanning: true,
@@ -3162,6 +3160,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         });
         await Promise.all([
           get().fetchFindings(),
+          get().fetchSecretInventoryState(),
           get().fetchProjects(),
           get().fetchMetrics(),
           get().fetchAppTree(),
@@ -3172,8 +3171,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchRaciGovernance(),
           get().fetchSastPlusSuite(),
           get().fetchTrackChanges(),
-          get().fetchSecretInventoryState(),
-          get().fetchApiOperationsState(scanData.project_path || path),
+          get().fetchApiOperationsState(),
         ]);
         return { ok: true, response: scanData };
       } else {

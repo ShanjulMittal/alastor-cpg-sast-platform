@@ -34,6 +34,7 @@ import {
   EyeOff,
   RefreshCw,
   GitCommit,
+  Lock,
 } from "lucide-react";
 
 function getSecretValidationBadgeMeta(
@@ -444,9 +445,17 @@ export function MonacoCodePane() {
   const stepFindingPath = useAuditStore((s) => s.stepFindingPath);
   const verifySecretsLive = useAuditStore((s) => s.verifySecretsLive);
   const isVerifyingSecrets = useAuditStore((s) => s.isVerifyingSecrets);
+  const userAccountsState = useAuditStore((s) => s.userAccountsState);
 
   const [content, setContent] = useState<string>("# Select a finding on the left or a file from the tree to inspect code");
   const [isDossierSecretRevealed, setIsDossierSecretRevealed] = useState<boolean>(false);
+
+  const activeRbacUser = userAccountsState?.users?.find(
+    (u) => u.id === userAccountsState.active_user_id
+  );
+  const canRevealSecrets = activeRbacUser
+    ? activeRbacUser.can_reveal_secrets
+    : true;
   const [loading, setLoading] = useState<boolean>(false);
   const [filePurposeInfo, setFilePurposeInfo] = useState<FilePurposeInfo | null>(null);
   const [draftPatchedContent, setDraftPatchedContent] = useState<string>("");
@@ -474,6 +483,12 @@ export function MonacoCodePane() {
   useEffect(() => {
     setSelectionRange(null);
   }, [activeFilepath]);
+
+  useEffect(() => {
+    if (!canRevealSecrets) {
+      setIsDossierSecretRevealed(false);
+    }
+  }, [canRevealSecrets]);
 
   const story = useMemo(() => {
     if (!selectedFinding) return null;
@@ -1194,6 +1209,8 @@ export function MonacoCodePane() {
               const verdictLine =
                 selectedFinding.secret_verified_identity ||
                 selectedFinding.secret_validation_message;
+              const isSecretShown =
+                canRevealSecrets && isDossierSecretRevealed;
               return (
                 <div className="p-2 rounded-lg bg-amber-50 border border-amber-300 space-y-1.5">
                   <div className="flex items-center justify-between gap-2 flex-wrap font-mono text-[10px]">
@@ -1252,26 +1269,37 @@ export function MonacoCodePane() {
                         />
                         <span>Verify Key</span>
                       </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setIsDossierSecretRevealed((prev) => !prev);
-                        }}
-                        className="px-2 py-0.5 rounded bg-white hover:bg-amber-100 text-amber-950 border border-amber-400 font-sans font-bold inline-flex items-center gap-1"
-                      >
-                        {isDossierSecretRevealed ? (
-                          <>
-                            <EyeOff className="w-3 h-3" />
-                            <span>Mask</span>
-                          </>
-                        ) : (
-                          <>
-                            <Eye className="w-3 h-3" />
-                            <span>Reveal Key</span>
-                          </>
-                        )}
-                      </button>
+                      {canRevealSecrets ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (!canRevealSecrets) return;
+                            setIsDossierSecretRevealed((prev) => !prev);
+                          }}
+                          className="px-2 py-0.5 rounded bg-white hover:bg-amber-100 text-amber-950 border border-amber-400 font-sans font-bold inline-flex items-center gap-1"
+                        >
+                          {isSecretShown ? (
+                            <>
+                              <EyeOff className="w-3 h-3" />
+                              <span>Mask</span>
+                            </>
+                          ) : (
+                            <>
+                              <Eye className="w-3 h-3" />
+                              <span>Reveal Key</span>
+                            </>
+                          )}
+                        </button>
+                      ) : (
+                        <span
+                          title="RBAC policy restricts raw credential reveal for the active user"
+                          className="px-2 py-0.5 rounded bg-slate-100 text-slate-800 border border-slate-300 font-sans font-bold inline-flex items-center gap-1"
+                        >
+                          <Lock className="w-3 h-3 text-slate-700" />
+                          <span>RBAC Masked</span>
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -1283,7 +1311,7 @@ export function MonacoCodePane() {
                     </span>
                     <span className="text-slate-700"> = </span>
                     <span className="text-rose-800 font-semibold">
-                      {isDossierSecretRevealed
+                      {isSecretShown
                         ? selectedFinding.secret_value_raw ||
                           selectedFinding.secret_value_masked ||
                           firstSecretNode?.code ||

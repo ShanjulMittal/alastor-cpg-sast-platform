@@ -1005,6 +1005,16 @@ export const ThreatModelingView: React.FC = () => {
   );
   const canRevealSecrets = activeUser ? activeUser.can_reveal_secrets : true;
 
+  useEffect(() => {
+    if (!canRevealSecrets) {
+      setRevealedSecretIds({});
+    }
+  }, [canRevealSecrets]);
+
+  useEffect(() => {
+    setRevealedSecretIds({});
+  }, [projectPath]);
+
   const secretFindings = useMemo(() => {
     const fromFindings = findings.filter(
       (f) =>
@@ -1017,17 +1027,33 @@ export const ThreatModelingView: React.FC = () => {
     if (invSecrets.length === 0) {
       return fromFindings;
     }
-    const mergedById = new Map<string, Finding>();
-    for (const s of invSecrets) {
-      if (s && s.id) mergedById.set(s.id, s);
+    if (findings.length === 0) {
+      return invSecrets;
     }
+    const currentFindingIdSet = new Set(findings.map((f) => f.id));
+    const invById = new Map<string, Finding>();
+    for (const s of invSecrets) {
+      if (s && s.id) invById.set(s.id, s);
+    }
+    const reconciled: Finding[] = [];
+    const seenIds = new Set<string>();
     for (const f of fromFindings) {
-      if (f && f.id) {
-        const existing = mergedById.get(f.id);
-        mergedById.set(f.id, existing ? { ...f, ...existing } : f);
+      if (!f || !f.id || seenIds.has(f.id)) continue;
+      seenIds.add(f.id);
+      const enriched = invById.get(f.id);
+      reconciled.push(enriched ? { ...f, ...enriched } : f);
+    }
+    for (const s of invSecrets) {
+      if (!s || !s.id || seenIds.has(s.id)) continue;
+      if (
+        currentFindingIdSet.has(s.id) ||
+        s.secret_source === "GIT_HISTORY"
+      ) {
+        seenIds.add(s.id);
+        reconciled.push(s);
       }
     }
-    return Array.from(mergedById.values());
+    return reconciled;
   }, [findings, secretInventory]);
 
   const effectiveSecretConfig =
@@ -1058,14 +1084,30 @@ export const ThreatModelingView: React.FC = () => {
       (f) => f.secret_source === "GIT_HISTORY" || Boolean(f.secret_commit_sha)
     ).length;
 
+    const invAligned = Boolean(
+      secretInventory &&
+        secretInventory.secrets.length === secretFindings.length
+    );
+
     return {
-      totalKeys: secretInventory?.total_secrets ?? secretFindings.length,
-      liveActive: secretInventory?.verified_active_count ?? computedActive,
-      revokedInactive: secretInventory?.revoked_count ?? computedRevoked,
-      structurallyValid:
-        secretInventory?.structurally_valid_count ?? computedStructural,
-      testOrMock: secretInventory?.test_placeholder_count ?? computedTest,
-      gitHistoryLeaks: secretInventory?.git_history_count ?? computedGitHist,
+      totalKeys: invAligned
+        ? secretInventory!.total_secrets
+        : secretFindings.length,
+      liveActive: invAligned
+        ? secretInventory!.verified_active_count
+        : computedActive,
+      revokedInactive: invAligned
+        ? secretInventory!.revoked_count
+        : computedRevoked,
+      structurallyValid: invAligned
+        ? secretInventory!.structurally_valid_count
+        : computedStructural,
+      testOrMock: invAligned
+        ? secretInventory!.test_placeholder_count
+        : computedTest,
+      gitHistoryLeaks: invAligned
+        ? secretInventory!.git_history_count
+        : computedGitHist,
     };
   }, [secretInventory, secretFindings]);
 
@@ -2632,7 +2674,8 @@ export const ThreatModelingView: React.FC = () => {
             <div className="grid grid-cols-1 gap-3">
               {filteredVaultSecrets.map((sf) => {
                 const node = sf.path_nodes?.[0];
-                const isRevealed = Boolean(revealedSecretIds[sf.id]);
+                const isRevealed =
+                  canRevealSecrets && Boolean(revealedSecretIds[sf.id]);
                 const keyName =
                   sf.secret_key_name || node?.name || "CREDENTIAL_ID";
                 const maskedVal = sf.secret_value_masked || "••••••••";
@@ -2752,7 +2795,7 @@ export const ThreatModelingView: React.FC = () => {
                       </span>
 
                       <div className="ml-auto flex items-center gap-1.5 flex-wrap">
-                        {canRevealSecrets && (
+                        {canRevealSecrets ? (
                           <button
                             type="button"
                             onClick={() => toggleRevealSecret(sf.id)}
@@ -2768,6 +2811,13 @@ export const ThreatModelingView: React.FC = () => {
                               </>
                             )}
                           </button>
+                        ) : (
+                          <span
+                            title="RBAC policy restricts raw credential reveal for the active user"
+                            className="px-2 py-1 rounded text-[10px] font-sans font-bold bg-slate-200 text-slate-800 border border-slate-300 inline-flex items-center gap-1"
+                          >
+                            <Lock className="w-3 h-3 text-slate-700" /> RBAC Masked
+                          </span>
                         )}
 
                         <button
