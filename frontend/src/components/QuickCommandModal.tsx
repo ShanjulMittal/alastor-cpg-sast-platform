@@ -59,6 +59,7 @@ export function QuickCommandModal() {
     setQuickCommandOpen,
     primaryStage,
     setPrimaryStage,
+    mapSubTab,
     setMapSubTab,
     setAspmSubSection,
     setExecutiveAspmTab,
@@ -150,7 +151,9 @@ export function QuickCommandModal() {
           "Interactive 360° Application Spider Map, AST/CFG/DFG, Attack Surface & Inter-Procedural Call Graphs",
         icon: <Network className="w-4 h-4 text-sky-700" />,
         badge:
-          primaryStage === "MAP_360_THREATS" ? "Active • Stage 3" : "Stage 3A",
+          primaryStage === "MAP_360_THREATS" && mapSubTab === "SPIDER_360"
+            ? "Active • Stage 3A"
+            : "Stage 3A",
         action: () => {
           setPrimaryStage("MAP_360_THREATS");
           setMapSubTab("SPIDER_360");
@@ -163,7 +166,42 @@ export function QuickCommandModal() {
         subtitle:
           "STRIDE Verdict Matrix (OK vs Issue), Trust Boundary Zones, CI/CD PBOM & Cryptographic Secret Vault",
         icon: <ShieldAlert className="w-4 h-4 text-rose-700" />,
-        badge: "Stage 3B",
+        badge:
+          primaryStage === "MAP_360_THREATS" && mapSubTab === "THREAT_BOUNDARIES"
+            ? "Active • Stage 3B"
+            : "Stage 3B",
+        action: () => {
+          setPrimaryStage("MAP_360_THREATS");
+          setMapSubTab("THREAT_BOUNDARIES");
+        },
+      },
+      {
+        id: "open-api-endpoints-operations-explorer",
+        category: "4-Stage Guided Workflow",
+        title: "Open API Endpoints & Operations Explorer",
+        subtitle:
+          "Inspect every HTTP route, plain-English operation story, inter-procedural DB/HTTP/AI/FS/Exec trace & ReactFlow canvas",
+        icon: <Compass className="w-4 h-4 text-emerald-700" />,
+        badge:
+          primaryStage === "MAP_360_THREATS" && mapSubTab === "API_OPERATIONS"
+            ? "Active • Stage 3C"
+            : "Stage 3C • API Ops",
+        action: () => {
+          setPrimaryStage("MAP_360_THREATS");
+          setMapSubTab("API_OPERATIONS");
+        },
+      },
+      {
+        id: "open-secret-keys-trufflehog-validator-vault",
+        category: "4-Stage Guided Workflow",
+        title: "Open Secret Keys & Live TruffleHog Validator Vault",
+        subtitle:
+          "Inspect leaked credentials across worktree & git history, toggle Offline Mode, and run live provider key verification",
+        icon: <KeyRound className="w-4 h-4 text-rose-700" />,
+        badge:
+          primaryStage === "MAP_360_THREATS" && mapSubTab === "THREAT_BOUNDARIES"
+            ? "Active • Stage 3B"
+            : "Stage 3B • Secret Vault",
         action: () => {
           setPrimaryStage("MAP_360_THREATS");
           setMapSubTab("THREAT_BOUNDARIES");
@@ -646,6 +684,7 @@ export function QuickCommandModal() {
     ],
     [
       primaryStage,
+      mapSubTab,
       activeOpenCount,
       findings,
       selectedFinding,

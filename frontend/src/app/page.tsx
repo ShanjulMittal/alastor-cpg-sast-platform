@@ -53,6 +53,7 @@ import {
   CheckCircle2,
   Zap,
   ExternalLink,
+  Compass,
 } from "lucide-react";
 
 // Dynamically import Monaco Editor and ReactFlow Canvas with SSR disabled
@@ -81,6 +82,22 @@ const ReactFlowGraphPane = dynamic(
       <div className="flex flex-col items-center justify-center h-full bg-[var(--surface-void)] text-[var(--ink-muted)] font-mono text-xs gap-2">
         <Loader2 className="w-5 h-5 animate-spin text-sky-700" />
         <span>Summoning ALASTOR CPG Sigil Canvas...</span>
+      </div>
+    ),
+  }
+);
+
+const ApiOperationsExplorerView = dynamic(
+  () =>
+    import("@/components/ApiOperationsExplorerView").then(
+      (mod) => mod.ApiOperationsExplorerView
+    ),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex flex-col items-center justify-center h-full bg-[var(--surface-void)] text-[var(--ink-muted)] font-mono text-xs gap-2">
+        <Loader2 className="w-5 h-5 animate-spin text-emerald-700" />
+        <span>Summoning ALASTOR API Endpoints &amp; Operations Explorer...</span>
       </div>
     ),
   }
@@ -196,6 +213,14 @@ export default function AuditPage() {
   const fetchTrackChanges = useAuditStore((s) => s.fetchTrackChanges);
   const fetchUserAccounts = useAuditStore((s) => s.fetchUserAccounts);
   const fetchAiConfigState = useAuditStore((s) => s.fetchAiConfigState);
+  const apiOperationsReport = useAuditStore((s) => s.apiOperationsReport);
+  const fetchSecretConfigState = useAuditStore((s) => s.fetchSecretConfigState);
+  const fetchSecretInventoryState = useAuditStore(
+    (s) => s.fetchSecretInventoryState
+  );
+  const fetchApiOperationsState = useAuditStore(
+    (s) => s.fetchApiOperationsState
+  );
 
   // Local UI state for Stage 1 Quick Scan bar, Stage 4 Rules/CVE sub-mode, and Export Center feedback
   const [quickScanTarget, setQuickScanTarget] = useState(projectPath);
@@ -234,6 +259,9 @@ export default function AuditPage() {
     fetchTrackChanges();
     fetchUserAccounts();
     void fetchAiConfigState();
+    void fetchSecretConfigState();
+    void fetchSecretInventoryState();
+    void fetchApiOperationsState();
   }, [
     hydrateUiPreferences,
     fetchFindings,
@@ -248,6 +276,9 @@ export default function AuditPage() {
     fetchTrackChanges,
     fetchUserAccounts,
     fetchAiConfigState,
+    fetchSecretConfigState,
+    fetchSecretInventoryState,
+    fetchApiOperationsState,
   ]);
 
   const handleEnterApp = (
@@ -689,9 +720,9 @@ export default function AuditPage() {
         {/* ================================================================ */}
         {primaryStage === "MAP_360_THREATS" && (
           <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
-            {/* Clean 2-Pill Sub-Navigation Bar */}
+            {/* Clean 3-Pill Sub-Navigation Bar */}
             <div className="px-4 py-2 bg-[var(--surface-panel)] border-b border-[var(--border-hairline)] flex items-center justify-between gap-2 flex-wrap shrink-0">
-              <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl border border-slate-300">
+              <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl border border-slate-300 flex-wrap">
                 <button
                   type="button"
                   onClick={() => setMapSubTab("SPIDER_360")}
@@ -717,6 +748,30 @@ export default function AuditPage() {
                   <ShieldAlert className="w-3.5 h-3.5" />
                   <span>Trust Boundaries, STRIDE &amp; PBOM</span>
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => setMapSubTab("API_OPERATIONS")}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+                    mapSubTab === "API_OPERATIONS"
+                      ? "bg-emerald-700 text-white shadow-sm"
+                      : "text-slate-700 hover:bg-white hover:text-slate-950"
+                  }`}
+                >
+                  <Compass className="w-3.5 h-3.5" />
+                  <span>API Endpoints &amp; Operations</span>
+                  {apiOperationsReport?.total_endpoints !== undefined && (
+                    <span
+                      className={`px-1.5 py-0.1 rounded text-[9px] font-mono font-extrabold ${
+                        mapSubTab === "API_OPERATIONS"
+                          ? "bg-emerald-800 text-white"
+                          : "bg-white text-slate-800 border border-slate-300"
+                      }`}
+                    >
+                      {apiOperationsReport.total_endpoints}
+                    </span>
+                  )}
+                </button>
               </div>
 
               <div className="flex items-center gap-2">
@@ -724,7 +779,72 @@ export default function AuditPage() {
                   type="button"
                   onClick={() => {
                     setAiDrawerOpen(true, "GRAPH");
-                    void explainCurrentGraphWithAi();
+                    if (mapSubTab === "API_OPERATIONS") {
+                      const rf = useAuditStore.getState().reactFlowInstance;
+                      const hasRfNodes =
+                        rf &&
+                        typeof rf.getNodes === "function" &&
+                        (rf.getNodes() || []).length > 0;
+                      const fallbackEp = apiOperationsReport?.endpoints?.[0];
+                      if (!hasRfNodes && fallbackEp) {
+                        const nodesDigest = (fallbackEp.flow_nodes || [])
+                          .slice(0, 40)
+                          .map((raw, idx) => {
+                            const d =
+                              raw.data && typeof raw.data === "object"
+                                ? raw.data
+                                : raw;
+                            return {
+                              id: String(
+                                raw.id || d.id || `${fallbackEp.id}-node-${idx + 1}`
+                              ),
+                              label: String(
+                                d.name ||
+                                  d.label ||
+                                  `${fallbackEp.method} ${fallbackEp.route_path}`
+                              ),
+                              type: String(d.category || d.label || "OPERATION"),
+                              code: String(d.code || ""),
+                              filepath: String(d.filepath || fallbackEp.filepath),
+                              start_line: Number(
+                                d.start_line || fallbackEp.start_line || 1
+                              ),
+                            };
+                          });
+                        const edgesDigest = (fallbackEp.flow_edges || [])
+                          .slice(0, 60)
+                          .map((rawEdge) => {
+                            const d =
+                              rawEdge.data && typeof rawEdge.data === "object"
+                                ? rawEdge.data
+                                : {};
+                            return {
+                              source: String(rawEdge.source || ""),
+                              target: String(rawEdge.target || ""),
+                              type: String(
+                                d.flowLabel ||
+                                  rawEdge.flow_label ||
+                                  d.edgeType ||
+                                  rawEdge.edge_type ||
+                                  rawEdge.type ||
+                                  "FLOW"
+                              ),
+                            };
+                          });
+                        void explainCurrentGraphWithAi({
+                          view_mode: "API_ENDPOINT_FLOW",
+                          finding_id: fallbackEp.linked_finding_ids?.[0] ?? null,
+                          nodes_digest: nodesDigest,
+                          edges_digest: edgesDigest,
+                        });
+                      } else {
+                        void explainCurrentGraphWithAi({
+                          view_mode: "API_ENDPOINT_FLOW",
+                        });
+                      }
+                    } else {
+                      void explainCurrentGraphWithAi();
+                    }
                   }}
                   className="px-3 py-1.5 rounded-lg bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm"
                 >
@@ -746,7 +866,9 @@ export default function AuditPage() {
             </div>
 
             <div className="flex-1 flex min-w-0 min-h-0 overflow-hidden">
-              {mapSubTab === "THREAT_BOUNDARIES" ? (
+              {mapSubTab === "API_OPERATIONS" ? (
+                <ApiOperationsExplorerView />
+              ) : mapSubTab === "THREAT_BOUNDARIES" ? (
                 <ThreatModelingView />
               ) : (
                 <ReactFlowGraphPane />

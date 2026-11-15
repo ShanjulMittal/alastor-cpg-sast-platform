@@ -364,7 +364,7 @@ export function FlawExplorerSidebar() {
           (n.filepath || "").toLowerCase().includes(query)
         );
         const matchesDetector = (f.secret_detector_id || "").toLowerCase().includes(query);
-        const matchesSecretStatus = (f.secret_validation_status || "").toLowerCase().includes(query);
+        const matchesValidationStatus = (f.secret_validation_status || "").toLowerCase().includes(query);
         const matchesCommit = (f.secret_commit_sha || "").toLowerCase().includes(query);
         const matchesIdentity = (f.secret_verified_identity || "").toLowerCase().includes(query);
         return (
@@ -375,7 +375,7 @@ export function FlawExplorerSidebar() {
           matchesLang ||
           matchesFile ||
           matchesDetector ||
-          matchesSecretStatus ||
+          matchesValidationStatus ||
           matchesCommit ||
           matchesIdentity
         );
