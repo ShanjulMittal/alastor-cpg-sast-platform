@@ -485,7 +485,7 @@ def test_fastapi_secret_routes_config_inventory_and_verify(tmp_path: Path):
             assert cfg_json["max_git_commits"] == 50
             assert cfg_json["supported_detectors_count"] == 14
 
-            # 2. POST /api/secrets/config
+            # 2. POST /api/secrets/config (changing max_git_commits invalidates _cached_findings)
             r_upd = client.post(
                 "/api/secrets/config",
                 json={"live_verification_enabled": False, "max_git_commits": 25},
@@ -494,6 +494,11 @@ def test_fastapi_secret_routes_config_inventory_and_verify(tmp_path: Path):
             upd_json = r_upd.json()
             assert upd_json["live_verification_enabled"] is False
             assert upd_json["max_git_commits"] == 25
+            assert main._cached_findings is None
+
+            # Re-seed synthetic in-memory cache for route inventory & live-verify assertions
+            main._cached_findings = [f_live, f_test]
+            main._cached_findings_time = time.time()
 
             # 3. GET /api/secrets/inventory
             r_inv = client.get("/api/secrets/inventory")
@@ -525,3 +530,242 @@ def test_fastapi_secret_routes_config_inventory_and_verify(tmp_path: Path):
         main._cached_findings = prev_cached
         main._cached_findings_time = prev_cached_time
         main.current_scan_dir = prev_scan_dir
+
+
+def test_toggle_scan_git_history_invalidates_cached_findings_via_api(tmp_path: Path):
+    import main
+    from engine.secret_validator_engine import SecretValidatorEngine
+    from models import SecretScannerConfigUpdate
+
+    repo_dir = tmp_path / "git_toggle_repo"
+    repo_dir.mkdir()
+
+    git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    subprocess.run(["git", "-C", str(repo_dir), "init"], check=True, capture_output=True, env=git_env)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "secops@corp.local"], check=True, capture_output=True, env=git_env)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Dana Auditor"], check=True, capture_output=True, env=git_env)
+
+    gl_hist_tok = "glpat-" + "Mm11Nn22Bb33Vv44Cc55"
+    hf_tree_tok = "hf_" + ("QrStUvWxYzAbCdEfG" * 2)
+    assert len(hf_tree_tok) == 37
+
+    settings_py = repo_dir / "settings.py"
+    settings_py.write_text(
+        f'GITLAB_TOKEN_VAL = "{gl_hist_tok}"\nHF_TOKEN_VAL = "{hf_tree_tok}"\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True, capture_output=True, env=git_env)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-m", "Initial commit with two tokens"], check=True, capture_output=True, env=git_env)
+
+    # Remove GitLab token from working tree in second commit so it exists ONLY in .git history
+    settings_py.write_text(f'HF_TOKEN_VAL = "{hf_tree_tok}"\n', encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "settings.py"], check=True, capture_output=True, env=git_env)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-m", "Remove GitLab token from working tree"], check=True, capture_output=True, env=git_env)
+
+    iso_eng = SecretValidatorEngine(platform_root=str(tmp_path))
+    iso_eng.update_config(
+        SecretScannerConfigUpdate(
+            live_verification_enabled=False,
+            scan_git_history=True,
+            max_git_commits=50,
+        )
+    )
+
+    prev_cached = main._cached_findings
+    prev_cached_time = main._cached_findings_time
+    prev_scan_dir = main.current_scan_dir
+    prev_active_user = main.enterprise_mgr.active_user_id
+    try:
+        main.current_scan_dir = str(repo_dir)
+        main._cached_findings = None
+        main._cached_findings_time = 0.0
+        main.enterprise_mgr.active_user_id = "usr-architect"
+
+        with (
+            patch.object(main, "secret_validator_engine", iso_eng),
+            patch.object(main.RuleExecutor, "run_all_rules", return_value=[]),
+            TestClient(main.app) as client,
+        ):
+            # 1. Initial GET /api/secrets/inventory & GET /api/findings include GIT_HISTORY
+            inv_on = client.get("/api/secrets/inventory").json()
+            findings_on = client.get("/api/findings").json()
+            assert main._cached_findings is not None
+            assert inv_on["git_history_count"] == 1
+            assert any(s["secret_source"] == "GIT_HISTORY" for s in inv_on["secrets"])
+            assert any(f.get("secret_source") == "GIT_HISTORY" for f in findings_on)
+            assert any(s["secret_source"] == "WORKING_TREE" for s in inv_on["secrets"])
+
+            # Updating only live_verification_enabled does NOT wipe _cached_findings
+            r_live_only = client.post("/api/secrets/config", json={"live_verification_enabled": False})
+            assert r_live_only.status_code == 200
+            assert main._cached_findings is not None
+
+            # 2. Toggle scan_git_history -> False WITHOUT calling POST /api/scan
+            r_off = client.post("/api/secrets/config", json={"scan_git_history": False})
+            assert r_off.status_code == 200
+            assert r_off.json()["scan_git_history"] is False
+            assert main._cached_findings is None
+
+            inv_off = client.get("/api/secrets/inventory").json()
+            findings_off = client.get("/api/findings").json()
+            assert inv_off["git_history_count"] == 0
+            assert not any(s["secret_source"] == "GIT_HISTORY" for s in inv_off["secrets"])
+            assert not any(f.get("secret_source") == "GIT_HISTORY" for f in findings_off)
+            assert any(s["secret_source"] == "WORKING_TREE" for s in inv_off["secrets"])
+
+            # 3. Toggle scan_git_history -> True WITHOUT calling POST /api/scan
+            r_reenable = client.post("/api/secrets/config", json={"scan_git_history": True})
+            assert r_reenable.status_code == 200
+            assert r_reenable.json()["scan_git_history"] is True
+            assert main._cached_findings is None
+
+            inv_back = client.get("/api/secrets/inventory").json()
+            findings_back = client.get("/api/findings").json()
+            assert inv_back["git_history_count"] == 1
+            assert any(s["secret_source"] == "GIT_HISTORY" for s in inv_back["secrets"])
+            assert any(f.get("secret_source") == "GIT_HISTORY" for f in findings_back)
+    finally:
+        main._cached_findings = prev_cached
+        main._cached_findings_time = prev_cached_time
+        main.current_scan_dir = prev_scan_dir
+        main.enterprise_mgr.active_user_id = prev_active_user
+
+
+def test_rbac_secret_value_raw_redaction_and_live_verify_preservation(tmp_path: Path):
+    import main
+    from engine.secret_validator_engine import SecretValidatorEngine
+    from models import BestFixLocation, Finding
+
+    iso_eng = SecretValidatorEngine(platform_root=str(tmp_path))
+    sg_tok = "SG." + ("Zx8Cv6" + "Bn4Mq2Wp9" + "Lk7Jh3") + "." + ("Rt5Yu7Io9Pa" * 4)[:43]
+    masked_display = f"{sg_tok[:4]}••••••••{sg_tok[-4:]}"
+
+    f_secret = Finding(
+        id="SEC-RBAC-SG-1",
+        rule_id="RULE-8-HARDCODED-SECRET",
+        severity="HIGH",
+        title="Exposed SendGrid Credential",
+        description="SendGrid token in notify.py",
+        cwe_id="CWE-798",
+        is_secret_finding=True,
+        secret_key_name="NOTIFY_SG_CRED",
+        secret_value_raw=sg_tok,
+        secret_value_masked=masked_display,
+        secret_validation_status="OFFLINE_STRUCTURALLY_VALID",
+        secret_detector_id="sendgrid_key",
+        secret_source="WORKING_TREE",
+        path_nodes=[
+            {
+                "id": "n-rbac-1",
+                "label": "Assignment",
+                "name": "NOTIFY_SG_CRED",
+                "code": "NOTIFY_SG_CRED = '...'",
+                "filepath": "notify.py",
+                "start_line": 7,
+                "end_line": 7,
+            }
+        ],
+        path_edges=[],
+        best_fix_location=BestFixLocation(
+            node_id="n-rbac-1",
+            filepath="notify.py",
+            line=7,
+            column=0,
+            code_snippet="NOTIFY_SG_CRED = '...'",
+            explanation="Move credential to vault",
+            recommended_fix="os.getenv('NOTIFY_SG_CRED')",
+        ),
+    )
+
+    def _sg_live_fn(req: urllib.request.Request, timeout: float):
+        assert req.full_url == "https://api.sendgrid.com/v3/scopes"
+        assert req.get_header("Authorization") == f"Bearer {sg_tok}"
+        return _MockHttpResponse(200, {"scopes": ["mail.send"]})
+
+    mock_opener = _MockOpener(_sg_live_fn)
+
+    prev_cached = main._cached_findings
+    prev_cached_time = main._cached_findings_time
+    prev_scan_dir = main.current_scan_dir
+    prev_active_user = main.enterprise_mgr.active_user_id
+    prev_active_account = main.enterprise_mgr.active_account_id
+    prev_active_preset = main.enterprise_mgr.active_preset_id
+    prev_users = [u.model_copy(deep=True) for u in main.enterprise_mgr.user_profiles]
+    prev_audit_log = list(main.enterprise_mgr.account_audit_log)
+    try:
+        main.current_scan_dir = str(tmp_path)
+        main._cached_findings = [f_secret]
+        main._cached_findings_time = time.time()
+
+        with (
+            patch.object(main, "secret_validator_engine", iso_eng),
+            patch.object(iso_eng, "_build_http_opener", return_value=mock_opener),
+            patch.object(main.enterprise_mgr, "_save_persisted_state", return_value=None),
+            TestClient(main.app) as client,
+        ):
+            # 1. Authorized admin/architect session (can_reveal_secrets == True)
+            r_sw_admin = client.post("/api/accounts/switch", json={"user_id": "usr-architect"})
+            assert r_sw_admin.status_code == 200
+            assert main.enterprise_mgr.active_user_can_reveal_secrets() is True
+
+            admin_findings = client.get("/api/findings").json()
+            admin_inv = client.get("/api/secrets/inventory").json()
+            f_admin = next(f for f in admin_findings if f["id"] == "SEC-RBAC-SG-1")
+            s_admin = next(s for s in admin_inv["secrets"] if s["id"] == "SEC-RBAC-SG-1")
+            assert f_admin["secret_value_raw"] == sg_tok
+            assert s_admin["secret_value_raw"] == sg_tok
+
+            # 2. Switch to restricted developer profile (can_reveal_secrets == False)
+            r_sw_dev = client.post("/api/accounts/switch", json={"user_id": "usr-developer"})
+            assert r_sw_dev.status_code == 200
+            assert main.enterprise_mgr.active_user_can_reveal_secrets() is False
+
+            dev_findings = client.get("/api/findings").json()
+            dev_inv = client.get("/api/secrets/inventory").json()
+            f_dev = next(f for f in dev_findings if f["id"] == "SEC-RBAC-SG-1")
+            s_dev = next(s for s in dev_inv["secrets"] if s["id"] == "SEC-RBAC-SG-1")
+            assert f_dev["secret_value_raw"] is None
+            assert f_dev["secret_value_masked"] == masked_display
+            assert s_dev["secret_value_raw"] is None
+            assert s_dev["secret_value_masked"] == masked_display
+
+            # Live verification STILL works using in-memory raw secret while redacting HTTP output
+            r_ver_dev = client.post(
+                "/api/secrets/verify",
+                json={"finding_ids": ["SEC-RBAC-SG-1"], "force_refresh": True, "allow_live_network": True},
+            )
+            assert r_ver_dev.status_code == 200
+            ver_dev_json = r_ver_dev.json()
+            assert len(mock_opener.calls) == 1
+            s_ver_dev = next(s for s in ver_dev_json["secrets"] if s["id"] == "SEC-RBAC-SG-1")
+            assert s_ver_dev["secret_validation_status"] == "VERIFIED_ACTIVE"
+            assert s_ver_dev["severity"] == "CRITICAL"
+            assert s_ver_dev["secret_value_raw"] is None
+            assert s_ver_dev["secret_value_masked"] == masked_display
+
+            # In-memory _cached_findings was NEVER mutated to None
+            assert main._cached_findings is not None
+            assert main._cached_findings[0].secret_value_raw == sg_tok
+
+            # 3. Switch back to authorized architect profile -> raw value immediately restored
+            r_sw_back = client.post("/api/accounts/switch", json={"user_id": "usr-architect"})
+            assert r_sw_back.status_code == 200
+            assert main.enterprise_mgr.active_user_can_reveal_secrets() is True
+
+            restored_findings = client.get("/api/findings").json()
+            restored_inv = client.get("/api/secrets/inventory").json()
+            f_restored = next(f for f in restored_findings if f["id"] == "SEC-RBAC-SG-1")
+            s_restored = next(s for s in restored_inv["secrets"] if s["id"] == "SEC-RBAC-SG-1")
+            assert f_restored["secret_value_raw"] == sg_tok
+            assert f_restored["secret_validation_status"] == "VERIFIED_ACTIVE"
+            assert s_restored["secret_value_raw"] == sg_tok
+            assert s_restored["secret_validation_status"] == "VERIFIED_ACTIVE"
+    finally:
+        main._cached_findings = prev_cached
+        main._cached_findings_time = prev_cached_time
+        main.current_scan_dir = prev_scan_dir
+        main.enterprise_mgr.active_user_id = prev_active_user
+        main.enterprise_mgr.active_account_id = prev_active_account
+        main.enterprise_mgr.active_preset_id = prev_active_preset
+        main.enterprise_mgr.user_profiles = prev_users
+        main.enterprise_mgr.account_audit_log = prev_audit_log

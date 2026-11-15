@@ -3177,6 +3177,16 @@ class EnterpriseManager:
             audit_log=_normalized_log,
         )
 
+    def active_user_can_reveal_secrets(self) -> bool:
+        """Returns whether the active RBAC user profile has `can_reveal_secrets` clearance."""
+        active_usr = next(
+            (u for u in self.user_profiles if u.id == self.active_user_id),
+            None,
+        )
+        if active_usr is None:
+            active_usr = next((u for u in self.user_profiles if u.is_active), None)
+        return bool(active_usr.can_reveal_secrets) if active_usr is not None else True
+
     def create_account(self, req: CreateAccountRequest) -> UserAccountsStateResponse:
         _slug = re.sub(r"[^a-z0-9]+", "-", req.name.lower()).strip("-") or "org"
         _aid = f"acct-{_slug}-{len(self.accounts) + 1}"

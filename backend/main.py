@@ -1736,6 +1736,16 @@ def get_or_compute_findings(force_refresh: bool = False) -> List[Finding]:
     return enterprise_mgr.enrich_findings(combined)
 
 
+def _redact_findings_for_active_rbac(findings: List[Finding]) -> List[Finding]:
+    """Redacts `secret_value_raw` on shallow copies when the active RBAC profile lacks `can_reveal_secrets`."""
+    if enterprise_mgr.active_user_can_reveal_secrets():
+        return findings
+    return [
+        f.model_copy(update={"secret_value_raw": None}) if f.secret_value_raw is not None else f
+        for f in findings
+    ]
+
+
 @app.get("/api/findings", response_model=List[Finding])
 def get_findings(include_suppressed: bool = Query(True), project_path: Optional[str] = Query(None)):
     """Runs all deterministic SAST, SCA, and IaC rules and merges any active site-extracted code findings."""
@@ -1747,12 +1757,12 @@ def get_findings(include_suppressed: bool = Query(True), project_path: Optional[
             if _cached_p and isinstance(_cached_p.get("latest_findings"), list):
                 _proj_f = enterprise_mgr.enrich_findings([Finding(**f) for f in _cached_p["latest_findings"]])
                 if not include_suppressed:
-                    return [f for f in _proj_f if f.triage_status != "NOT_EXPLOITABLE"]
-                return _proj_f
+                    _proj_f = [f for f in _proj_f if f.triage_status != "NOT_EXPLOITABLE"]
+                return _redact_findings_for_active_rbac(_proj_f)
     all_f = get_or_compute_findings()
     if not include_suppressed:
-        return [f for f in all_f if f.triage_status != "NOT_EXPLOITABLE"]
-    return all_f
+        all_f = [f for f in all_f if f.triage_status != "NOT_EXPLOITABLE"]
+    return _redact_findings_for_active_rbac(all_f)
 
 
 @app.get("/api/findings/{finding_id}/artifacts")
@@ -3484,7 +3494,7 @@ def update_finding_triage_status(finding_id: str, req: TriageUpdateRequest):
 
     updated = enterprise_mgr.update_finding_triage(target, req)
     enterprise_mgr._sync_active_project_metrics(get_or_compute_findings())
-    return updated
+    return _redact_findings_for_active_rbac([updated])[0]
 
 
 # ===========================================================================
@@ -4013,13 +4023,23 @@ def get_secret_scanner_config():
 @app.post("/api/secrets/config", response_model=SecretScannerConfig)
 def update_secret_scanner_config(req: SecretScannerConfigUpdate):
     """Updates Live Verification / Offline Mode and Git-History Hunter configuration in `.alastor_vault`."""
-    return secret_validator_engine.update_config(req)
+    global _cached_findings, _cached_findings_time
+    prev = secret_validator_engine.get_config()
+    updated = secret_validator_engine.update_config(req)
+    if (
+        updated.scan_git_history != prev.scan_git_history
+        or updated.max_git_commits != prev.max_git_commits
+    ):
+        with _findings_lock:
+            _cached_findings = None
+            _cached_findings_time = 0.0
+    return updated
 
 
 @app.get("/api/secrets/inventory", response_model=SecretInventoryResponse)
 def get_secret_inventory():
     """Returns all active working-tree and git-history secret findings with validation breakdowns."""
-    findings = get_or_compute_findings()
+    findings = _redact_findings_for_active_rbac(get_or_compute_findings())
     return secret_validator_engine.build_inventory_response(findings)
 
 
@@ -4047,7 +4067,7 @@ def verify_secret_findings(req: SecretVerifyRequest):
                 allow_live=req.allow_live_network,
                 force_refresh=req.force_refresh,
             )
-    refreshed = get_or_compute_findings(force_refresh=False)
+    refreshed = _redact_findings_for_active_rbac(get_or_compute_findings(force_refresh=False))
     return secret_validator_engine.build_inventory_response(refreshed)
 
 

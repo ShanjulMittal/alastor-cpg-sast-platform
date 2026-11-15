@@ -2612,7 +2612,21 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       });
       if (res.ok) {
         const data: UserAccountsStateResponse = await res.json();
-        set({ userAccountsState: data });
+        const activeUser = data.users.find((u) => u.id === data.active_user_id) || data.users[0];
+        set((state) => ({
+          userAccountsState: data,
+          activeOperator: activeUser
+            ? {
+                name: activeUser.name,
+                role: `${activeUser.title} (${activeUser.account_name})`,
+                email: activeUser.email,
+              }
+            : state.activeOperator,
+        }));
+        await Promise.all([
+          get().fetchFindings(),
+          get().fetchSecretInventoryState(),
+        ]);
       }
     } catch (err) {
       console.error("Failed to create user profile:", err);
@@ -2643,6 +2657,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchPlatformSettings(),
           get().fetchProjects(),
           get().fetchFindings(),
+          get().fetchSecretInventoryState(),
         ]);
       }
     } catch (err) {
@@ -3002,13 +3017,24 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           ? { secretInventory: { ...state.secretInventory, config: cfg } }
           : {}),
       }));
+      const gitHistoryChanged =
+        payload.scan_git_history !== undefined ||
+        payload.max_git_commits !== undefined;
       if (
         payload.live_verification_enabled !== undefined &&
         payload.live_verification_enabled !== null
       ) {
         await get().verifySecretsLive([], false);
+        if (gitHistoryChanged) {
+          await get().fetchFindings();
+        }
+      } else if (gitHistoryChanged) {
+        await Promise.all([
+          get().fetchFindings(),
+          get().fetchSecretInventoryState(),
+        ]);
       } else {
-        void get().fetchSecretInventoryState();
+        await get().fetchSecretInventoryState();
       }
       return cfg;
     } catch (err) {
