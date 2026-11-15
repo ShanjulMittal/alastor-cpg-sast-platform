@@ -49,6 +49,10 @@ import {
   AiPatchSynthesisResponse,
   AiGraphExplainPayload,
   AiGraphExplainResponse,
+  SecretScannerConfig,
+  SecretScannerConfigUpdate,
+  SecretInventoryResponse,
+  ApiOperationsReportResponse,
 } from "@/types/cpg";
 import {
   BACKEND_URL,
@@ -61,6 +65,11 @@ import {
   synthesizePatchWithAi,
   explainGraphWithAi,
   batchApplyRemediations,
+  fetchSecretScannerConfig,
+  updateSecretScannerConfig,
+  fetchSecretInventory,
+  verifySecrets,
+  fetchApiOperationsReport,
 } from "@/lib/api";
 
 export const UI_PREFS_STORAGE_KEY = "alastor_ui_prefs_v4";
@@ -112,6 +121,43 @@ function persistUiPrefs(getState: () => AuditState, force = false): void {
     };
     localStorage.setItem(UI_PREFS_STORAGE_KEY, JSON.stringify(payload));
   } catch {}
+}
+
+function mergeSecretFindingsIntoStore(
+  currentFindings: Finding[],
+  currentSelected: Finding | null,
+  inventorySecrets: Finding[]
+): { findings: Finding[]; selectedFinding: Finding | null } {
+  if (!Array.isArray(inventorySecrets) || inventorySecrets.length === 0) {
+    return { findings: currentFindings, selectedFinding: currentSelected };
+  }
+  const secretById = new Map<string, Finding>();
+  for (const s of inventorySecrets) {
+    if (s && s.id) {
+      secretById.set(s.id, s);
+    }
+  }
+  let nextFindings = currentFindings;
+  if (currentFindings.length > 0) {
+    const seenIds = new Set<string>();
+    const updated = currentFindings.map((f) => {
+      seenIds.add(f.id);
+      const refreshed = secretById.get(f.id);
+      return refreshed ? { ...f, ...refreshed } : f;
+    });
+    for (const s of inventorySecrets) {
+      if (s && s.id && !seenIds.has(s.id)) {
+        updated.push(s);
+        seenIds.add(s.id);
+      }
+    }
+    nextFindings = updated;
+  }
+  const nextSelected =
+    currentSelected && secretById.has(currentSelected.id)
+      ? { ...currentSelected, ...(secretById.get(currentSelected.id) as Finding) }
+      : currentSelected;
+  return { findings: nextFindings, selectedFinding: nextSelected };
 }
 
 interface AuditState {
@@ -205,6 +251,13 @@ interface AuditState {
   trackChanges: TrackChangesSummary | null;
   isTrackChangesMode: boolean;
   isTrackChangesPanelOpen: boolean;
+
+  // Native TruffleHog-Grade Secret Scanner & Live Key Validator + API Operations State
+  secretScannerConfig: SecretScannerConfig | null;
+  secretInventory: SecretInventoryResponse | null;
+  isVerifyingSecrets: boolean;
+  apiOperationsReport: ApiOperationsReportResponse | null;
+  isLoadingApiOperations: boolean;
 
   // UI Simplicity, Layout & Command Palette State
   uiDensityMode: "SIMPLE_CLEAN" | "PRO_DETAILED";
@@ -429,6 +482,18 @@ interface AuditState {
     searchQuery?: string;
   }) => Promise<SiteExtractResponse | null>;
   exportAuditReport: (format: "markdown" | "json" | "sarif") => Promise<void>;
+  fetchSecretConfigState: () => Promise<SecretScannerConfig | null>;
+  saveSecretConfigState: (
+    payload: SecretScannerConfigUpdate
+  ) => Promise<SecretScannerConfig | null>;
+  fetchSecretInventoryState: () => Promise<SecretInventoryResponse | null>;
+  verifySecretsLive: (
+    findingIds?: string[],
+    forceRefresh?: boolean
+  ) => Promise<SecretInventoryResponse | null>;
+  fetchApiOperationsState: (
+    projectPath?: string
+  ) => Promise<ApiOperationsReportResponse | null>;
   triggerScan: (
     targetPath?: string,
     options?: GitRepoScanOptions
@@ -515,6 +580,12 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   trackChanges: null,
   isTrackChangesMode: true,
   isTrackChangesPanelOpen: false,
+
+  secretScannerConfig: null,
+  secretInventory: null,
+  isVerifyingSecrets: false,
+  apiOperationsReport: null,
+  isLoadingApiOperations: false,
 
   uiDensityMode: "SIMPLE_CLEAN",
   ideLayoutMode: "SPLIT_BOTH",
@@ -610,13 +681,21 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
     if (stage === "MAP_360_THREATS") {
       const sub = get().mapSubTab;
-      if (sub === "THREAT_BOUNDARIES") {
+      if (sub === "API_OPERATIONS") {
+        set({
+          primaryStage: "MAP_360_THREATS",
+        });
+        persistUiPrefs(get);
+        void get().fetchApiOperationsState();
+        get().fetchTrackChanges();
+      } else if (sub === "THREAT_BOUNDARIES") {
         set({
           primaryStage: "MAP_360_THREATS",
           workspaceViewMode: "THREAT_MODELING",
         });
         persistUiPrefs(get);
         get().fetchSastPlusSuite();
+        void get().fetchSecretInventoryState();
         get().fetchTrackChanges();
       } else {
         set({
@@ -712,6 +791,15 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   },
 
   setMapSubTab: (subTab: MapSubTab) => {
+    if (subTab === "API_OPERATIONS") {
+      set({
+        mapSubTab: "API_OPERATIONS",
+        primaryStage: "MAP_360_THREATS",
+      });
+      persistUiPrefs(get);
+      void get().fetchApiOperationsState();
+      return;
+    }
     if (subTab === "THREAT_BOUNDARIES") {
       set({
         mapSubTab: "THREAT_BOUNDARIES",
@@ -720,6 +808,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       });
       persistUiPrefs(get);
       get().fetchSastPlusSuite();
+      void get().fetchSecretInventoryState();
     } else {
       set({
         mapSubTab: "SPIDER_360",
@@ -1393,6 +1482,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchDeepDiveAnalytics(),
           get().fetchRaciGovernance(),
           get().fetchSastPlusSuite(),
+          get().fetchSecretInventoryState(),
+          get().fetchApiOperationsState(),
         ]);
         return data;
       }
@@ -1443,6 +1534,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchDeepDiveAnalytics(),
           get().fetchRaciGovernance(),
           get().fetchSastPlusSuite(),
+          get().fetchSecretInventoryState(),
+          get().fetchApiOperationsState(),
         ]);
         const currentSelected = get().selectedFinding;
         if (currentSelected) {
@@ -1506,6 +1599,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         get().fetchDeepDiveAnalytics(),
         get().fetchRaciGovernance(),
         get().fetchSastPlusSuite(),
+        get().fetchSecretInventoryState(),
+        get().fetchApiOperationsState(),
       ]);
       return res;
     } catch (err: any) {
@@ -1560,7 +1655,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
         if (
           parsed.mapSubTab &&
-          ["SPIDER_360", "THREAT_BOUNDARIES"].includes(parsed.mapSubTab)
+          ["SPIDER_360", "THREAT_BOUNDARIES", "API_OPERATIONS"].includes(parsed.mapSubTab)
         ) {
           updates.mapSubTab = parsed.mapSubTab;
         }
@@ -1676,6 +1771,9 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     } finally {
       _hasHydratedUiPrefs = true;
       persistUiPrefs(get, true);
+      void get().fetchSecretConfigState();
+      void get().fetchSecretInventoryState();
+      void get().fetchApiOperationsState();
     }
   },
 
@@ -2146,6 +2244,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
                 get().fetchRaciGovernance(),
                 get().fetchSastPlusSuite(),
                 get().fetchTrackChanges(),
+                get().fetchSecretInventoryState(),
+                get().fetchApiOperationsState(proj.target_path),
               ]
             : []),
         ]);
@@ -2254,6 +2354,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchRaciGovernance(),
           get().fetchSastPlusSuite(),
           get().fetchTrackChanges(),
+          get().fetchSecretInventoryState(),
+          get().fetchApiOperationsState(proj.target_path),
         ]);
       }
     } catch (err) {
@@ -2306,6 +2408,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchAppTree(),
           get().fetchDeepDiveAnalytics(),
           get().fetchTrackChanges(),
+          get().fetchSecretInventoryState(),
+          get().fetchApiOperationsState(),
         ]);
       }
     } catch (err) {
@@ -2878,6 +2982,114 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     }
   },
 
+  fetchSecretConfigState: async () => {
+    try {
+      const cfg = await fetchSecretScannerConfig();
+      set((state) => ({
+        secretScannerConfig: cfg,
+        ...(state.secretInventory
+          ? { secretInventory: { ...state.secretInventory, config: cfg } }
+          : {}),
+      }));
+      return cfg;
+    } catch (err) {
+      console.error("Failed to fetch secret scanner config:", err);
+      return null;
+    }
+  },
+
+  saveSecretConfigState: async (payload: SecretScannerConfigUpdate) => {
+    try {
+      const cfg = await updateSecretScannerConfig(payload);
+      set((state) => ({
+        secretScannerConfig: cfg,
+        ...(state.secretInventory
+          ? { secretInventory: { ...state.secretInventory, config: cfg } }
+          : {}),
+      }));
+      if (
+        payload.live_verification_enabled !== undefined &&
+        payload.live_verification_enabled !== null
+      ) {
+        await get().verifySecretsLive([], false);
+      } else {
+        void get().fetchSecretInventoryState();
+      }
+      return cfg;
+    } catch (err) {
+      console.error("Failed to update secret scanner config:", err);
+      return null;
+    }
+  },
+
+  fetchSecretInventoryState: async () => {
+    try {
+      const inv = await fetchSecretInventory();
+      set((state) => {
+        const merged = mergeSecretFindingsIntoStore(
+          state.findings,
+          state.selectedFinding,
+          inv.secrets || []
+        );
+        return {
+          secretInventory: inv,
+          secretScannerConfig: inv.config || state.secretScannerConfig,
+          findings: merged.findings,
+          selectedFinding: merged.selectedFinding,
+        };
+      });
+      return inv;
+    } catch (err) {
+      console.error("Failed to fetch secret inventory:", err);
+      return null;
+    }
+  },
+
+  verifySecretsLive: async (findingIds?: string[], forceRefresh = true) => {
+    set({ isVerifyingSecrets: true });
+    try {
+      const inv = await verifySecrets({
+        finding_ids: findingIds ?? [],
+        force_refresh: forceRefresh,
+      });
+      set((state) => {
+        const merged = mergeSecretFindingsIntoStore(
+          state.findings,
+          state.selectedFinding,
+          inv.secrets || []
+        );
+        return {
+          isVerifyingSecrets: false,
+          secretInventory: inv,
+          secretScannerConfig: inv.config || state.secretScannerConfig,
+          findings: merged.findings,
+          selectedFinding: merged.selectedFinding,
+        };
+      });
+      return inv;
+    } catch (err) {
+      console.error("Failed to verify secrets:", err);
+      set({ isVerifyingSecrets: false });
+      return null;
+    }
+  },
+
+  fetchApiOperationsState: async (projectPath?: string) => {
+    set({ isLoadingApiOperations: true });
+    try {
+      const report = await fetchApiOperationsReport(projectPath);
+      set({
+        apiOperationsReport: report,
+        isLoadingApiOperations: false,
+      });
+      return report;
+    } catch (err) {
+      console.error("Failed to fetch API operations report:", err);
+      set({ isLoadingApiOperations: false });
+      return null;
+    }
+  },
+
   triggerScan: async (targetPath?: string, options?: GitRepoScanOptions) => {
     const path = (targetPath || get().projectPath || "").trim();
     if (!path) {
@@ -2960,6 +3172,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchRaciGovernance(),
           get().fetchSastPlusSuite(),
           get().fetchTrackChanges(),
+          get().fetchSecretInventoryState(),
+          get().fetchApiOperationsState(scanData.project_path || path),
         ]);
         return { ok: true, response: scanData };
       } else {

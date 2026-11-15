@@ -7,9 +7,14 @@ import {
   AiPatchSynthesisResponse,
   AiPublicConfig,
   AiValidateFindingsResponse,
+  ApiOperationsReportResponse,
   BatchRemediateResponse,
   GraphDataResponse,
   GraphViewMode,
+  SecretInventoryResponse,
+  SecretScannerConfig,
+  SecretScannerConfigUpdate,
+  SecretVerifyRequestPayload,
 } from "@/types/cpg";
 
 export const BACKEND_URL =
@@ -205,4 +210,50 @@ export async function batchApplyRemediations(
     method: "POST",
     body: JSON.stringify({ finding_ids }),
   });
+}
+
+export async function fetchSecretScannerConfig(): Promise<SecretScannerConfig> {
+  return apiFetchJson<SecretScannerConfig>("/api/secrets/config");
+}
+
+export async function updateSecretScannerConfig(
+  payload: SecretScannerConfigUpdate
+): Promise<SecretScannerConfig> {
+  return apiFetchJson<SecretScannerConfig>("/api/secrets/config", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchSecretInventory(): Promise<SecretInventoryResponse> {
+  return apiFetchJson<SecretInventoryResponse>("/api/secrets/inventory");
+}
+
+export async function verifySecrets(
+  payload?: SecretVerifyRequestPayload
+): Promise<SecretInventoryResponse> {
+  const body = {
+    finding_ids: payload?.finding_ids ?? [],
+    force_refresh: Boolean(payload?.force_refresh),
+    ...(payload?.allow_live_network !== undefined
+      ? { allow_live_network: payload.allow_live_network }
+      : {}),
+  };
+  return apiFetchJson<SecretInventoryResponse>("/api/secrets/verify", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function fetchApiOperationsReport(
+  projectPath?: string | null
+): Promise<ApiOperationsReportResponse> {
+  const qs = new URLSearchParams();
+  if (projectPath && projectPath.trim()) {
+    qs.set("project_path", projectPath.trim());
+  }
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return apiFetchJson<ApiOperationsReportResponse>(
+    `/api/endpoints/operations${suffix}`
+  );
 }

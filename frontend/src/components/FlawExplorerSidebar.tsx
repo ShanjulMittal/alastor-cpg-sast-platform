@@ -2,7 +2,12 @@
 
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { useAuditStore } from "@/store/useAuditStore";
-import { Finding, DirectoryTreeNode, ExtractedAdvisory } from "@/types/cpg";
+import {
+  Finding,
+  DirectoryTreeNode,
+  ExtractedAdvisory,
+  SecretValidationStatus,
+} from "@/types/cpg";
 import {
   Flame,
   ShieldAlert,
@@ -39,7 +44,46 @@ import {
   RotateCcw,
   Zap,
   Download,
+  RefreshCw,
+  GitCommit,
 } from "lucide-react";
+
+function getSecretValidationBadgeMeta(
+  status?: SecretValidationStatus | string | null
+): { label: string; className: string } {
+  switch (status) {
+    case "VERIFIED_ACTIVE":
+      return {
+        label: "● LIVE ACTIVE KEY",
+        className: "bg-rose-100 text-rose-900 border-rose-400",
+      };
+    case "REVOKED_OR_INVALID":
+      return {
+        label: "✓ REVOKED / INACTIVE",
+        className: "bg-emerald-50 text-emerald-900 border-emerald-300",
+      };
+    case "OFFLINE_STRUCTURALLY_VALID":
+      return {
+        label: "◆ STRUCTURALLY VALID",
+        className: "bg-amber-100 text-amber-950 border-amber-400",
+      };
+    case "TEST_OR_PLACEHOLDER":
+      return {
+        label: "○ TEST / MOCK KEY",
+        className: "bg-slate-100 text-slate-800 border-slate-300",
+      };
+    case "VERIFICATION_ERROR":
+      return {
+        label: "! VERIFY TIMEOUT",
+        className: "bg-orange-50 text-orange-900 border-orange-300",
+      };
+    default:
+      return {
+        label: "◆ STRUCTURALLY VALID",
+        className: "bg-amber-100 text-amber-950 border-amber-400",
+      };
+  }
+}
 
 function formatAiPct(confidence: number): number {
   if (typeof confidence !== "number" || Number.isNaN(confidence)) return 0;
@@ -153,7 +197,10 @@ export function FlawExplorerSidebar() {
   const setActiveEngineFilter = useAuditStore((s) => s.setActiveEngineFilter);
   const filterSecretsOnly = useAuditStore((s) => s.filterSecretsOnly);
   const setFilterSecretsOnly = useAuditStore((s) => s.setFilterSecretsOnly);
+  const verifySecretsLive = useAuditStore((s) => s.verifySecretsLive);
+  const isVerifyingSecrets = useAuditStore((s) => s.isVerifyingSecrets);
   const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>({});
+  const [verifyingSecretId, setVerifyingSecretId] = useState<string | null>(null);
 
   const appTree = useAuditStore((s) => s.appTree);
   const selectedTreeFile = useAuditStore((s) => s.selectedTreeFile);
@@ -297,13 +344,21 @@ export function FlawExplorerSidebar() {
         const matchesFile = (f.path_nodes || []).some((n) =>
           (n.filepath || "").toLowerCase().includes(query)
         );
+        const matchesDetector = (f.secret_detector_id || "").toLowerCase().includes(query);
+        const matchesSecretStatus = (f.secret_validation_status || "").toLowerCase().includes(query);
+        const matchesCommit = (f.secret_commit_sha || "").toLowerCase().includes(query);
+        const matchesIdentity = (f.secret_verified_identity || "").toLowerCase().includes(query);
         return (
           matchesTitle ||
           matchesRule ||
           matchesCwe ||
           matchesDesc ||
           matchesLang ||
-          matchesFile
+          matchesFile ||
+          matchesDetector ||
+          matchesSecretStatus ||
+          matchesCommit ||
+          matchesIdentity
         );
       }
       return true;
@@ -1170,54 +1225,130 @@ export function FlawExplorerSidebar() {
                             Boolean(f.secret_key_name) ||
                             (f.rule_id || "").toUpperCase().includes("SECRET") ||
                             f.cwe_id === "CWE-798" ? (
-                              <div className="p-1.5 rounded bg-amber-50 border border-amber-300 space-y-1">
-                                <div className="flex items-center justify-between gap-1 font-mono text-[9px]">
-                                  <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 font-extrabold flex items-center gap-1">
-                                    <KeyRound className="w-3 h-3 text-amber-800" />
-                                    {f.secret_type || "SECRET KEY DETECTED"}
-                                  </span>
-                                  {f.secret_entropy && (
-                                    <span className="text-[9px] text-sky-800 font-bold">
-                                      Entropy: {f.secret_entropy}
-                                    </span>
-                                  )}
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setRevealedSecrets((prev) => ({
-                                        ...prev,
-                                        [f.id]: !prev[f.id],
-                                      }));
-                                    }}
-                                    className="px-1.5 py-0.5 rounded bg-white hover:bg-amber-100 text-amber-900 border border-amber-400 flex items-center gap-0.5 font-sans font-bold"
-                                  >
-                                    {revealedSecrets[f.id] ? (
-                                      <>
-                                        <EyeOff className="w-2.5 h-2.5" /> Mask
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Eye className="w-2.5 h-2.5" /> Reveal Key
-                                      </>
+                              (() => {
+                                const valBadge = getSecretValidationBadgeMeta(
+                                  f.secret_validation_status
+                                );
+                                const verdictLine =
+                                  f.secret_verified_identity || f.secret_validation_message;
+                                const isThisVerifying =
+                                  isVerifyingSecrets &&
+                                  (verifyingSecretId === null || verifyingSecretId === f.id);
+                                return (
+                                  <div className="p-1.5 rounded bg-amber-50 border border-amber-300 space-y-1">
+                                    {/* TruffleHog Validation Verdict + Git Provenance + Detector Pills */}
+                                    <div className="flex items-center justify-between gap-1 flex-wrap font-mono text-[9px]">
+                                      <div className="flex items-center gap-1 flex-wrap">
+                                        <span
+                                          className={`px-1.5 py-0.5 rounded border font-extrabold ${valBadge.className}`}
+                                        >
+                                          {valBadge.label}
+                                        </span>
+                                        {f.secret_source === "GIT_HISTORY" && (
+                                          <span
+                                            title={
+                                              f.secret_commit_author
+                                                ? `Git commit ${f.secret_commit_sha || ""} by ${f.secret_commit_author}`
+                                                : `Git history commit ${f.secret_commit_sha || ""}`
+                                            }
+                                            className="px-1.5 py-0.5 rounded bg-purple-50 text-purple-900 border border-purple-300 font-extrabold inline-flex items-center gap-0.5"
+                                          >
+                                            <GitCommit className="w-2.5 h-2.5 text-purple-800" />
+                                            GIT COMMIT {(f.secret_commit_sha || "HEAD").slice(0, 7)}
+                                          </span>
+                                        )}
+                                        {f.secret_detector_id && (
+                                          <span className="px-1.5 py-0.5 rounded bg-sky-50 text-sky-900 border border-sky-300 font-bold">
+                                            {f.secret_detector_id}
+                                          </span>
+                                        )}
+                                      </div>
+                                      {f.secret_entropy && (
+                                        <span className="text-[9px] text-sky-900 font-bold">
+                                          Entropy: {f.secret_entropy}
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    {/* Secret Type + Verify Key & Reveal Key Action Row */}
+                                    <div className="flex items-center justify-between gap-1 flex-wrap font-mono text-[9px]">
+                                      <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-950 border border-amber-300 font-extrabold flex items-center gap-1">
+                                        <KeyRound className="w-3 h-3 text-amber-800" />
+                                        {f.secret_type || "SECRET KEY DETECTED"}
+                                      </span>
+                                      <div className="flex items-center gap-1">
+                                        <button
+                                          type="button"
+                                          disabled={isVerifyingSecrets}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setVerifyingSecretId(f.id);
+                                            void verifySecretsLive([f.id], true).finally(() =>
+                                              setVerifyingSecretId(null)
+                                            );
+                                          }}
+                                          title="Re-verify this credential via ALASTOR Secret Validator"
+                                          className="px-1.5 py-0.5 rounded bg-sky-50 hover:bg-sky-100 disabled:opacity-60 text-sky-900 border border-sky-400 flex items-center gap-0.5 font-sans font-bold"
+                                        >
+                                          <RefreshCw
+                                            className={`w-2.5 h-2.5 text-sky-800 ${
+                                              isThisVerifying ? "animate-spin" : ""
+                                            }`}
+                                          />
+                                          <span>Verify Key</span>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setRevealedSecrets((prev) => ({
+                                              ...prev,
+                                              [f.id]: !prev[f.id],
+                                            }));
+                                          }}
+                                          className="px-1.5 py-0.5 rounded bg-white hover:bg-amber-100 text-amber-950 border border-amber-400 flex items-center gap-0.5 font-sans font-bold"
+                                        >
+                                          {revealedSecrets[f.id] ? (
+                                            <>
+                                              <EyeOff className="w-2.5 h-2.5" /> Mask
+                                            </>
+                                          ) : (
+                                            <>
+                                              <Eye className="w-2.5 h-2.5" /> Reveal Key
+                                            </>
+                                          )}
+                                        </button>
+                                      </div>
+                                    </div>
+
+                                    {/* Masked / Revealed Credential Value Box */}
+                                    <div className="px-1.5 py-1 rounded bg-white border border-amber-300 font-mono text-[10px] text-slate-900 break-all">
+                                      <span className="text-amber-900 font-bold">
+                                        {f.secret_key_name || firstNode?.name || "CREDENTIAL_ID"}
+                                      </span>
+                                      <span className="text-slate-700"> = </span>
+                                      <span className="text-rose-800 font-semibold">
+                                        {revealedSecrets[f.id]
+                                          ? f.secret_value_raw ||
+                                            f.secret_value_masked ||
+                                            firstNode?.code ||
+                                            "REDACTED"
+                                          : f.secret_value_masked || "••••••••"}
+                                      </span>
+                                    </div>
+
+                                    {/* Verified Identity / Validation Message Line */}
+                                    {verdictLine && (
+                                      <div className="px-1.5 py-1 rounded bg-white/90 border border-slate-300 text-[10px] text-slate-900 leading-snug">
+                                        <span className="font-bold text-sky-900 mr-1">
+                                          {f.secret_verified_identity ? "Identity:" : "Verdict:"}
+                                        </span>
+                                        <span>{verdictLine}</span>
+                                      </div>
                                     )}
-                                  </button>
-                                </div>
-                                <div className="px-1.5 py-1 rounded bg-white border border-amber-300 font-mono text-[10px] text-slate-900 break-all">
-                                  <span className="text-amber-800 font-bold">
-                                    {f.secret_key_name || firstNode?.name || "SECRET_KEY"}
-                                  </span>
-                                  <span className="text-slate-500"> = </span>
-                                  <span className="text-rose-800 font-semibold">
-                                    {revealedSecrets[f.id]
-                                      ? f.secret_value_raw ||
-                                        f.secret_value_masked ||
-                                        firstNode?.code ||
-                                        "SECRET"
-                                      : f.secret_value_masked || "REDACTED_SECRET_KEY"}
-                                  </span>
-                                </div>
-                              </div>
+                                  </div>
+                                );
+                              })()
                             ) : (
                               <div className="flex items-center gap-1 flex-wrap font-mono text-[9px]">
                                 <span

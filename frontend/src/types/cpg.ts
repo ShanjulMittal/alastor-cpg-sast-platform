@@ -102,6 +102,13 @@ export type TriageStatus =
 
 export type ScanEngineType = "SAST" | "SCA" | "IaC";
 
+export type SecretValidationStatus =
+  | "VERIFIED_ACTIVE"
+  | "REVOKED_OR_INVALID"
+  | "OFFLINE_STRUCTURALLY_VALID"
+  | "TEST_OR_PLACEHOLDER"
+  | "VERIFICATION_ERROR";
+
 export interface Finding {
   id: string;
   rule_id: string;
@@ -163,6 +170,14 @@ export interface Finding {
   secret_value_raw?: string | null;
   secret_type?: string | null;
   secret_entropy?: number | null;
+  secret_validation_status?: SecretValidationStatus | null;
+  secret_detector_id?: string | null;
+  secret_verified_identity?: string | null;
+  secret_validation_message?: string | null;
+  secret_verified_at?: string | null;
+  secret_source?: "WORKING_TREE" | "GIT_HISTORY" | null;
+  secret_commit_sha?: string | null;
+  secret_commit_author?: string | null;
 }
 
 export interface ExtractedAdvisory {
@@ -317,7 +332,7 @@ export type PrimaryWorkflowStage =
   | "MAP_360_THREATS"
   | "ASPM_GOVERNANCE";
 
-export type MapSubTab = "SPIDER_360" | "THREAT_BOUNDARIES";
+export type MapSubTab = "SPIDER_360" | "THREAT_BOUNDARIES" | "API_OPERATIONS";
 
 export type AspmSubSection =
   | "POSTURE"
@@ -1104,4 +1119,104 @@ export interface AiGraphExplainResponse {
   token_telemetry: AiTokenTelemetry;
   error_code?: string | null;
   user_message?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// 11. Native TruffleHog-Grade Secret Scanner & Live Key Validator Interfaces
+// ---------------------------------------------------------------------------
+export interface SecretScannerConfig {
+  live_verification_enabled: boolean;
+  scan_git_history: boolean;
+  max_git_commits: number;
+  supported_detectors_count: number;
+}
+
+export interface SecretScannerConfigUpdate {
+  live_verification_enabled?: boolean | null;
+  scan_git_history?: boolean | null;
+  max_git_commits?: number | null;
+}
+
+export interface SecretVerifyRequestPayload {
+  finding_ids?: string[];
+  force_refresh?: boolean;
+  allow_live_network?: boolean | null;
+}
+
+export interface SecretInventoryResponse {
+  config: SecretScannerConfig;
+  total_secrets: number;
+  verified_active_count: number;
+  revoked_count: number;
+  structurally_valid_count: number;
+  test_placeholder_count: number;
+  git_history_count: number;
+  secrets: Finding[];
+}
+
+// ---------------------------------------------------------------------------
+// 12. Multi-Framework API Endpoints & Inter-Procedural CPG Operations Tracer
+// ---------------------------------------------------------------------------
+export type ApiOperationCategory =
+  | "AUTH_GUARD"
+  | "INPUT_VALIDATION"
+  | "DATABASE_READ"
+  | "DATABASE_WRITE"
+  | "EXTERNAL_HTTP_OR_AI"
+  | "FILESYSTEM_IO"
+  | "OS_COMMAND_EXEC"
+  | "SECRET_OR_CRYPTO";
+
+export interface ApiOperationItem {
+  id: string;
+  step_index: number;
+  category: ApiOperationCategory;
+  operation_verb: string;
+  target_resource: string;
+  function_name: string;
+  call_chain: string[];
+  filepath: string;
+  line_number: number;
+  code_snippet: string;
+  is_mutating: boolean;
+  risk_note?: string | null;
+}
+
+export interface ApiEndpointOperationDossier {
+  id: string;
+  method: string;
+  route_path: string;
+  framework: string;
+  handler_name: string;
+  filepath: string;
+  start_line: number;
+  end_line: number;
+  auth_status: "AUTHENTICATED" | "UNAUTHENTICATED" | "PARTIAL_OR_CUSTOM";
+  auth_mechanisms: string[];
+  request_params: string[];
+  response_type?: string | null;
+  operations: ApiOperationItem[];
+  operation_categories: ApiOperationCategory[];
+  calls_functions: string[];
+  is_mutating: boolean;
+  risk_level: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "SAFE";
+  linked_finding_ids: string[];
+  linked_findings_count: number;
+  plain_english_story: string;
+  flow_nodes: Array<Record<string, any>>;
+  flow_edges: Array<Record<string, any>>;
+}
+
+export interface ApiOperationsReportResponse {
+  project_path: string;
+  total_endpoints: number;
+  authenticated_count: number;
+  unauthenticated_count: number;
+  mutating_endpoints_count: number;
+  db_endpoints_count: number;
+  external_http_endpoints_count: number;
+  exec_or_fs_endpoints_count: number;
+  vulnerable_endpoints_count: number;
+  frameworks_detected: string[];
+  endpoints: ApiEndpointOperationDossier[];
 }

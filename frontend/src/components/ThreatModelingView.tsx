@@ -20,6 +20,7 @@ import {
   AttackSurfaceEndpoint,
   FilePurposeInfo,
   Finding,
+  SecretValidationStatus,
   StrideThreatItem,
 } from "@/types/cpg";
 import { CustomGraphNode, NodeBlastRole } from "./CustomGraphNode";
@@ -55,7 +56,55 @@ import {
   Maximize2,
   X,
   Loader2,
+  RefreshCw,
+  GitCommit,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
+
+type VaultSecretFilter =
+  | "ALL"
+  | "VERIFIED_ACTIVE"
+  | "GIT_HISTORY"
+  | "STRUCTURALLY_VALID"
+  | "REVOKED_OR_TEST";
+
+function getSecretValidationBadgeMeta(
+  status?: SecretValidationStatus | string | null
+): { label: string; className: string } {
+  switch (status) {
+    case "VERIFIED_ACTIVE":
+      return {
+        label: "● LIVE ACTIVE KEY",
+        className: "bg-rose-100 text-rose-900 border-rose-400",
+      };
+    case "REVOKED_OR_INVALID":
+      return {
+        label: "✓ REVOKED / INACTIVE",
+        className: "bg-emerald-50 text-emerald-900 border-emerald-300",
+      };
+    case "OFFLINE_STRUCTURALLY_VALID":
+      return {
+        label: "◆ STRUCTURALLY VALID",
+        className: "bg-amber-100 text-amber-950 border-amber-400",
+      };
+    case "TEST_OR_PLACEHOLDER":
+      return {
+        label: "○ TEST / MOCK KEY",
+        className: "bg-slate-100 text-slate-800 border-slate-300",
+      };
+    case "VERIFICATION_ERROR":
+      return {
+        label: "! VERIFY TIMEOUT",
+        className: "bg-orange-50 text-orange-900 border-orange-300",
+      };
+    default:
+      return {
+        label: "◆ STRUCTURALLY VALID",
+        className: "bg-amber-100 text-amber-950 border-amber-400",
+      };
+  }
+}
 
 const boundaryNodeTypes = {
   cpgNode: CustomGraphNode,
@@ -901,6 +950,13 @@ export const ThreatModelingView: React.FC = () => {
     setAiDrawerOpen,
     explainCurrentGraphWithAi,
     aiIsBusy,
+    secretScannerConfig,
+    secretInventory,
+    isVerifyingSecrets,
+    fetchSecretConfigState,
+    saveSecretConfigState,
+    fetchSecretInventoryState,
+    verifySecretsLive,
   } = useAuditStore();
 
   const [activeSubTab, setActiveSubTab] = useState<
@@ -914,6 +970,9 @@ export const ThreatModelingView: React.FC = () => {
   const [revealedSecretIds, setRevealedSecretIds] = useState<
     Record<string, boolean>
   >({});
+  const [vaultFilter, setVaultFilter] = useState<VaultSecretFilter>("ALL");
+  const [isSavingSecretConfig, setIsSavingSecretConfig] = useState<boolean>(false);
+  const [verifyingCardId, setVerifyingCardId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [inlinePreviewThreatId, setInlinePreviewThreatId] = useState<
     string | null
@@ -928,26 +987,112 @@ export const ThreatModelingView: React.FC = () => {
   });
   const [loadingPreview, setLoadingPreview] = useState<boolean>(false);
 
-  // Synchronize Threat Model with active project and findings
+  // Synchronize Threat Model & Secret Vault Inventory with active project and findings
   useEffect(() => {
     void fetchSastPlusSuite();
-  }, [projectPath, findings.length, fetchSastPlusSuite]);
+    void fetchSecretConfigState();
+    void fetchSecretInventoryState();
+  }, [
+    projectPath,
+    findings.length,
+    fetchSastPlusSuite,
+    fetchSecretConfigState,
+    fetchSecretInventoryState,
+  ]);
 
   const activeUser = userAccountsState?.users?.find(
     (u) => u.id === userAccountsState.active_user_id
   );
   const canRevealSecrets = activeUser ? activeUser.can_reveal_secrets : true;
 
-  const secretFindings = useMemo(
-    () =>
-      findings.filter(
-        (f) =>
-          f.is_secret_finding ||
-          (f.rule_id || "").toUpperCase().includes("SECRET") ||
-          f.cwe_id === "CWE-798"
-      ),
-    [findings]
-  );
+  const secretFindings = useMemo(() => {
+    const fromFindings = findings.filter(
+      (f) =>
+        f.is_secret_finding ||
+        Boolean(f.secret_key_name) ||
+        (f.rule_id || "").toUpperCase().includes("SECRET") ||
+        f.cwe_id === "CWE-798"
+    );
+    const invSecrets = secretInventory?.secrets || [];
+    if (invSecrets.length === 0) {
+      return fromFindings;
+    }
+    const mergedById = new Map<string, Finding>();
+    for (const s of invSecrets) {
+      if (s && s.id) mergedById.set(s.id, s);
+    }
+    for (const f of fromFindings) {
+      if (f && f.id) {
+        const existing = mergedById.get(f.id);
+        mergedById.set(f.id, existing ? { ...f, ...existing } : f);
+      }
+    }
+    return Array.from(mergedById.values());
+  }, [findings, secretInventory]);
+
+  const effectiveSecretConfig =
+    secretScannerConfig || secretInventory?.config || null;
+  const live = effectiveSecretConfig
+    ? effectiveSecretConfig.live_verification_enabled
+    : true;
+  const gitHist = effectiveSecretConfig
+    ? effectiveSecretConfig.scan_git_history
+    : true;
+
+  const vaultKpis = useMemo(() => {
+    const computedActive = secretFindings.filter(
+      (f) => f.secret_validation_status === "VERIFIED_ACTIVE"
+    ).length;
+    const computedRevoked = secretFindings.filter(
+      (f) => f.secret_validation_status === "REVOKED_OR_INVALID"
+    ).length;
+    const computedStructural = secretFindings.filter(
+      (f) =>
+        f.secret_validation_status === "OFFLINE_STRUCTURALLY_VALID" ||
+        !f.secret_validation_status
+    ).length;
+    const computedTest = secretFindings.filter(
+      (f) => f.secret_validation_status === "TEST_OR_PLACEHOLDER"
+    ).length;
+    const computedGitHist = secretFindings.filter(
+      (f) => f.secret_source === "GIT_HISTORY" || Boolean(f.secret_commit_sha)
+    ).length;
+
+    return {
+      totalKeys: secretInventory?.total_secrets ?? secretFindings.length,
+      liveActive: secretInventory?.verified_active_count ?? computedActive,
+      revokedInactive: secretInventory?.revoked_count ?? computedRevoked,
+      structurallyValid:
+        secretInventory?.structurally_valid_count ?? computedStructural,
+      testOrMock: secretInventory?.test_placeholder_count ?? computedTest,
+      gitHistoryLeaks: secretInventory?.git_history_count ?? computedGitHist,
+    };
+  }, [secretInventory, secretFindings]);
+
+  const filteredVaultSecrets = useMemo(() => {
+    return secretFindings.filter((sf) => {
+      if (vaultFilter === "ALL") return true;
+      if (vaultFilter === "VERIFIED_ACTIVE") {
+        return sf.secret_validation_status === "VERIFIED_ACTIVE";
+      }
+      if (vaultFilter === "GIT_HISTORY") {
+        return sf.secret_source === "GIT_HISTORY" || Boolean(sf.secret_commit_sha);
+      }
+      if (vaultFilter === "STRUCTURALLY_VALID") {
+        return (
+          sf.secret_validation_status === "OFFLINE_STRUCTURALLY_VALID" ||
+          !sf.secret_validation_status
+        );
+      }
+      if (vaultFilter === "REVOKED_OR_TEST") {
+        return (
+          sf.secret_validation_status === "REVOKED_OR_INVALID" ||
+          sf.secret_validation_status === "TEST_OR_PLACEHOLDER"
+        );
+      }
+      return true;
+    });
+  }, [secretFindings, vaultFilter]);
 
   const strideThreats = sastPlusSuite?.stride_threats || [];
   const endpoints = sastPlusSuite?.endpoints || [];
@@ -2236,15 +2381,21 @@ export const ThreatModelingView: React.FC = () => {
       {/* TAB 3: SECRET KEYS & CREDENTIALS VAULT */}
       {activeSubTab === "SECRET_KEYS_VAULT" && (
         <div className="space-y-4">
+          {/* Vault Header + RBAC Indicator */}
           <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <KeyRound className="w-6 h-6 text-amber-800 shrink-0" />
               <div>
-                <h2 className="text-sm font-extrabold text-amber-950">
-                  Deep Secret Keys, API Tokens &amp; Cryptographic Credentials Inspector
-                </h2>
-                <p className="text-xs text-slate-700 mt-0.5">
-                  Extracts exact hardcoded secret key identifiers, credential classifications, Shannon entropy scores, and masked/revealable values with corrective rotation actions.
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className="text-sm font-extrabold text-amber-950">
+                    Deep Secret Keys, API Tokens &amp; Cryptographic Credentials Vault
+                  </h2>
+                  <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-950 border border-amber-400 font-mono text-[10px] font-extrabold">
+                    {effectiveSecretConfig?.supported_detectors_count ?? 14} Native Detectors
+                  </span>
+                </div>
+                <p className="text-xs text-slate-800 mt-0.5">
+                  TruffleHog-grade working-tree &amp; git-history credential hunter with zero-redirect live provider validation, SHA-256 verdict caching, and Shannon entropy scoring.
                 </p>
               </div>
             </div>
@@ -2262,31 +2413,243 @@ export const ThreatModelingView: React.FC = () => {
             </div>
           </div>
 
+          {/* Daylight Vault Command Bar: 5 KPI Pills + Live/Git Toggles + Verify All + Filter Pills */}
+          <div className="bg-white border border-slate-300 rounded-xl p-4 space-y-4 shadow-sm">
+            {/* 5 KPI Summary Pills */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+              <div className="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2.5">
+                <div className="text-[10px] font-mono font-extrabold uppercase tracking-wider text-slate-800">
+                  Total Keys
+                </div>
+                <div className="text-xl font-extrabold text-slate-950 mt-0.5">
+                  {vaultKpis.totalKeys}
+                </div>
+                <div className="text-[11px] text-slate-700">
+                  Working tree &amp; git commits
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-rose-400 bg-rose-50 px-3 py-2.5">
+                <div className="text-[10px] font-mono font-extrabold uppercase tracking-wider text-rose-900">
+                  Live Active
+                </div>
+                <div className="text-xl font-extrabold text-rose-900 mt-0.5">
+                  {vaultKpis.liveActive}
+                </div>
+                <div className="text-[11px] text-rose-900/90">
+                  Authenticated against provider
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2.5">
+                <div className="text-[10px] font-mono font-extrabold uppercase tracking-wider text-emerald-900">
+                  Revoked / Inactive
+                </div>
+                <div className="text-xl font-extrabold text-emerald-900 mt-0.5">
+                  {vaultKpis.revokedInactive}
+                </div>
+                <div className="text-[11px] text-emerald-900/90">
+                  Rejected or expired token
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-amber-400 bg-amber-50 px-3 py-2.5">
+                <div className="text-[10px] font-mono font-extrabold uppercase tracking-wider text-amber-950">
+                  Structurally Valid
+                </div>
+                <div className="text-xl font-extrabold text-amber-950 mt-0.5">
+                  {vaultKpis.structurallyValid}
+                </div>
+                <div className="text-[11px] text-amber-950/90">
+                  Prefix, length &amp; entropy verified
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-purple-300 bg-purple-50 px-3 py-2.5">
+                <div className="text-[10px] font-mono font-extrabold uppercase tracking-wider text-purple-900">
+                  Git History Leaks
+                </div>
+                <div className="text-xl font-extrabold text-purple-900 mt-0.5">
+                  {vaultKpis.gitHistoryLeaks}
+                </div>
+                <div className="text-[11px] text-purple-900/90">
+                  Exposed in past `.git` commits
+                </div>
+              </div>
+            </div>
+
+            {/* Scanner Mode Toggles + Verify All Keys Live Primary Button */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-200">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isSavingSecretConfig || isVerifyingSecrets}
+                  onClick={() => {
+                    setIsSavingSecretConfig(true);
+                    void saveSecretConfigState({
+                      live_verification_enabled: !live,
+                    }).finally(() => setIsSavingSecretConfig(false));
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-mono font-extrabold border flex items-center gap-1.5 transition-all disabled:opacity-60 ${
+                    live
+                      ? "bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-400"
+                      : "bg-slate-100 hover:bg-slate-200 text-slate-900 border-slate-400"
+                  }`}
+                >
+                  {live ? (
+                    <Wifi className="w-3.5 h-3.5 text-emerald-800" />
+                  ) : (
+                    <WifiOff className="w-3.5 h-3.5 text-slate-700" />
+                  )}
+                  <span>
+                    Live Verification: {live ? "AUTO (ONLINE)" : "OFFLINE MODE"}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isSavingSecretConfig}
+                  onClick={() => {
+                    setIsSavingSecretConfig(true);
+                    void saveSecretConfigState({
+                      scan_git_history: !gitHist,
+                    }).finally(() => setIsSavingSecretConfig(false));
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-mono font-extrabold border flex items-center gap-1.5 transition-all disabled:opacity-60 ${
+                    gitHist
+                      ? "bg-purple-50 hover:bg-purple-100 text-purple-900 border-purple-400"
+                      : "bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300"
+                  }`}
+                >
+                  <GitCommit className="w-3.5 h-3.5 text-purple-800" />
+                  <span>
+                    Scan .git History: {gitHist ? "ON" : "OFF"}
+                    {effectiveSecretConfig?.max_git_commits
+                      ? ` (${effectiveSecretConfig.max_git_commits} commits)`
+                      : ""}
+                  </span>
+                </button>
+              </div>
+
+              <button
+                type="button"
+                disabled={isVerifyingSecrets || secretFindings.length === 0}
+                onClick={() => {
+                  setVerifyingCardId(null);
+                  void verifySecretsLive([], true);
+                }}
+                className="px-3.5 py-1.5 rounded-lg text-xs font-mono font-extrabold bg-sky-700 hover:bg-sky-800 disabled:opacity-60 text-white border border-sky-900 flex items-center gap-1.5 shadow-sm transition-all"
+              >
+                <RefreshCw
+                  className={`w-3.5 h-3.5 text-white ${
+                    isVerifyingSecrets && verifyingCardId === null
+                      ? "animate-spin"
+                      : ""
+                  }`}
+                />
+                <span>
+                  {isVerifyingSecrets && verifyingCardId === null
+                    ? "Verifying All Keys..."
+                    : "Verify All Keys Live"}
+                </span>
+              </button>
+            </div>
+
+            {/* Filter Pills */}
+            <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-200">
+              <span className="text-xs font-bold text-slate-800 flex items-center gap-1 mr-1">
+                <Filter className="w-3.5 h-3.5 text-slate-700" /> Filter Vault:
+              </span>
+              {(
+                [
+                  {
+                    id: "ALL" as VaultSecretFilter,
+                    label: `ALL (${secretFindings.length})`,
+                  },
+                  {
+                    id: "VERIFIED_ACTIVE" as VaultSecretFilter,
+                    label: `VERIFIED_ACTIVE (${vaultKpis.liveActive})`,
+                  },
+                  {
+                    id: "GIT_HISTORY" as VaultSecretFilter,
+                    label: `GIT_HISTORY (${vaultKpis.gitHistoryLeaks})`,
+                  },
+                  {
+                    id: "STRUCTURALLY_VALID" as VaultSecretFilter,
+                    label: `STRUCTURALLY_VALID (${vaultKpis.structurallyValid})`,
+                  },
+                  {
+                    id: "REVOKED_OR_TEST" as VaultSecretFilter,
+                    label: `REVOKED_OR_TEST (${
+                      vaultKpis.revokedInactive + vaultKpis.testOrMock
+                    })`,
+                  },
+                ] as const
+              ).map((pill) => {
+                const active = vaultFilter === pill.id;
+                return (
+                  <button
+                    key={pill.id}
+                    type="button"
+                    onClick={() => setVaultFilter(pill.id)}
+                    className={`px-2.5 py-1 rounded-md text-xs font-mono font-bold border transition-all ${
+                      active
+                        ? "bg-amber-700 text-white border-amber-900 shadow-sm"
+                        : "bg-slate-50 hover:bg-slate-100 text-slate-800 border-slate-300"
+                    }`}
+                  >
+                    {pill.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {secretFindings.length === 0 ? (
             <div className="bg-white border border-emerald-300 rounded-xl p-8 text-center space-y-2 shadow-sm">
               <CheckCircle2 className="w-8 h-8 text-emerald-700 mx-auto" />
               <div className="text-sm font-extrabold text-emerald-900">
                 PASS • No Hardcoded Secret Keys Detected in Active Scan
               </div>
-              <p className="text-xs text-slate-600 max-w-md mx-auto">
-                All scanned source files, environment templates, and manifests passed hardcoded credential (`CWE-798`) and high-entropy secret key checks.
+              <p className="text-xs text-slate-700 max-w-md mx-auto">
+                All scanned source files, environment templates, manifests, and inspected git commits passed hardcoded credential (`CWE-798`) and high-entropy secret key checks.
               </p>
+            </div>
+          ) : filteredVaultSecrets.length === 0 ? (
+            <div className="bg-white border border-slate-300 rounded-xl p-6 text-center space-y-2 shadow-sm">
+              <div className="text-sm font-extrabold text-slate-900">
+                No credentials match filter `{vaultFilter}`
+              </div>
+              <button
+                type="button"
+                onClick={() => setVaultFilter("ALL")}
+                className="px-3 py-1.5 rounded-lg text-xs font-mono font-bold bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-400"
+              >
+                Show All {secretFindings.length} Credentials
+              </button>
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-3">
-              {secretFindings.map((sf) => {
+              {filteredVaultSecrets.map((sf) => {
                 const node = sf.path_nodes?.[0];
                 const isRevealed = Boolean(revealedSecretIds[sf.id]);
                 const keyName =
-                  sf.secret_key_name || node?.name || "SECRET_KEY";
-                const maskedVal =
-                  sf.secret_value_masked || "REDACTED_SECRET_VALUE";
+                  sf.secret_key_name || node?.name || "CREDENTIAL_ID";
+                const maskedVal = sf.secret_value_masked || "••••••••";
                 const rawVal = sf.secret_value_raw || maskedVal;
                 const displayVal = isRevealed ? rawVal : maskedVal;
                 const fp =
                   sf.best_fix_location?.filepath || node?.filepath || "config";
                 const ln =
                   sf.best_fix_location?.line || node?.start_line || 1;
+                const valBadge = getSecretValidationBadgeMeta(
+                  sf.secret_validation_status
+                );
+                const verdictLine =
+                  sf.secret_verified_identity || sf.secret_validation_message;
+                const isCardVerifying =
+                  isVerifyingSecrets &&
+                  (verifyingCardId === null || verifyingCardId === sf.id);
 
                 return (
                   <div
@@ -2298,9 +2661,36 @@ export const ThreatModelingView: React.FC = () => {
                         <span className="px-2 py-0.5 text-[10px] font-mono font-extrabold rounded bg-rose-700 text-white border border-rose-800">
                           FAIL • {sf.severity}
                         </span>
-                        <span className="px-2 py-0.5 text-[10px] font-mono font-extrabold rounded bg-amber-50 text-amber-900 border border-amber-300 flex items-center gap-1">
-                          <KeyRound className="w-3 h-3 text-amber-700" />
-                          {sf.secret_type || "Hardcoded Secret Key"}
+                        <span
+                          className={`px-2 py-0.5 text-[10px] font-mono font-extrabold rounded border ${valBadge.className}`}
+                        >
+                          {valBadge.label}
+                        </span>
+                        {sf.secret_detector_id && (
+                          <span className="px-2 py-0.5 text-[10px] font-mono font-extrabold rounded bg-sky-50 text-sky-900 border border-sky-300">
+                            Detector: {sf.secret_detector_id}
+                          </span>
+                        )}
+                        {(sf.secret_source === "GIT_HISTORY" ||
+                          Boolean(sf.secret_commit_sha)) && (
+                          <span
+                            title={
+                              sf.secret_commit_author
+                                ? `Git commit ${sf.secret_commit_sha || ""} authored by ${sf.secret_commit_author}`
+                                : `Git commit ${sf.secret_commit_sha || ""}`
+                            }
+                            className="px-2 py-0.5 text-[10px] font-mono font-extrabold rounded bg-purple-50 text-purple-900 border border-purple-300 inline-flex items-center gap-1"
+                          >
+                            <GitCommit className="w-3 h-3 text-purple-800" />
+                            GIT COMMIT {(sf.secret_commit_sha || "HEAD").slice(0, 7)}
+                            {sf.secret_commit_author
+                              ? ` • ${sf.secret_commit_author}`
+                              : ""}
+                          </span>
+                        )}
+                        <span className="px-2 py-0.5 text-[10px] font-mono font-extrabold rounded bg-amber-50 text-amber-950 border border-amber-300 flex items-center gap-1">
+                          <KeyRound className="w-3 h-3 text-amber-800" />
+                          {sf.secret_type || "Hardcoded Credential"}
                         </span>
                         {sf.secret_entropy && (
                           <span className="px-2 py-0.5 text-[10px] font-mono font-bold rounded bg-cyan-50 text-cyan-900 border border-cyan-300">
@@ -2312,14 +2702,34 @@ export const ThreatModelingView: React.FC = () => {
                         </span>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => openCodeLocationInIde(fp, ln, sf.id)}
-                        className="px-3 py-1.5 rounded-lg text-xs font-extrabold bg-amber-700 hover:bg-amber-800 text-white border border-amber-800 flex items-center gap-1.5 transition-all"
-                      >
-                        <Code2 className="w-3.5 h-3.5 text-white" />
-                        Locate Key in Code ({fp}:{ln})
-                      </button>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          disabled={isVerifyingSecrets}
+                          onClick={() => {
+                            setVerifyingCardId(sf.id);
+                            void verifySecretsLive([sf.id], true).finally(() =>
+                              setVerifyingCardId(null)
+                            );
+                          }}
+                          className="px-3 py-1.5 rounded-lg text-xs font-mono font-extrabold bg-sky-50 hover:bg-sky-100 disabled:opacity-60 text-sky-900 border border-sky-400 flex items-center gap-1.5 transition-all"
+                        >
+                          <RefreshCw
+                            className={`w-3.5 h-3.5 text-sky-800 ${
+                              isCardVerifying ? "animate-spin" : ""
+                            }`}
+                          />
+                          Re-Verify Key
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openCodeLocationInIde(fp, ln, sf.id)}
+                          className="px-3 py-1.5 rounded-lg text-xs font-extrabold bg-amber-700 hover:bg-amber-800 text-white border border-amber-800 flex items-center gap-1.5 transition-all"
+                        >
+                          <Code2 className="w-3.5 h-3.5 text-white" />
+                          Locate Key in Code ({fp}:{ln})
+                        </button>
+                      </div>
                     </div>
 
                     <div className="text-sm font-extrabold text-slate-900">
@@ -2327,65 +2737,101 @@ export const ThreatModelingView: React.FC = () => {
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2 bg-slate-100 border border-slate-300 rounded-lg px-3 py-2 font-mono text-xs">
-                      <span className="text-amber-900 font-extrabold">
+                      <span className="text-amber-950 font-extrabold">
                         🔑 {keyName}
                       </span>
-                      <span className="text-slate-500">=</span>
+                      <span className="text-slate-700">=</span>
                       <span
                         className={`px-2 py-0.5 rounded font-semibold ${
                           isRevealed
                             ? "bg-rose-50 text-rose-900 border border-rose-300"
-                            : "bg-white text-slate-800 border border-slate-200"
+                            : "bg-white text-slate-900 border border-slate-300"
                         } break-all`}
                       >
                         {displayVal}
                       </span>
 
-                      {canRevealSecrets && (
+                      <div className="ml-auto flex items-center gap-1.5 flex-wrap">
+                        {canRevealSecrets && (
+                          <button
+                            type="button"
+                            onClick={() => toggleRevealSecret(sf.id)}
+                            className="px-2 py-1 rounded text-[10px] font-sans font-bold bg-white hover:bg-slate-200 text-slate-900 border border-slate-300 flex items-center gap-1"
+                          >
+                            {isRevealed ? (
+                              <>
+                                <EyeOff className="w-3 h-3 text-amber-800" /> Mask
+                              </>
+                            ) : (
+                              <>
+                                <Eye className="w-3 h-3 text-amber-800" /> Reveal Key
+                              </>
+                            )}
+                          </button>
+                        )}
+
                         <button
                           type="button"
-                          onClick={() => toggleRevealSecret(sf.id)}
-                          className="ml-auto px-2 py-1 rounded text-[10px] font-sans font-bold bg-white hover:bg-slate-200 text-slate-800 border border-slate-300 flex items-center gap-1"
+                          onClick={() =>
+                            handleCopySecret(sf.id, `${keyName}=${displayVal}`)
+                          }
+                          className="px-2 py-1 rounded text-[10px] font-sans font-bold bg-white hover:bg-slate-200 text-slate-900 border border-slate-300 flex items-center gap-1"
                         >
-                          {isRevealed ? (
+                          {copiedId === sf.id ? (
                             <>
-                              <EyeOff className="w-3 h-3 text-amber-700" /> Mask
+                              <Check className="w-3 h-3 text-emerald-700" /> Copied
                             </>
                           ) : (
                             <>
-                              <Eye className="w-3 h-3 text-amber-700" /> Reveal Key
+                              <Copy className="w-3 h-3" /> Copy
                             </>
                           )}
                         </button>
-                      )}
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleCopySecret(sf.id, `${keyName}=${displayVal}`)
-                        }
-                        className="px-2 py-1 rounded text-[10px] font-sans font-bold bg-white hover:bg-slate-200 text-slate-800 border border-slate-300 flex items-center gap-1"
-                      >
-                        {copiedId === sf.id ? (
-                          <>
-                            <Check className="w-3 h-3 text-emerald-700" /> Copied
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="w-3 h-3" /> Copy
-                          </>
-                        )}
-                      </button>
+                      </div>
                     </div>
 
+                    {/* Verified Identity / Validation Verdict Banner */}
+                    {(verdictLine ||
+                      sf.secret_source === "GIT_HISTORY" ||
+                      sf.secret_verified_at) && (
+                      <div className="rounded-lg bg-sky-50/90 border border-sky-300 px-3 py-2 text-xs text-slate-900 flex flex-wrap items-center justify-between gap-2">
+                        <div className="space-y-0.5">
+                          {verdictLine && (
+                            <div>
+                              <span className="font-extrabold text-sky-900 mr-1.5">
+                                {sf.secret_verified_identity
+                                  ? "Verified Identity:"
+                                  : "Validation Verdict:"}
+                              </span>
+                              <span>{verdictLine}</span>
+                            </div>
+                          )}
+                          {sf.secret_source === "GIT_HISTORY" && (
+                            <div className="text-[11px] font-mono text-purple-900">
+                              <span className="font-extrabold">Git Provenance:</span>{" "}
+                              Commit `{sf.secret_commit_sha || "HEAD"}`
+                              {sf.secret_commit_author
+                                ? ` authored by ${sf.secret_commit_author}`
+                                : ""}
+                            </div>
+                          )}
+                        </div>
+                        {sf.secret_verified_at && (
+                          <span className="text-[11px] font-mono text-slate-700">
+                            Verified at: {sf.secret_verified_at}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-xs">
-                      <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-slate-700">
+                      <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-slate-800">
                         <span className="text-rose-800 font-extrabold">
                           Why Issue &amp; Risk:{" "}
                         </span>
                         {sf.description}
                       </div>
-                      <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-slate-700">
+                      <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-slate-800">
                         <span className="text-emerald-800 font-extrabold">
                           Corrective Action:{" "}
                         </span>

@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState, useMemo } from "react";
 import Editor, { DiffEditor, Monaco, OnMount, DiffOnMount } from "@monaco-editor/react";
 import { useAuditStore } from "@/store/useAuditStore";
 import { BACKEND_URL } from "@/lib/api";
-import { FilePurposeInfo, Finding } from "@/types/cpg";
+import { FilePurposeInfo, Finding, SecretValidationStatus } from "@/types/cpg";
 import {
   FileCode,
   Loader2,
@@ -29,7 +29,49 @@ import {
   X,
   GitCompare,
   ShieldCheck,
+  KeyRound,
+  Eye,
+  EyeOff,
+  RefreshCw,
+  GitCommit,
 } from "lucide-react";
+
+function getSecretValidationBadgeMeta(
+  status?: SecretValidationStatus | string | null
+): { label: string; className: string } {
+  switch (status) {
+    case "VERIFIED_ACTIVE":
+      return {
+        label: "● LIVE ACTIVE KEY",
+        className: "bg-rose-100 text-rose-900 border-rose-400",
+      };
+    case "REVOKED_OR_INVALID":
+      return {
+        label: "✓ REVOKED / INACTIVE",
+        className: "bg-emerald-50 text-emerald-900 border-emerald-300",
+      };
+    case "OFFLINE_STRUCTURALLY_VALID":
+      return {
+        label: "◆ STRUCTURALLY VALID",
+        className: "bg-amber-100 text-amber-950 border-amber-400",
+      };
+    case "TEST_OR_PLACEHOLDER":
+      return {
+        label: "○ TEST / MOCK KEY",
+        className: "bg-slate-100 text-slate-800 border-slate-300",
+      };
+    case "VERIFICATION_ERROR":
+      return {
+        label: "! VERIFY TIMEOUT",
+        className: "bg-orange-50 text-orange-900 border-orange-300",
+      };
+    default:
+      return {
+        label: "◆ STRUCTURALLY VALID",
+        className: "bg-amber-100 text-amber-950 border-amber-400",
+      };
+  }
+}
 
 interface StoryChapter {
   stepNumber: number;
@@ -165,15 +207,24 @@ function buildFindingStory(finding: Finding): FindingStory {
       finding.remediation ||
       "Move critical cleanup logic before the `return` statement, or wrap resource cleanup inside a `try ... finally:` block so it is guaranteed to execute.";
     secureCodeExample = `# SECURE FIX: Use try/finally so cleanup always runs before returning\ntry:\n    result = perform_operation()\n    return result\nfinally:\n    cleanup_temp_files()  # Guaranteed to execute`;
-  } else if (rule.includes("SECRET") || cwe === "CWE-798") {
-    categoryLabel = "Hardcoded Secret / API Credential in Source";
-    whatHappened = `${rawDesc} A sensitive secret, API key, token, or password literal is assigned directly in source code instead of being loaded from a secure secret manager or environment variable.`;
+  } else if (finding.is_secret_finding || rule.includes("SECRET") || cwe === "CWE-798") {
+    const isGitHist = finding.secret_source === "GIT_HISTORY";
+    categoryLabel = isGitHist
+      ? `Git-History Exposed Credential (${finding.secret_commit_sha?.slice(0, 7) || "HEAD"})`
+      : "Hardcoded Secret / API Credential in Source";
+    whatHappened = isGitHist
+      ? `${rawDesc} Although deleted or modified in the current working tree, this credential remains recoverable inside git commit history (\`${finding.secret_commit_sha?.slice(0, 7) || "commit"}\`${finding.secret_commit_author ? ` by ${finding.secret_commit_author}` : ""}).`
+      : `${rawDesc} A sensitive secret, API key, token, or password literal is assigned directly in source code instead of being loaded from a secure secret manager or environment variable.`;
     securityImpact =
-      "Anyone with read access to the repository, build artifacts, or leaked source files can extract the credential and gain unauthorized access to external services or databases.";
+      finding.secret_validation_status === "VERIFIED_ACTIVE"
+        ? "CRITICAL LIVE KEY EXPOSURE: Provider verification confirmed this credential is currently active and authenticates successfully. Attackers with repo access can immediately impersonate the identity."
+        : "Anyone with read access to the repository, git history, build artifacts, or leaked source files can extract the credential and attempt unauthorized access to external services or databases.";
     howToFix =
       finding.remediation ||
-      "Remove the hardcoded credential immediately, rotate the exposed key, and load secrets at runtime via `os.environ.get()` or a dedicated secret vault.";
-    secureCodeExample = `import os\n\n# SECURE FIX: Load credentials from environment variables or Secret Manager\nAPI_SECRET_KEY = os.environ.get("APP_API_SECRET_KEY")\nif not API_SECRET_KEY:\n    raise RuntimeError("Missing required APP_API_SECRET_KEY environment variable")`;
+      (isGitHist
+        ? "Rotate the exposed credential immediately in the provider console and purge historical commits using `git filter-repo`."
+        : "Remove the hardcoded credential immediately, rotate the exposed key, and load secrets at runtime via `os.environ.get()` or a dedicated secret vault.");
+    secureCodeExample = `import os\n\n# SECURE FIX: Load credentials from environment variables or Secret Manager\nAPI_CREDENTIAL = os.environ.get("APP_API_CREDENTIAL")\nif not API_CREDENTIAL:\n    raise RuntimeError("Missing required APP_API_CREDENTIAL environment variable")`;
   } else if (rule.includes("DOM-XSS") || cwe === "CWE-79") {
     categoryLabel = "DOM-Based Cross-Site Scripting (XSS) / Dynamic Script Injection";
     whatHappened = `${rawDesc} Dynamic variables flow into a browser DOM markup or script sink (\`document.write\`, \`.innerHTML\`, \`.outerHTML\`, or \`<script>.setAttribute('src', ...)\`).`;
@@ -391,8 +442,11 @@ export function MonacoCodePane() {
   const undoLastRemediationPatch = useAuditStore((s) => s.undoLastRemediationPatch);
   const activePathStepIndex = useAuditStore((s) => s.activePathStepIndex);
   const stepFindingPath = useAuditStore((s) => s.stepFindingPath);
+  const verifySecretsLive = useAuditStore((s) => s.verifySecretsLive);
+  const isVerifyingSecrets = useAuditStore((s) => s.isVerifyingSecrets);
 
   const [content, setContent] = useState<string>("# Select a finding on the left or a file from the tree to inspect code");
+  const [isDossierSecretRevealed, setIsDossierSecretRevealed] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
   const [filePurposeInfo, setFilePurposeInfo] = useState<FilePurposeInfo | null>(null);
   const [draftPatchedContent, setDraftPatchedContent] = useState<string>("");
@@ -458,6 +512,7 @@ export function MonacoCodePane() {
   // Reset step index and fetch verification artifacts when selected finding changes
   useEffect(() => {
     setActiveStepIdx(0);
+    setIsDossierSecretRevealed(false);
     if (selectedFinding) {
       setIsStoryboardExpanded(true);
       fetch(`${BACKEND_URL}/api/findings/${encodeURIComponent(selectedFinding.id)}/artifacts`)
@@ -1125,6 +1180,138 @@ export function MonacoCodePane() {
             <span className="text-amber-800 font-mono uppercase text-[10px] mr-1.5">Observation:</span>
             {selectedFinding.title}
           </div>
+
+          {/* Native TruffleHog-Grade Credential Validation & Provenance Card inside Dossier */}
+          {(selectedFinding.is_secret_finding ||
+            Boolean(selectedFinding.secret_key_name) ||
+            (selectedFinding.rule_id || "").toUpperCase().includes("SECRET") ||
+            selectedFinding.cwe_id === "CWE-798") &&
+            (() => {
+              const valBadge = getSecretValidationBadgeMeta(
+                selectedFinding.secret_validation_status
+              );
+              const firstSecretNode = selectedFinding.path_nodes?.[0];
+              const verdictLine =
+                selectedFinding.secret_verified_identity ||
+                selectedFinding.secret_validation_message;
+              return (
+                <div className="p-2 rounded-lg bg-amber-50 border border-amber-300 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2 flex-wrap font-mono text-[10px]">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span
+                        className={`px-2 py-0.5 rounded border font-extrabold ${valBadge.className}`}
+                      >
+                        {valBadge.label}
+                      </span>
+                      {selectedFinding.secret_source === "GIT_HISTORY" && (
+                        <span
+                          title={
+                            selectedFinding.secret_commit_author
+                              ? `Git commit ${selectedFinding.secret_commit_sha || ""} by ${selectedFinding.secret_commit_author}`
+                              : `Git history commit ${selectedFinding.secret_commit_sha || ""}`
+                          }
+                          className="px-2 py-0.5 rounded bg-purple-50 text-purple-900 border border-purple-300 font-extrabold inline-flex items-center gap-1"
+                        >
+                          <GitCommit className="w-3 h-3 text-purple-800" />
+                          GIT COMMIT {(selectedFinding.secret_commit_sha || "HEAD").slice(0, 7)}
+                          {selectedFinding.secret_commit_author
+                            ? ` • ${selectedFinding.secret_commit_author}`
+                            : ""}
+                        </span>
+                      )}
+                      {selectedFinding.secret_detector_id && (
+                        <span className="px-2 py-0.5 rounded bg-sky-50 text-sky-900 border border-sky-300 font-bold">
+                          Detector: {selectedFinding.secret_detector_id}
+                        </span>
+                      )}
+                      <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-950 border border-amber-300 font-bold inline-flex items-center gap-1">
+                        <KeyRound className="w-3 h-3 text-amber-800" />
+                        {selectedFinding.secret_type || "Credential"}
+                      </span>
+                      {selectedFinding.secret_entropy && (
+                        <span className="px-2 py-0.5 rounded bg-white text-sky-900 border border-slate-300 font-bold">
+                          Entropy: {selectedFinding.secret_entropy}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={isVerifyingSecrets}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void verifySecretsLive([selectedFinding.id], true);
+                        }}
+                        className="px-2 py-0.5 rounded bg-sky-50 hover:bg-sky-100 disabled:opacity-60 text-sky-900 border border-sky-400 font-sans font-bold inline-flex items-center gap-1"
+                      >
+                        <RefreshCw
+                          className={`w-3 h-3 text-sky-800 ${
+                            isVerifyingSecrets ? "animate-spin" : ""
+                          }`}
+                        />
+                        <span>Verify Key</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsDossierSecretRevealed((prev) => !prev);
+                        }}
+                        className="px-2 py-0.5 rounded bg-white hover:bg-amber-100 text-amber-950 border border-amber-400 font-sans font-bold inline-flex items-center gap-1"
+                      >
+                        {isDossierSecretRevealed ? (
+                          <>
+                            <EyeOff className="w-3 h-3" />
+                            <span>Mask</span>
+                          </>
+                        ) : (
+                          <>
+                            <Eye className="w-3 h-3" />
+                            <span>Reveal Key</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="px-2 py-1 rounded bg-white border border-amber-300 font-mono text-[11px] text-slate-900 break-all">
+                    <span className="text-amber-900 font-bold">
+                      {selectedFinding.secret_key_name ||
+                        firstSecretNode?.name ||
+                        "CREDENTIAL_ID"}
+                    </span>
+                    <span className="text-slate-700"> = </span>
+                    <span className="text-rose-800 font-semibold">
+                      {isDossierSecretRevealed
+                        ? selectedFinding.secret_value_raw ||
+                          selectedFinding.secret_value_masked ||
+                          firstSecretNode?.code ||
+                          "REDACTED"
+                        : selectedFinding.secret_value_masked || "••••••••"}
+                    </span>
+                  </div>
+
+                  {verdictLine && (
+                    <div className="px-2 py-1 rounded bg-white/95 border border-slate-300 text-[11px] text-slate-900 flex items-center justify-between gap-2 flex-wrap">
+                      <div>
+                        <strong className="text-sky-900 mr-1">
+                          {selectedFinding.secret_verified_identity
+                            ? "Verified Identity:"
+                            : "Validation Verdict:"}
+                        </strong>
+                        <span>{verdictLine}</span>
+                      </div>
+                      {selectedFinding.secret_verified_at && (
+                        <span className="text-[10px] font-mono text-slate-700">
+                          Checked: {selectedFinding.secret_verified_at}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
           {selectedFinding.path_nodes && selectedFinding.path_nodes.length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
