@@ -509,3 +509,175 @@ def test_cross_file_include_router_depth4_bound_and_path_confinement(tmp_path: P
     assert any(op.target_resource == "reachable_depth4" for op in ep.operations)
     assert not any(op.target_resource == "unreachable_table" for op in ep.operations)
 
+
+def test_endpoints_operations_rejects_unregistered_outside_project_path_400(tmp_path: Path):
+    import main
+
+    outside_ws = tmp_path / "unregistered_tenant_dir"
+    outside_ws.mkdir()
+    (outside_ws / "app.py").write_text(
+        'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/tenant-ping")\ndef ping():\n    return {"ok": True}\n',
+        encoding="utf-8",
+    )
+
+    with TestClient(main.app) as client:
+        denied = client.get("/api/endpoints/operations", params={"project_path": str(outside_ws)})
+        assert denied.status_code == 400
+
+        missing = client.get(
+            "/api/endpoints/operations",
+            params={"project_path": str(tmp_path / "does_not_exist_999")},
+        )
+        assert missing.status_code == 400
+
+        prev_scan_dir = main.current_scan_dir
+        try:
+            main.current_scan_dir = str(outside_ws)
+            allowed = client.get("/api/endpoints/operations", params={"project_path": str(outside_ws)})
+            assert allowed.status_code == 200
+            routes = [ep["route_path"] for ep in allowed.json()["endpoints"]]
+            assert "/tenant-ping" in routes
+        finally:
+            main.current_scan_dir = prev_scan_dir
+
+
+def test_multiline_nextjs_express_braceless_arrow_and_sast_plus_no_basename_bleed(tmp_path: Path):
+    from engine.api_operations_engine import ApiOperationsEngine
+    from engine.enterprise_manager import EnterpriseManager
+    from models import BestFixLocation, Finding
+
+    orders_route = tmp_path / "src" / "app" / "api" / "orders" / "route.ts"
+    orders_route.parent.mkdir(parents=True)
+    orders_route.write_text(
+        'import { NextRequest, NextResponse } from "next/server";\n\n'
+        "const toCents = (amount: number) => Math.round(amount * 100);\n\n"
+        "export async function POST(\n"
+        "  req: NextRequest,\n"
+        "  context: { params: Promise<Record<string, string>> },\n"
+        "): Promise<NextResponse> {\n"
+        "  const cents = toCents(42);\n"
+        "  await prisma.order.create({ data: { cents } });\n"
+        "  return NextResponse.json({ ok: true });\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    health_route = tmp_path / "src" / "app" / "api" / "health" / "route.ts"
+    health_route.parent.mkdir(parents=True)
+    health_route.write_text(
+        'import { NextResponse } from "next/server";\n\n'
+        "export async function GET(\n"
+        "  _req: Request,\n"
+        ") {\n"
+        "  return NextResponse.json({ healthy: true });\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    express_file = tmp_path / "routes" / "payments.ts"
+    express_file.parent.mkdir(parents=True)
+    express_file.write_text(
+        'import express from "express";\n'
+        "const router = express.Router();\n\n"
+        "const capturePaymentHandler = async (\n"
+        "  req: any,\n"
+        "  res: any,\n"
+        ") => {\n"
+        "  await prisma.payment.create({ data: { id: req.body.id } });\n"
+        "  res.json({ captured: true });\n"
+        "};\n\n"
+        "router.post(\n"
+        '  "/payments/capture",\n'
+        "  requireJwtAuth,\n"
+        "  capturePaymentHandler,\n"
+        ");\n",
+        encoding="utf-8",
+    )
+
+    order_finding = Finding(
+        id="FIND-ORDER-ROUTE-1",
+        rule_id="RULE-7-SQLI-FORMAT",
+        severity="HIGH",
+        title="Issue inside orders/route.ts only",
+        description="Scoped to orders/route.ts line 10",
+        cwe_id="CWE-89",
+        path_nodes=[
+            {
+                "id": "n-ord-1",
+                "label": "Call",
+                "name": "prisma.order.create",
+                "code": "prisma.order.create(...)",
+                "filepath": "src/app/api/orders/route.ts",
+                "start_line": 10,
+                "end_line": 10,
+            }
+        ],
+        path_edges=[],
+        best_fix_location=BestFixLocation(
+            node_id="n-ord-1",
+            filepath="src/app/api/orders/route.ts",
+            line=10,
+            column=2,
+            code_snippet="prisma.order.create(...)",
+            explanation="Fix order query",
+            recommended_fix="Safe query",
+        ),
+    )
+
+    report = ApiOperationsEngine().analyze_workspace_api_operations(
+        str(tmp_path), findings=[order_finding]
+    )
+    by_route = {(ep.method, ep.route_path): ep for ep in report.endpoints}
+
+    assert ("POST", "/api/orders") in by_route
+    assert ("GET", "/api/health") in by_route
+    assert ("POST", "/payments/capture") in by_route
+
+    post_orders = by_route[("POST", "/api/orders")]
+    assert "DATABASE_WRITE" in post_orders.operation_categories
+    assert post_orders.linked_findings_count == 1
+
+    get_health = by_route[("GET", "/api/health")]
+    assert get_health.linked_findings_count == 0
+
+    cap_ep = by_route[("POST", "/payments/capture")]
+    assert cap_ep.auth_status == "AUTHENTICATED"
+    assert "requireJwtAuth" in cap_ep.auth_mechanisms
+    assert "DATABASE_WRITE" in cap_ep.operation_categories
+
+    suite = EnterpriseManager.get_instance().get_sast_plus_suite(
+        str(tmp_path), [order_finding]
+    )
+    suite_by_route = {(ep.method, ep.route_path): ep for ep in suite.endpoints}
+    assert suite_by_route[("POST", "/api/orders")].linked_findings_count == 1
+    assert suite_by_route[("POST", "/api/orders")].exposure_level == "HIGH_EXPOSURE"
+    assert suite_by_route[("GET", "/api/health")].linked_findings_count == 0
+    assert suite_by_route[("GET", "/api/health")].exposure_level != "HIGH_EXPOSURE"
+
+
+def test_cypher_read_route_with_create_merge_in_docstring_not_marked_mutating(tmp_path: Path):
+    from engine.api_operations_engine import ApiOperationsEngine
+
+    (tmp_path / "graph_routes.py").write_text(
+        '"""Module helper to create and merge read-only graph summaries."""\n'
+        "from fastapi import FastAPI\n\n"
+        "app = FastAPI()\n"
+        'DOC_BANNER = "Create overview and merge dashboard metrics safely"\n\n'
+        '@app.get("/api/graph-summary")\n'
+        "def get_graph_summary(session):\n"
+        '    """Create summary and merge view counts from Neo4j CPG nodes."""\n'
+        '    cypher_q = "MATCH (n:CPGNode) RETURN n LIMIT 25"\n'
+        "    res = session.run(cypher_q)\n"
+        "    return list(res)\n",
+        encoding="utf-8",
+    )
+
+    report = ApiOperationsEngine().analyze_workspace_api_operations(str(tmp_path))
+    by_route = {(ep.method, ep.route_path): ep for ep in report.endpoints}
+    assert ("GET", "/api/graph-summary") in by_route
+
+    summary_ep = by_route[("GET", "/api/graph-summary")]
+    assert summary_ep.is_mutating is False
+    assert "DATABASE_READ" in summary_ep.operation_categories
+    assert "DATABASE_WRITE" not in summary_ep.operation_categories
+

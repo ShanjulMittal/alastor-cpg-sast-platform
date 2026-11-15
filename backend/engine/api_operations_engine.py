@@ -204,7 +204,11 @@ _SQL_READ_RX = re.compile(
     re.IGNORECASE,
 )
 _CYPHER_WRITE_RX = re.compile(
-    r"\b(MERGE|CREATE|DETACH\s+DELETE)\s*(?:\(\s*[A-Za-z0-9_]*\s*:\s*([A-Za-z0-9_]+))?",
+    r"\b(?:"
+    r"(?:MERGE|CREATE)\s*\(\s*[A-Za-z0-9_]*(?:\s*:\s*([A-Za-z0-9_]+))?"
+    r"|CREATE\s+(?:UNIQUE\s+|TEXT\s+|RANGE\s+|VECTOR\s+)?(?:INDEX|CONSTRAINT)\b"
+    r"|DETACH\s+DELETE\s+[A-Za-z0-9_]+"
+    r")",
     re.IGNORECASE,
 )
 _CYPHER_READ_RX = re.compile(
@@ -461,15 +465,194 @@ def _convert_nextjs_segment(seg: str) -> Optional[str]:
     return seg
 
 
-def _find_matching_brace_end(lines: List[str], start_idx: int) -> int:
-    """Finds 1-indexed end line of a `{ ... }` block starting at or shortly after `start_idx`."""
+def _extract_balanced_parens(
+    lines: List[str],
+    start_idx: int,
+    open_col: int,
+    max_lines: int = 40,
+) -> Optional[Tuple[str, int, int]]:
+    """
+    Given `lines[start_idx][open_col] == '('`, scans across lines up to `max_lines`
+    until the matching `)` and returns `(inner_text, close_line_idx, close_col)`.
+    """
     depth = 0
+    in_quote: Optional[str] = None
+    in_block_comment = False
+    chunks: List[str] = []
+    limit_idx = min(len(lines), start_idx + max_lines)
+
+    for idx in range(start_idx, limit_idx):
+        line = lines[idx]
+        pos = open_col if idx == start_idx else 0
+        line_len = len(line)
+        seg_start = pos + 1 if idx == start_idx else 0
+        while pos < line_len:
+            ch = line[pos]
+            if in_block_comment:
+                if ch == "*" and pos + 1 < line_len and line[pos + 1] == "/":
+                    in_block_comment = False
+                    pos += 2
+                    continue
+                pos += 1
+                continue
+            if in_quote is not None:
+                if ch == "\\":
+                    pos += 2
+                    continue
+                if ch == in_quote:
+                    in_quote = None
+                pos += 1
+                continue
+            if ch in ("'", '"', "`"):
+                in_quote = ch
+                pos += 1
+                continue
+            if ch == "/" and pos + 1 < line_len:
+                nxt = line[pos + 1]
+                if nxt == "/":
+                    chunks.append(line[seg_start:pos])
+                    seg_start = line_len
+                    break
+                if nxt == "*":
+                    in_block_comment = True
+                    pos += 2
+                    continue
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    chunks.append(line[seg_start:pos])
+                    return ("\n".join(chunks), idx, pos)
+            pos += 1
+        if seg_start <= line_len:
+            chunks.append(line[seg_start:line_len])
+    return None
+
+
+def _split_top_level_args(
+    inner_text: str,
+    base_line: int,
+) -> List[Tuple[str, int, int]]:
+    """
+    Splits `inner_text` by top-level `,` outside `()`, `{}`, `[]`, `<>`, and quotes,
+    returning `(arg_str, start_line_1idx, end_line_1idx)` for each non-empty argument.
+    """
+    results: List[Tuple[str, int, int]] = []
+    paren_d = 0
+    brace_d = 0
+    bracket_d = 0
+    angle_d = 0
+    in_quote: Optional[str] = None
+    cur_chars: List[str] = []
+    cur_line = base_line
+    arg_first_line: Optional[int] = None
+    arg_last_line = base_line
+    pos = 0
+    total_len = len(inner_text)
+
+    while pos < total_len:
+        ch = inner_text[pos]
+        if ch == "\n":
+            cur_chars.append(ch)
+            cur_line += 1
+            pos += 1
+            continue
+        if in_quote is not None:
+            cur_chars.append(ch)
+            arg_last_line = cur_line
+            if arg_first_line is None:
+                arg_first_line = cur_line
+            if ch == "\\" and pos + 1 < total_len:
+                cur_chars.append(inner_text[pos + 1])
+                pos += 2
+                continue
+            if ch == in_quote:
+                in_quote = None
+            pos += 1
+            continue
+        if ch in ("'", '"', "`"):
+            in_quote = ch
+            if arg_first_line is None:
+                arg_first_line = cur_line
+            arg_last_line = cur_line
+            cur_chars.append(ch)
+            pos += 1
+            continue
+
+        is_arrow_gt = ch == ">" and pos > 0 and inner_text[pos - 1] == "="
+        if ch == "(":
+            paren_d += 1
+        elif ch == ")" and paren_d > 0:
+            paren_d -= 1
+        elif ch == "{":
+            brace_d += 1
+        elif ch == "}" and brace_d > 0:
+            brace_d -= 1
+        elif ch == "[":
+            bracket_d += 1
+        elif ch == "]" and bracket_d > 0:
+            bracket_d -= 1
+        elif ch == "<" and paren_d == 0 and brace_d == 0 and bracket_d == 0:
+            angle_d += 1
+        elif ch == ">" and not is_arrow_gt and angle_d > 0:
+            angle_d -= 1
+        elif ch == "," and paren_d == 0 and brace_d == 0 and bracket_d == 0 and angle_d == 0:
+            tok = "".join(cur_chars).strip()
+            if tok:
+                results.append((tok, arg_first_line or cur_line, arg_last_line))
+            cur_chars = []
+            arg_first_line = None
+            pos += 1
+            continue
+
+        if not ch.isspace():
+            if arg_first_line is None:
+                arg_first_line = cur_line
+            arg_last_line = cur_line
+        cur_chars.append(ch)
+        pos += 1
+
+    tail_tok = "".join(cur_chars).strip()
+    if tail_tok:
+        results.append((tail_tok, arg_first_line or cur_line, arg_last_line))
+    return results
+
+
+def _next_non_ws_token(lines: List[str], line_idx: int, col_idx: int) -> str:
+    """Returns the first non-whitespace, non-line-comment character at or shortly after `(line_idx, col_idx)`."""
+    limit_idx = min(len(lines), line_idx + 3)
+    for idx in range(line_idx, limit_idx):
+        s = lines[idx][col_idx:] if idx == line_idx else lines[idx]
+        stripped = s.lstrip()
+        if not stripped or stripped.startswith("//"):
+            continue
+        return stripped[0]
+    return ""
+
+
+def _find_matching_brace_end(
+    lines: List[str],
+    start_idx: int,
+    start_col: int = 0,
+    is_arrow: bool = False,
+) -> int:
+    """
+    Finds 1-indexed end line of a `{ ... }` block (or braceless `=> expr` body when `is_arrow=True`)
+    starting at `(start_idx, start_col)`.
+    """
+    depth = 0
+    paren_d = 0
+    bracket_d = 0
     opened = False
+    passed_arrow = not is_arrow
+    arrow_is_expr = False
     in_quote: Optional[str] = None
     max_scan = min(len(lines), start_idx + 800)
+
     for idx in range(start_idx, max_scan):
         line = lines[idx]
-        pos = 0
+        pos = start_col if idx == start_idx else 0
         line_len = len(line)
         while pos < line_len:
             ch = line[pos]
@@ -487,15 +670,75 @@ def _find_matching_brace_end(lines: List[str], start_idx: int) -> int:
                 continue
             if ch == "/" and pos + 1 < line_len and line[pos + 1] == "/":
                 break
+
+            if not passed_arrow:
+                if ch == "(":
+                    paren_d += 1
+                elif ch == ")" and paren_d > 0:
+                    paren_d -= 1
+                elif ch == "=" and pos + 1 < line_len and line[pos + 1] == ">" and paren_d == 0:
+                    passed_arrow = True
+                    pos += 2
+                    nxt_ch = _next_non_ws_token(lines, idx, pos)
+                    if nxt_ch != "{":
+                        arrow_is_expr = True
+                    continue
+                pos += 1
+                continue
+
+            if arrow_is_expr:
+                if ch == "(":
+                    paren_d += 1
+                elif ch == ")" and paren_d > 0:
+                    paren_d -= 1
+                elif ch == "[":
+                    bracket_d += 1
+                elif ch == "]" and bracket_d > 0:
+                    bracket_d -= 1
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}" and depth > 0:
+                    depth -= 1
+                elif ch == ";" and paren_d == 0 and bracket_d == 0 and depth == 0:
+                    return idx + 1
+                pos += 1
+                continue
+
+            if not opened:
+                if ch == "(":
+                    paren_d += 1
+                    pos += 1
+                    continue
+                if ch == ")" and paren_d > 0:
+                    paren_d -= 1
+                    pos += 1
+                    continue
+                if paren_d > 0:
+                    pos += 1
+                    continue
+                if ch == ";":
+                    return idx + 1
+
             if ch == "{":
                 depth += 1
                 opened = True
             elif ch == "}" and opened:
                 depth -= 1
                 if depth <= 0:
-                    return idx + 1
+                    nxt_tok = _next_non_ws_token(lines, idx, pos + 1)
+                    if nxt_tok in ("{", ">", "|", "&"):
+                        opened = False
+                        depth = 0
+                    else:
+                        return idx + 1
             pos += 1
-    return min(len(lines), start_idx + 25)
+
+        if arrow_is_expr and passed_arrow and in_quote is None and paren_d == 0 and bracket_d == 0 and depth == 0:
+            rstripped = line.split("//")[0].rstrip()
+            if rstripped and not rstripped.endswith(("=>", "+", "-", "*", "/", "?", ":", "&", "|", ".", ",")):
+                return idx + 1
+
+    return min(len(lines), start_idx + 1)
 
 
 class _WorkspaceSymbolGraph:
@@ -947,10 +1190,20 @@ class ApiOperationsEngine:
 
         call_nodes: List[ast.Call] = []
         str_consts: List[Tuple[int, str]] = []
-        dec_ids = {id(d) for d in fn_node.decorator_list}
+        ignored_ids = {id(d) for d in fn_node.decorator_list}
+        for sub_scope in ast.walk(fn_node):
+            if isinstance(sub_scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and sub_scope.body:
+                first_stmt = sub_scope.body[0]
+                if (
+                    isinstance(first_stmt, ast.Expr)
+                    and isinstance(first_stmt.value, ast.Constant)
+                    and isinstance(first_stmt.value.value, str)
+                ):
+                    ignored_ids.add(id(first_stmt))
+                    ignored_ids.add(id(first_stmt.value))
 
         for child in ast.walk(fn_node):
-            if id(child) in dec_ids:
+            if id(child) in ignored_ids:
                 continue
             if isinstance(child, (ast.Assign, ast.AnnAssign)):
                 self._record_py_instance_assignment(child, inst_map)
@@ -1058,60 +1311,106 @@ class ApiOperationsEngine:
                 mod_imp[lhs] = target_fp
                 sym_imp[lhs] = (target_fp, lhs)
 
-        fn_decl_rx = re.compile(
-            r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>]*>)?\s*\(([^)]*)\)"
+        fn_head_rx = re.compile(
+            r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^{;]*?>)?\s*\("
         )
-        arrow_decl_rx = re.compile(
-            r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*(?:async\s+)?\(([^)]*)\)\s*(?::[^=]+)?=>"
+        arrow_paren_rx = re.compile(
+            r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*(?:async\s+)?(?:<[^{;]*?>\s*)?\("
         )
-        method_decl_rx = re.compile(
-            r"^\s*(?:public\s+|private\s+|protected\s+)?(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*(?::\s*[A-Za-z0-9_<>\[\]|?\s]+)?\s*\{"
+        arrow_ident_rx = re.compile(
+            r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=>"
+        )
+        method_head_rx = re.compile(
+            r"^\s*(?:public\s+|private\s+|protected\s+|readonly\s+|override\s+)*(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^{;]*?>)?\s*\("
         )
 
         js_keywords = {"if", "for", "while", "switch", "catch", "function", "return", "constructor"}
         current_cls: Optional[str] = None
         cls_end_ln = 0
+        meth_end_ln = 0
         cls_rx = re.compile(r"^\s*(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)")
 
         for idx, line in enumerate(lines):
             ln_no = idx + 1
             if current_cls and ln_no > cls_end_ln:
                 current_cls = None
+                meth_end_ln = 0
 
             m_cls = cls_rx.match(line)
             if m_cls:
                 current_cls = m_cls.group(1)
                 cls_end_ln = _find_matching_brace_end(lines, idx)
+                meth_end_ln = 0
                 graph.class_locations[current_cls] = rel_fp
                 continue
 
-            m_fn = fn_decl_rx.match(line) or arrow_decl_rx.match(line)
+            m_fn = fn_head_rx.match(line)
             if m_fn:
                 fn_name = m_fn.group(1)
-                raw_params = m_fn.group(2)
-                end_ln = _find_matching_brace_end(lines, idx)
+                bal = _extract_balanced_parens(lines, idx, m_fn.end() - 1, max_lines=30)
+                if bal is not None:
+                    raw_params, close_idx, close_col = bal
+                    end_ln = _find_matching_brace_end(lines, close_idx, close_col + 1, is_arrow=False)
+                    rec = self._build_brace_function_record(
+                        rel_fp, fn_name, fn_name, ln_no, end_ln, raw_params, lines
+                    )
+                    graph.register_function(rec)
+                    continue
+
+            m_arr_p = arrow_paren_rx.match(line)
+            if m_arr_p:
+                fn_name = m_arr_p.group(1)
+                bal = _extract_balanced_parens(lines, idx, m_arr_p.end() - 1, max_lines=30)
+                if bal is not None:
+                    raw_params, close_idx, close_col = bal
+                    tail_slice = "\n".join(
+                        [lines[close_idx][close_col + 1 :]]
+                        + lines[close_idx + 1 : min(len(lines), close_idx + 4)]
+                    )
+                    if re.match(r"^\s*(?::\s*[^=;]+?)?=>", tail_slice):
+                        end_ln = _find_matching_brace_end(lines, close_idx, close_col + 1, is_arrow=True)
+                        rec = self._build_brace_function_record(
+                            rel_fp, fn_name, fn_name, ln_no, end_ln, raw_params, lines
+                        )
+                        graph.register_function(rec)
+                        continue
+
+            m_arr_id = arrow_ident_rx.match(line)
+            if m_arr_id:
+                fn_name = m_arr_id.group(1)
+                raw_params = m_arr_id.group(2)
+                eq_pos = line.find("=")
+                end_ln = _find_matching_brace_end(lines, idx, max(0, eq_pos + 1), is_arrow=True)
                 rec = self._build_brace_function_record(
                     rel_fp, fn_name, fn_name, ln_no, end_ln, raw_params, lines
                 )
                 graph.register_function(rec)
                 continue
 
-            if current_cls:
-                m_meth = method_decl_rx.match(line)
+            if current_cls and ln_no > meth_end_ln:
+                m_meth = method_head_rx.match(line)
                 if m_meth and m_meth.group(1) not in js_keywords:
                     m_name = m_meth.group(1)
-                    raw_params = m_meth.group(2)
-                    end_ln = _find_matching_brace_end(lines, idx)
-                    rec = self._build_brace_function_record(
-                        rel_fp,
-                        m_name,
-                        f"{current_cls}.{m_name}",
-                        ln_no,
-                        end_ln,
-                        raw_params,
-                        lines,
-                    )
-                    graph.register_function(rec)
+                    bal = _extract_balanced_parens(lines, idx, m_meth.end() - 1, max_lines=25)
+                    if bal is not None:
+                        raw_params, close_idx, close_col = bal
+                        tail_slice = "\n".join(
+                            [lines[close_idx][close_col + 1 :]]
+                            + lines[close_idx + 1 : min(len(lines), close_idx + 3)]
+                        )
+                        if re.match(r"^\s*(?::\s*[^{;]+)?\{", tail_slice):
+                            end_ln = _find_matching_brace_end(lines, close_idx, close_col + 1, is_arrow=False)
+                            meth_end_ln = end_ln
+                            rec = self._build_brace_function_record(
+                                rel_fp,
+                                m_name,
+                                f"{current_cls}.{m_name}",
+                                ln_no,
+                                end_ln,
+                                raw_params,
+                                lines,
+                            )
+                            graph.register_function(rec)
 
     def _index_go_file(
         self,
@@ -1176,7 +1475,7 @@ class ApiOperationsEngine:
         return_type: Optional[str] = None,
     ) -> _FunctionRecord:
         params: List[str] = []
-        for part in (raw_params or "").split(","):
+        for part, _p_s, _p_e in _split_top_level_args(raw_params or "", start_ln):
             tok = part.strip()
             if not tok:
                 continue
@@ -1672,39 +1971,63 @@ class ApiOperationsEngine:
         if re.search(r"(?:^|/)(?:app|pages)/", rel_fp):
             return []
         lines = graph.file_lines[rel_fp]
-        route_rx = re.compile(
-            r"\b(?:app|router|server|fastify)\.(get|post|put|delete|patch)\s*\(\s*['\"`]([^'\"`]+)['\"`]\s*,\s*(.+)$"
+        route_head_rx = re.compile(
+            r"\b(app|router|server|fastify)\.(get|post|put|delete|patch)\s*\("
         )
+        str_arg_rx = re.compile(r"^['\"`]([^'\"`]+)['\"`]$")
         out: List[_DiscoveredRouteSpec] = []
+
         for idx, line in enumerate(lines):
-            m = route_rx.search(line)
-            if not m:
+            m_head = route_head_rx.search(line)
+            if not m_head:
                 continue
-            method = m.group(1).upper()
-            route_path = _join_route_paths(m.group(2))
-            rest = m.group(3).strip()
-            fw = "Fastify" if "fastify." in line else "Express.js"
+            owner_ident = m_head.group(1)
+            method = m_head.group(2).upper()
+            bal = _extract_balanced_parens(lines, idx, m_head.end() - 1, max_lines=160)
+            if bal is None:
+                continue
+            inner_text, close_idx, _close_col = bal
+            top_args = _split_top_level_args(inner_text, idx + 1)
+            if len(top_args) < 2:
+                continue
+
+            m_path = str_arg_rx.match(top_args[0][0].strip())
+            if not m_path:
+                continue
+
+            route_path = _join_route_paths(m_path.group(1))
+            fw = "Fastify" if owner_ident == "fastify" else "Express.js"
             start_ln = idx + 1
-            end_ln = _find_matching_brace_end(lines, idx) if "{" in rest else start_ln
+            end_ln = close_idx + 1
 
-            # Extract middleware identifiers preceding the final callback or handler
-            middlewares: List[str] = []
-            callback_split = re.split(r"(?:async\s*)?\([^)]*\)\s*=>|(?:async\s+)?function\s*\(", rest, maxsplit=1)
-            prefix_args = callback_split[0].strip().rstrip(",").strip()
-            is_inline_cb = len(callback_split) > 1
+            raw_mws: List[str] = []
+            for mw_txt, _mw_s, _mw_e in top_args[1:-1]:
+                cleaned_mw = mw_txt.strip()
+                if cleaned_mw.startswith("[") and cleaned_mw.endswith("]"):
+                    for sub_mw, _s1, _s2 in _split_top_level_args(cleaned_mw[1:-1], start_ln):
+                        if sub_mw.strip():
+                            raw_mws.append(sub_mw.strip())
+                elif cleaned_mw:
+                    raw_mws.append(cleaned_mw)
 
-            raw_parts = [p.strip().rstrip(");").strip() for p in prefix_args.split(",") if p.strip()]
+            middlewares = [
+                p for p in raw_mws if re.match(r"^[A-Za-z_$][A-Za-z0-9_$.()]*$", p)
+            ]
+            last_txt, last_s_ln, last_e_ln = top_args[-1]
+            last_clean = last_txt.strip()
+            is_inline_cb = bool(
+                "=>" in last_clean or re.search(r"\bfunction\b", last_clean)
+            )
+
             handler_name = f"{method.lower()}_{re.sub(r'[^A-Za-z0-9]+', '_', route_path).strip('_') or 'root'}"
             inline_fn: Optional[_FunctionRecord] = None
 
             if is_inline_cb:
-                middlewares = [p for p in raw_parts if re.match(r"^[A-Za-z_$][A-Za-z0-9_$.()]*$", p)]
                 inline_fn = self._build_brace_function_record(
-                    rel_fp, handler_name, handler_name, start_ln, end_ln, "req, res", lines
+                    rel_fp, handler_name, handler_name, last_s_ln, last_e_ln, "req, res", lines
                 )
-            elif raw_parts:
-                handler_name = raw_parts[-1]
-                middlewares = [p for p in raw_parts[:-1] if re.match(r"^[A-Za-z_$][A-Za-z0-9_$.()]*$", p)]
+            elif re.match(r"^[A-Za-z_$][A-Za-z0-9_$.]*$", last_clean):
+                handler_name = last_clean
 
             auth_mechs: List[str] = []
             seed_calls: List[Tuple[str, int, str]] = []
@@ -2269,14 +2592,23 @@ class ApiOperationsEngine:
         # Neo4j Cypher session.run(...) — inspect inline query, function string consts, or module RULES
         if callee.endswith("session.run") or callee in ("Neo4jQuery",):
             cypher_src = expr
-            if "MATCH" not in cypher_src.upper() and "MERGE" not in cypher_src.upper() and "CREATE" not in cypher_src.upper():
-                combined_consts = " ".join(s for _, s in fn_rec.string_consts)
-                if not combined_consts and fn_rec.filepath in graph.file_GlobalStrings:
-                    combined_consts = " ".join(graph.file_GlobalStrings[fn_rec.filepath][:3])
-                cypher_src = f"{expr} {combined_consts}"
+            if not (_CYPHER_READ_RX.search(cypher_src) or _CYPHER_WRITE_RX.search(cypher_src)):
+                cypher_consts = [
+                    s
+                    for _, s in fn_rec.string_consts
+                    if _CYPHER_READ_RX.search(s) or _CYPHER_WRITE_RX.search(s)
+                ]
+                if not cypher_consts and fn_rec.filepath in graph.file_GlobalStrings:
+                    cypher_consts = [
+                        s
+                        for s in graph.file_GlobalStrings[fn_rec.filepath]
+                        if _CYPHER_READ_RX.search(s) or _CYPHER_WRITE_RX.search(s)
+                    ][:3]
+                if cypher_consts:
+                    cypher_src = f"{expr} {' '.join(cypher_consts)}"
             m_cyp_w = _CYPHER_WRITE_RX.search(cypher_src)
-            if m_cyp_w or "DETACH DELETE" in cypher_src.upper():
-                lbl = (m_cyp_w.group(2) if (m_cyp_w and m_cyp_w.group(2)) else None) or "Neo4j CPG"
+            if m_cyp_w:
+                lbl = m_cyp_w.group(1) or "Neo4j CPG"
                 return {
                     "category": "DATABASE_WRITE",
                     "operation_verb": "CYPHER_WRITE",
@@ -2285,7 +2617,7 @@ class ApiOperationsEngine:
                     "risk_note": None,
                 }
             m_cyp_r = _CYPHER_READ_RX.search(cypher_src)
-            lbl_r = (m_cyp_r.group(1) if (m_cyp_r and m_cyp_r.group(1)) else None) or "Neo4j CPG"
+            lbl_r = (m_cyp_r.group(1) if m_cyp_r else None) or "Neo4j CPG"
             return {
                 "category": "DATABASE_READ",
                 "operation_verb": "CYPHER_MATCH",

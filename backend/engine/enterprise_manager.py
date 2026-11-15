@@ -4646,11 +4646,7 @@ class EnterpriseManager:
                 norm_ep_fp = ep_dossier.filepath.replace("\\", "/")
                 covered_route_handlers.add((norm_ep_fp, ep_dossier.handler_name))
                 seen_route_keys.add((norm_ep_fp, ep_dossier.method, ep_dossier.route_path))
-                linked_c = (
-                    ep_dossier.linked_findings_count
-                    or findings_by_file.get(norm_ep_fp, 0)
-                    or findings_by_file.get(os.path.basename(norm_ep_fp), 0)
-                )
+                linked_c = ep_dossier.linked_findings_count
                 if ep_dossier.auth_status == "AUTHENTICATED" and ep_dossier.auth_mechanisms:
                     posture_str = f"Authenticated ({', '.join(ep_dossier.auth_mechanisms[:2])})"
                 elif ep_dossier.auth_status == "AUTHENTICATED":
@@ -4680,8 +4676,8 @@ class EnterpriseManager:
                         plain_english_purpose=purpose_str,
                     )
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("API operations enrichment failed in get_sast_plus_suite: %s", exc)
 
         for rel_p, full_p in discovered_files.items():
             if not rel_p.endswith((".py", ".js", ".ts", ".tsx")):

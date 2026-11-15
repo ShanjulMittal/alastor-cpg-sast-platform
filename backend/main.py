@@ -4059,11 +4059,36 @@ def get_api_endpoints_operations(project_path: Optional[str] = Query(None)):
     """Discovers multi-framework HTTP/REST endpoints and traces inter-procedural CPG operations across workspace files."""
     fallback_dir = os.path.realpath(current_scan_dir or enterprise_mgr.platform_root)
     target_dir = fallback_dir
-    if project_path and os.path.exists(project_path):
-        cand_real = os.path.realpath(project_path)
-        common_base = os.path.commonpath([cand_real, cand_real])
-        if os.path.exists(common_base):
-            target_dir = common_base
+    if project_path is not None and project_path.strip():
+        raw_req_path = project_path.strip()
+        if not os.path.exists(raw_req_path):
+            raise HTTPException(
+                status_code=400,
+                detail="Requested project_path does not exist.",
+            )
+        cand_real = os.path.realpath(raw_req_path)
+        confined_target: Optional[str] = None
+        for raw_allowed in _get_ai_allowed_roots():
+            if not raw_allowed:
+                continue
+            allowed_real = os.path.realpath(raw_allowed)
+            try:
+                common_base = os.path.commonpath([allowed_real, cand_real])
+            except ValueError:
+                continue
+            if common_base == allowed_real:
+                confined_target = (
+                    common_base
+                    if cand_real == common_base
+                    else os.path.join(common_base, os.path.relpath(cand_real, common_base))
+                )
+                break
+        if confined_target is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Requested project_path is outside permitted workspace roots.",
+            )
+        target_dir = confined_target
 
     norm_req = os.path.normcase(os.path.abspath(target_dir))
     norm_cur = os.path.normcase(os.path.abspath(current_scan_dir or enterprise_mgr.platform_root))
