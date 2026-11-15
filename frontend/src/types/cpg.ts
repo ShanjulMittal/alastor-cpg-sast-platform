@@ -870,6 +870,7 @@ export interface SastPlusSuiteResponse {
   executive_plain_summary: string;
   overall_maturity_grade: string;
   maturity_score: number;
+  pasta_assessment?: PastaAssessmentResponse | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1219,4 +1220,195 @@ export interface ApiOperationsReportResponse {
   vulnerable_endpoints_count: number;
   frameworks_detected: string[];
   endpoints: ApiEndpointOperationDossier[];
+}
+
+// ---------------------------------------------------------------------------
+// 13. 7-Stage PASTA Threat Modeling & SAR Go-Live Gate Interfaces
+// ---------------------------------------------------------------------------
+export type PastaBusinessPreset =
+  | "AUTO_INFERRED"
+  | "FINTECH_PAYMENTS"
+  | "HEALTHCARE_PHI"
+  | "AI_SAAS_PUBLIC"
+  | "ENTERPRISE_INTERNAL";
+
+export type GoLiveGateStatus =
+  | "MANDATORY_PRE_GO_LIVE"
+  | "POST_GO_LIVE_SLA"
+  | "RISK_ACCEPTED_WAIVER";
+
+export type GoLiveSlaWindow =
+  | "PRE_LAUNCH"
+  | "7_DAYS"
+  | "14_DAYS"
+  | "30_DAYS"
+  | "90_DAYS"
+  | "WAIVED";
+
+export type GoLiveVerdict =
+  | "APPROVED_FOR_GO_LIVE"
+  | "CONDITIONAL_GO_LIVE"
+  | "NO_GO_HOLD_RELEASE";
+
+export interface PastaCrownJewelItem {
+  id: string;
+  name: string;
+  category: string;
+  asset_count: number;
+  weight_multiplier: number;
+  sensitivity_label: string;
+  rationale: string;
+  sample_locations: string[];
+}
+
+export interface PastaEvidenceItem {
+  id: string;
+  stage_number: number;
+  verdict: "OK" | "GAP";
+  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "PASS";
+  title: string;
+  detail: string;
+  filepath: string;
+  line: number;
+  cwe_or_capec: string;
+  stride_cross_ref: string;
+  linked_finding_id?: string | null;
+}
+
+export interface PastaStageItem {
+  stage_number: number;
+  stage_code: string;
+  stage_roman: string;
+  title: string;
+  methodology_goal: string;
+  status: "PASS" | "MONITORED" | "ACTION_REQUIRED";
+  ok_count: number;
+  gap_count: number;
+  summary: string;
+  what_passed: string[];
+  what_failed: string[];
+  evidence_items: PastaEvidenceItem[];
+}
+
+export interface PastaAttackTreeNode {
+  id: string;
+  node_role:
+    | "GOAL"
+    | "CAPEC_VECTOR"
+    | "ENTRYPOINT"
+    | "PROPAGATION"
+    | "VULN_SINK"
+    | "BFL_SHIELD"
+    | "CROWN_JEWEL";
+  title: string;
+  subtitle: string;
+  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "PASS";
+  filepath: string;
+  line: number;
+  cwe_or_capec: string;
+  is_severed: boolean;
+  linked_finding_id?: string | null;
+}
+
+export interface PastaAttackTreeEdge {
+  id: string;
+  source: string;
+  target: string;
+  label: string;
+  is_blocked: boolean;
+}
+
+export interface PastaAttackTreeScenario {
+  id: string;
+  title: string;
+  attacker_persona: string;
+  mitre_capec: string;
+  stride_letter: string;
+  target_crown_jewel: string;
+  status: "EXPLOITABLE_PATH" | "PARTIALLY_GUARDED" | "SEVERED_BY_CONTROLS";
+  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  narrative: string;
+  bfl_remediation: string;
+  projected_risk_reduction: number;
+  linked_finding_id?: string | null;
+  primary_filepath: string;
+  primary_line: number;
+  nodes: PastaAttackTreeNode[];
+  edges: PastaAttackTreeEdge[];
+}
+
+export interface GoLiveObservationItem {
+  id: string;
+  source_type:
+    | "SAST"
+    | "SCA"
+    | "IAC"
+    | "SECRET_VAULT"
+    | "API_EXPOSURE"
+    | "PBOM"
+    | "STRIDE_GAP";
+  title: string;
+  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  cwe_or_standard: string;
+  pasta_stage: number;
+  stride_letter: string;
+  filepath: string;
+  line: number;
+  reachability_status: string;
+  gate_status: GoLiveGateStatus;
+  default_gate_status: GoLiveGateStatus;
+  is_overridden: boolean;
+  sla_window: GoLiveSlaWindow;
+  why_issue: string;
+  why_gate_classification: string;
+  mandatory_fix_action: string;
+  compensating_control: string;
+  effort_estimate: string;
+  raci_owner: string;
+  risk_reduction_points: number;
+  linked_finding_id?: string | null;
+}
+
+export interface PastaProfileUpdatePayload {
+  project_path?: string | null;
+  business_preset?: PastaBusinessPreset;
+  crown_jewel_weights?: Record<string, number>;
+  reset_defaults?: boolean;
+}
+
+export interface PastaGateOverridePayload {
+  project_path?: string | null;
+  observation_id: string;
+  gate_status?: GoLiveGateStatus;
+  sla_window?: GoLiveSlaWindow | null;
+  compensating_control_note?: string | null;
+  reset_override?: boolean;
+}
+
+export interface PastaAssessmentResponse {
+  project_path: string;
+  application_name: string;
+  generated_at: string;
+  selected_business_preset: PastaBusinessPreset;
+  effective_business_preset: PastaBusinessPreset;
+  inferred_business_reason: string;
+  compliance_frameworks: string[];
+  crown_jewels: PastaCrownJewelItem[];
+  inherent_risk_score: number;
+  inherent_risk_level: "CRITICAL" | "HIGH" | "MEDIUM" | "MODERATE" | "LOW";
+  residual_risk_score: number;
+  residual_risk_level: "CRITICAL" | "HIGH" | "MODERATE" | "LOW";
+  projected_golive_risk_score: number;
+  projected_golive_risk_level: "CRITICAL" | "HIGH" | "MODERATE" | "LOW";
+  golive_verdict: GoLiveVerdict;
+  golive_verdict_label: string;
+  golive_executive_summary: string;
+  mandatory_pre_golive_count: number;
+  post_golive_sla_count: number;
+  waived_count: number;
+  passing_controls_count: number;
+  stages: PastaStageItem[];
+  attack_trees: PastaAttackTreeScenario[];
+  golive_observations: GoLiveObservationItem[];
+  make_it_live_checklist: string[];
 }

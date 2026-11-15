@@ -11,6 +11,9 @@ import {
   BatchRemediateResponse,
   GraphDataResponse,
   GraphViewMode,
+  PastaAssessmentResponse,
+  PastaGateOverridePayload,
+  PastaProfileUpdatePayload,
   SecretInventoryResponse,
   SecretScannerConfig,
   SecretScannerConfigUpdate,
@@ -245,16 +248,142 @@ export async function verifySecrets(
   });
 }
 
+function normalizeLocalProjectPath(
+  projectPath?: string | null
+): string | undefined {
+  const trimmed = (projectPath || "").trim();
+  if (!trimmed || /^(https?:\/\/|git@)/i.test(trimmed)) {
+    return undefined;
+  }
+  return trimmed;
+}
+
 export async function fetchApiOperationsReport(
   projectPath?: string | null
 ): Promise<ApiOperationsReportResponse> {
   const qs = new URLSearchParams();
-  const trimmed = (projectPath || "").trim();
-  if (trimmed && !/^(https?:\/\/|git@)/i.test(trimmed)) {
-    qs.set("project_path", trimmed);
+  const localPath = normalizeLocalProjectPath(projectPath);
+  if (localPath) {
+    qs.set("project_path", localPath);
   }
   const suffix = qs.toString() ? `?${qs.toString()}` : "";
   return apiFetchJson<ApiOperationsReportResponse>(
     `/api/endpoints/operations${suffix}`
   );
+}
+
+export async function fetchPastaAssessment(
+  projectPath?: string | null
+): Promise<PastaAssessmentResponse> {
+  const qs = new URLSearchParams();
+  const localPath = normalizeLocalProjectPath(projectPath);
+  if (localPath) {
+    qs.set("project_path", localPath);
+  }
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return apiFetchJson<PastaAssessmentResponse>(`/api/aspm/pasta${suffix}`);
+}
+
+export async function updatePastaProfile(
+  payload: PastaProfileUpdatePayload
+): Promise<PastaAssessmentResponse> {
+  const localPath = normalizeLocalProjectPath(payload.project_path);
+  const body: PastaProfileUpdatePayload = {
+    ...(localPath ? { project_path: localPath } : {}),
+    ...(payload.business_preset
+      ? { business_preset: payload.business_preset }
+      : {}),
+    ...(payload.crown_jewel_weights
+      ? { crown_jewel_weights: payload.crown_jewel_weights }
+      : {}),
+    ...(typeof payload.reset_defaults === "boolean"
+      ? { reset_defaults: payload.reset_defaults }
+      : {}),
+  };
+  return apiFetchJson<PastaAssessmentResponse>("/api/aspm/pasta/profile", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function overridePastaGate(
+  payload: PastaGateOverridePayload
+): Promise<PastaAssessmentResponse> {
+  const localPath = normalizeLocalProjectPath(payload.project_path);
+  const body: PastaGateOverridePayload = {
+    observation_id: payload.observation_id,
+    ...(localPath ? { project_path: localPath } : {}),
+    ...(payload.gate_status ? { gate_status: payload.gate_status } : {}),
+    ...(payload.sla_window !== undefined
+      ? { sla_window: payload.sla_window }
+      : {}),
+    ...(payload.compensating_control_note !== undefined
+      ? { compensating_control_note: payload.compensating_control_note }
+      : {}),
+    ...(typeof payload.reset_override === "boolean"
+      ? { reset_override: payload.reset_override }
+      : {}),
+  };
+  return apiFetchJson<PastaAssessmentResponse>(
+    "/api/aspm/pasta/gate-override",
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+export async function downloadSarReportBlob(
+  format: "docx" | "pdf",
+  projectPath?: string | null
+): Promise<{ blob: Blob; filename: string }> {
+  const qs = new URLSearchParams();
+  qs.set("format", format);
+  const localPath = normalizeLocalProjectPath(projectPath);
+  if (localPath) {
+    qs.set("project_path", localPath);
+  }
+  const url = buildBackendUrl(`/api/export/sar-report?${qs.toString()}`);
+  const res = await fetch(url, {
+    method: "GET",
+  });
+
+  if (!res.ok) {
+    const raw = await res.text();
+    let errPayload: unknown = undefined;
+    let detail = `HTTP ${res.status}`;
+    if (raw) {
+      try {
+        errPayload = JSON.parse(raw);
+        if (
+          errPayload &&
+          typeof errPayload === "object" &&
+          "detail" in errPayload &&
+          (errPayload as { detail?: unknown }).detail
+        ) {
+          detail = String((errPayload as { detail?: unknown }).detail);
+        } else if (
+          errPayload &&
+          typeof errPayload === "object" &&
+          "user_message" in errPayload &&
+          (errPayload as { user_message?: unknown }).user_message
+        ) {
+          detail = String((errPayload as { user_message?: unknown }).user_message);
+        } else {
+          detail = raw;
+        }
+      } catch {
+        detail = raw;
+      }
+    }
+    throw new ApiRequestError(detail, res.status, detail, errPayload);
+  }
+
+  const disposition = res.headers.get("Content-Disposition") || "";
+  const match = disposition.match(/filename="?([^";\r\n]+)"?/i);
+  const rawName = match && match[1] ? match[1].trim() : "";
+  const sanitizedName = rawName.replace(/[\\/]+/g, "_");
+  const filename = sanitizedName || `ALASTOR_SAR_GoLive_Report.${format}`;
+  const blob = await res.blob();
+  return { blob, filename };
 }

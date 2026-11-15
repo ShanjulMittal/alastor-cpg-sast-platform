@@ -53,6 +53,9 @@ import {
   SecretScannerConfigUpdate,
   SecretInventoryResponse,
   ApiOperationsReportResponse,
+  PastaAssessmentResponse,
+  PastaProfileUpdatePayload,
+  PastaGateOverridePayload,
 } from "@/types/cpg";
 import {
   BACKEND_URL,
@@ -70,6 +73,10 @@ import {
   fetchSecretInventory,
   verifySecrets,
   fetchApiOperationsReport,
+  fetchPastaAssessment,
+  updatePastaProfile,
+  overridePastaGate,
+  downloadSarReportBlob,
 } from "@/lib/api";
 
 export const UI_PREFS_STORAGE_KEY = "alastor_ui_prefs_v4";
@@ -77,6 +84,8 @@ export const UI_PREFS_STORAGE_KEY = "alastor_ui_prefs_v4";
 let _hasHydratedUiPrefs = false;
 let _inflightSastSuitePromise: Promise<void> | null = null;
 const _inflightApiOpsPromises = new Map<string, Promise<ApiOperationsReportResponse | null>>();
+let _pastaInFlight: Promise<PastaAssessmentResponse | null> | null = null;
+let _pastaInFlightKey = "";
 
 const VALID_APP_THEMES: AppThemeId[] = [
   "olympian-light",
@@ -251,6 +260,12 @@ interface AuditState {
   isVerifyingSecrets: boolean;
   apiOperationsReport: ApiOperationsReportResponse | null;
   isLoadingApiOperations: boolean;
+
+  // 7-Stage PASTA Threat Modeling & Go-Live SAR State
+  pastaAssessment: PastaAssessmentResponse | null;
+  isLoadingPasta: boolean;
+  isSavingPasta: boolean;
+  exportingSarFormat: "docx" | "pdf" | null;
 
   // UI Simplicity, Layout & Command Palette State
   uiDensityMode: "SIMPLE_CLEAN" | "PRO_DETAILED";
@@ -487,6 +502,16 @@ interface AuditState {
   fetchApiOperationsState: (
     projectPath?: string
   ) => Promise<ApiOperationsReportResponse | null>;
+  fetchPastaState: (
+    projectPathOverride?: string | null
+  ) => Promise<PastaAssessmentResponse | null>;
+  savePastaProfileState: (
+    payload: PastaProfileUpdatePayload
+  ) => Promise<PastaAssessmentResponse | null>;
+  savePastaGateOverride: (
+    payload: PastaGateOverridePayload
+  ) => Promise<PastaAssessmentResponse | null>;
+  downloadSarGoLiveReport: (format: "docx" | "pdf") => Promise<boolean>;
   triggerScan: (
     targetPath?: string,
     options?: GitRepoScanOptions
@@ -579,6 +604,11 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   isVerifyingSecrets: false,
   apiOperationsReport: null,
   isLoadingApiOperations: false,
+
+  pastaAssessment: null,
+  isLoadingPasta: false,
+  isSavingPasta: false,
+  exportingSarFormat: null,
 
   uiDensityMode: "SIMPLE_CLEAN",
   ideLayoutMode: "SPLIT_BOTH",
@@ -2293,6 +2323,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       })),
       secretInventory: null,
       apiOperationsReport: null,
+      pastaAssessment: null,
       ...(existingProj?.target_path ? { projectPath: existingProj.target_path } : {}),
     }));
 
@@ -2320,6 +2351,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           activeEndLine: null,
           secretInventory: null,
           apiOperationsReport: null,
+          pastaAssessment: null,
         }));
         if (needsScan) {
           const hasLocalCheckout =
@@ -2359,6 +2391,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchSastPlusSuite(),
           get().fetchTrackChanges(),
           get().fetchApiOperationsState(),
+          get().fetchPastaState(),
         ]);
       }
     } catch (err) {
@@ -2413,6 +2446,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchTrackChanges(),
           get().fetchSecretInventoryState(),
           get().fetchApiOperationsState(),
+          get().fetchPastaState(),
         ]);
       }
     } catch (err) {
@@ -2916,7 +2950,12 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         const res = await fetch(`${BACKEND_URL}/api/aspm/suite`);
         if (res.ok) {
           const data: SastPlusSuiteResponse = await res.json();
-          set({ sastPlusSuite: data });
+          set({
+            sastPlusSuite: data,
+            ...(data?.pasta_assessment
+              ? { pastaAssessment: data.pasta_assessment }
+              : {}),
+          });
         }
       } catch (err) {
         console.error("Failed to fetch SAST++++++ ASPM suite:", err);
@@ -3139,6 +3178,130 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     return reqPromise;
   },
 
+  fetchPastaState: async (projectPathOverride?: string | null) => {
+    const rawPath = (
+      projectPathOverride !== undefined && projectPathOverride !== null
+        ? projectPathOverride
+        : get().projectPath || ""
+    ).trim();
+    const key =
+      rawPath && !/^(https?:\/\/|git@)/i.test(rawPath) ? rawPath : "__active__";
+    if (_pastaInFlight && _pastaInFlightKey === key) {
+      return _pastaInFlight;
+    }
+    set({ isLoadingPasta: true });
+    _pastaInFlightKey = key;
+    const reqPromise = (async () => {
+      try {
+        const data = await fetchPastaAssessment(
+          key === "__active__" ? undefined : key
+        );
+        set((state) => ({
+          pastaAssessment: data,
+          isLoadingPasta: false,
+          ...(state.sastPlusSuite
+            ? {
+                sastPlusSuite: {
+                  ...state.sastPlusSuite,
+                  pasta_assessment: data,
+                },
+              }
+            : {}),
+        }));
+        return data;
+      } catch (err) {
+        console.error("Failed to fetch PASTA threat assessment:", err);
+        set({ isLoadingPasta: false });
+        return null;
+      } finally {
+        if (_pastaInFlight === reqPromise) {
+          _pastaInFlight = null;
+          _pastaInFlightKey = "";
+        }
+      }
+    })();
+    _pastaInFlight = reqPromise;
+    return reqPromise;
+  },
+
+  savePastaProfileState: async (payload: PastaProfileUpdatePayload) => {
+    set({ isSavingPasta: true });
+    try {
+      const data = await updatePastaProfile({
+        ...payload,
+        project_path: payload.project_path ?? (get().projectPath || undefined),
+      });
+      set((state) => ({
+        pastaAssessment: data,
+        isSavingPasta: false,
+        ...(state.sastPlusSuite
+          ? {
+              sastPlusSuite: {
+                ...state.sastPlusSuite,
+                pasta_assessment: data,
+              },
+            }
+          : {}),
+      }));
+      return data;
+    } catch (err) {
+      console.error("Failed to update PASTA business profile:", err);
+      set({ isSavingPasta: false });
+      return null;
+    }
+  },
+
+  savePastaGateOverride: async (payload: PastaGateOverridePayload) => {
+    set({ isSavingPasta: true });
+    try {
+      const data = await overridePastaGate({
+        ...payload,
+        project_path: payload.project_path ?? (get().projectPath || undefined),
+      });
+      set((state) => ({
+        pastaAssessment: data,
+        isSavingPasta: false,
+        ...(state.sastPlusSuite
+          ? {
+              sastPlusSuite: {
+                ...state.sastPlusSuite,
+                pasta_assessment: data,
+              },
+            }
+          : {}),
+      }));
+      return data;
+    } catch (err) {
+      console.error("Failed to update PASTA Go-Live gate override:", err);
+      set({ isSavingPasta: false });
+      return null;
+    }
+  },
+
+  downloadSarGoLiveReport: async (format: "docx" | "pdf") => {
+    set({ exportingSarFormat: format });
+    try {
+      const { blob, filename } = await downloadSarReportBlob(
+        format,
+        get().projectPath || undefined
+      );
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      return true;
+    } catch (err) {
+      console.error(`Failed to export SAR Go-Live report (${format}):`, err);
+      return false;
+    } finally {
+      set({ exportingSarFormat: null });
+    }
+  },
+
   triggerScan: async (targetPath?: string, options?: GitRepoScanOptions) => {
     const path = (targetPath || get().projectPath || "").trim();
     if (!path) {
@@ -3149,6 +3312,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       gitScanErrorBanner: null,
       secretInventory: null,
       apiOperationsReport: null,
+      pastaAssessment: null,
       scanStatusMessage: `Initiating analysis for: ${path}...`,
       scanProgress: {
         is_scanning: true,
@@ -3225,6 +3389,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchSastPlusSuite(),
           get().fetchTrackChanges(),
           get().fetchApiOperationsState(),
+          get().fetchPastaState(),
         ]);
         return { ok: true, response: scanData };
       } else {
