@@ -1312,6 +1312,75 @@ class SecretInventoryResponse(BaseModel):
     secrets: List[Finding] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# 12. Multi-Framework API Endpoints & Inter-Procedural CPG Operations Tracer
+# ---------------------------------------------------------------------------
+ApiOperationCategory = Literal[
+    "AUTH_GUARD",
+    "INPUT_VALIDATION",
+    "DATABASE_READ",
+    "DATABASE_WRITE",
+    "EXTERNAL_HTTP_OR_AI",
+    "FILESYSTEM_IO",
+    "OS_COMMAND_EXEC",
+    "SECRET_OR_CRYPTO",
+]
+
+
+class ApiOperationItem(BaseModel):
+    id: str
+    step_index: int
+    category: ApiOperationCategory
+    operation_verb: str
+    target_resource: str
+    function_name: str
+    call_chain: List[str] = Field(default_factory=list)
+    filepath: str
+    line_number: int
+    code_snippet: str
+    is_mutating: bool = False
+    risk_note: Optional[str] = None
+
+
+class ApiEndpointOperationDossier(BaseModel):
+    id: str
+    method: str
+    route_path: str
+    framework: str
+    handler_name: str
+    filepath: str
+    start_line: int
+    end_line: int
+    auth_status: Literal["AUTHENTICATED", "UNAUTHENTICATED", "PARTIAL_OR_CUSTOM"] = "UNAUTHENTICATED"
+    auth_mechanisms: List[str] = Field(default_factory=list)
+    request_params: List[str] = Field(default_factory=list)
+    response_type: Optional[str] = None
+    operations: List[ApiOperationItem] = Field(default_factory=list)
+    operation_categories: List[ApiOperationCategory] = Field(default_factory=list)
+    calls_functions: List[str] = Field(default_factory=list)
+    is_mutating: bool = False
+    risk_level: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW", "SAFE"] = "SAFE"
+    linked_finding_ids: List[str] = Field(default_factory=list)
+    linked_findings_count: int = 0
+    plain_english_story: str = ""
+    flow_nodes: List[Dict[str, Any]] = Field(default_factory=list)
+    flow_edges: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ApiOperationsReportResponse(BaseModel):
+    project_path: str
+    total_endpoints: int
+    authenticated_count: int
+    unauthenticated_count: int
+    mutating_endpoints_count: int
+    db_endpoints_count: int
+    external_http_endpoints_count: int
+    exec_or_fs_endpoints_count: int
+    vulnerable_endpoints_count: int
+    frameworks_detected: List[str] = Field(default_factory=list)
+    endpoints: List[ApiEndpointOperationDossier] = Field(default_factory=list)
+
+
 
 
 

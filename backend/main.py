@@ -52,6 +52,7 @@ from models import (
     AiGraphExplainRequest, AiGraphExplainResponse,
     SecretScannerConfig, SecretScannerConfigUpdate,
     SecretVerifyRequest, SecretInventoryResponse,
+    ApiOperationsReportResponse,
 )
 from database.neo4j_client import Neo4jClient
 from database.batch_ingestor import BatchIngestor
@@ -60,6 +61,7 @@ from engine.vuln_extractor import VulnExtractorEngine
 from engine.enterprise_manager import EnterpriseManager
 from engine.frontier_ai_engine import FrontierAiEngine
 from engine.secret_validator_engine import get_secret_validator_engine
+from engine.api_operations_engine import get_api_operations_engine
 from engine.remediation_patcher import (
     apply_workspace_patch,
     batch_apply_workspace_patches,
@@ -140,6 +142,7 @@ frontier_ai_engine = FrontierAiEngine(
     vault_dir=os.path.join(enterprise_mgr.platform_root, ".alastor_vault")
 )
 secret_validator_engine = get_secret_validator_engine(enterprise_mgr.platform_root)
+api_operations_engine = get_api_operations_engine()
 current_scan_dir: str = enterprise_mgr.platform_root
 current_app_tree: Optional[AppTreeSummary] = None
 
@@ -4046,6 +4049,37 @@ def verify_secret_findings(req: SecretVerifyRequest):
             )
     refreshed = get_or_compute_findings(force_refresh=False)
     return secret_validator_engine.build_inventory_response(refreshed)
+
+
+# ---------------------------------------------------------------------------
+# Multi-Framework API Endpoints & Inter-Procedural CPG Operations Tracer
+# ---------------------------------------------------------------------------
+@app.get("/api/endpoints/operations", response_model=ApiOperationsReportResponse)
+def get_api_endpoints_operations(project_path: Optional[str] = Query(None)):
+    """Discovers multi-framework HTTP/REST endpoints and traces inter-procedural CPG operations across workspace files."""
+    fallback_dir = os.path.realpath(current_scan_dir or enterprise_mgr.platform_root)
+    target_dir = fallback_dir
+    if project_path and os.path.exists(project_path):
+        cand_real = os.path.realpath(project_path)
+        common_base = os.path.commonpath([cand_real, cand_real])
+        if os.path.exists(common_base):
+            target_dir = common_base
+
+    norm_req = os.path.normcase(os.path.abspath(target_dir))
+    norm_cur = os.path.normcase(os.path.abspath(current_scan_dir or enterprise_mgr.platform_root))
+
+    findings: List[Finding] = []
+    if norm_req == norm_cur and (_cached_findings is not None or _last_neo4j_ingested_dir is not None):
+        findings = get_or_compute_findings(force_refresh=False)
+    else:
+        cached_proj = enterprise_mgr.get_cached_scan_for_project(target_dir)
+        if cached_proj and isinstance(cached_proj.get("latest_findings"), list):
+            findings = enterprise_mgr.enrich_findings(
+                [Finding(**f) for f in cached_proj["latest_findings"] if isinstance(f, dict)]
+            )
+
+    return api_operations_engine.analyze_workspace_api_operations(target_dir, findings)
+
 
 
 

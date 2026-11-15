@@ -41,6 +41,7 @@ from models import (
 )
 from engine.rule_executor import RULES
 from engine.osv_lockfile_scanner import run_live_osv_lockfile_scan, run_cicd_workflow_security_scan
+from engine.api_operations_engine import analyze_workspace_api_operations
 from compiler.ast_parser import SANITIZER_PATTERNS
 
 logger = logging.getLogger("cpg-sast.enterprise")
@@ -4634,6 +4635,54 @@ class EnterpriseManager:
             findings_by_file[fp] = findings_by_file.get(fp, 0) + 1
             findings_by_file[base_fp] = findings_by_file.get(base_fp, 0) + 1
 
+        covered_route_handlers = set()
+        seen_route_keys = set()
+        try:
+            api_ops_report = analyze_workspace_api_operations(
+                target_dir if is_file_target else root_dir,
+                findings,
+            )
+            for ep_dossier in api_ops_report.endpoints:
+                norm_ep_fp = ep_dossier.filepath.replace("\\", "/")
+                covered_route_handlers.add((norm_ep_fp, ep_dossier.handler_name))
+                seen_route_keys.add((norm_ep_fp, ep_dossier.method, ep_dossier.route_path))
+                linked_c = (
+                    ep_dossier.linked_findings_count
+                    or findings_by_file.get(norm_ep_fp, 0)
+                    or findings_by_file.get(os.path.basename(norm_ep_fp), 0)
+                )
+                if ep_dossier.auth_status == "AUTHENTICATED" and ep_dossier.auth_mechanisms:
+                    posture_str = f"Authenticated ({', '.join(ep_dossier.auth_mechanisms[:2])})"
+                elif ep_dossier.auth_status == "AUTHENTICATED":
+                    posture_str = "Authenticated Route"
+                else:
+                    posture_str = "REST API Route" if ep_dossier.framework == "FastAPI" else f"{ep_dossier.framework} Route"
+                exp_lvl = (
+                    "HIGH_EXPOSURE"
+                    if linked_c > 0
+                    else ("INTERNAL_API" if ep_dossier.auth_status == "AUTHENTICATED" else "STANDARD")
+                )
+                purpose_str = (
+                    ep_dossier.plain_english_story
+                    or f"Accepts external {ep_dossier.method} web requests at `{ep_dossier.route_path}` and runs `{ep_dossier.handler_name}()`."
+                )
+                endpoints.append(
+                    AttackSurfaceEndpoint(
+                        id=f"ep-{len(endpoints)+1}",
+                        method=ep_dossier.method,
+                        route_path=ep_dossier.route_path,
+                        handler_name=ep_dossier.handler_name,
+                        filepath=norm_ep_fp,
+                        line_number=ep_dossier.start_line,
+                        auth_posture=posture_str,
+                        linked_findings_count=linked_c,
+                        exposure_level=exp_lvl,
+                        plain_english_purpose=purpose_str,
+                    )
+                )
+        except Exception:
+            pass
+
         for rel_p, full_p in discovered_files.items():
             if not rel_p.endswith((".py", ".js", ".ts", ".tsx")):
                 continue
@@ -4651,6 +4700,9 @@ class EnterpriseManager:
                             fn_m = re.search(r"def\s+([a-zA-Z0-9_]+)", lines[idx + 1])
                             if fn_m:
                                 handler_name = fn_m.group(1)
+                        norm_rel = rel_p.replace("\\", "/")
+                        if (norm_rel, http_method, route_path) in seen_route_keys or (norm_rel, handler_name) in covered_route_handlers:
+                            continue
                         linked_c = findings_by_file.get(rel_p, 0) or findings_by_file.get(os.path.basename(rel_p), 0)
                         endpoints.append(
                             AttackSurfaceEndpoint(
@@ -4675,6 +4727,8 @@ class EnterpriseManager:
                     )
                     if fn_m and len(endpoints) < 25:
                         fn_name = fn_m.group(1)
+                        if (rel_p.replace("\\", "/"), fn_name) in covered_route_handlers:
+                            continue
                         params = fn_m.group(2).strip()
                         linked_c = findings_by_file.get(rel_p, 0) or findings_by_file.get(os.path.basename(rel_p), 0)
                         is_high = linked_c > 0 and ("cmd" in params or "user" in params or "exec" in fn_name or "debug" in fn_name or "worker" in fn_name)
