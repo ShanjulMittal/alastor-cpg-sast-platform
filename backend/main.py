@@ -13,13 +13,14 @@ import logging
 import threading
 import subprocess
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse, quote as url_quote
 from typing import List, Optional, Dict, Any, Tuple
 import requests as http_requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse, Response
 import html as html_lib
 
 from models import (
@@ -53,6 +54,9 @@ from models import (
     SecretScannerConfig, SecretScannerConfigUpdate,
     SecretVerifyRequest, SecretInventoryResponse,
     ApiOperationsReportResponse,
+    PastaAssessmentResponse,
+    PastaGateOverrideRequest,
+    PastaProfileUpdateRequest,
 )
 from database.neo4j_client import Neo4jClient
 from database.batch_ingestor import BatchIngestor
@@ -62,6 +66,13 @@ from engine.enterprise_manager import EnterpriseManager
 from engine.frontier_ai_engine import FrontierAiEngine
 from engine.secret_validator_engine import get_secret_validator_engine
 from engine.api_operations_engine import get_api_operations_engine
+from engine.sar_report_generator import (
+    SarReportBundle,
+    build_sar_json_dict,
+    generate_sar_docx_bytes,
+    generate_sar_pdf_bytes,
+    sanitize_bundle_for_export,
+)
 from engine.remediation_patcher import (
     apply_workspace_patch,
     batch_apply_workspace_patches,
@@ -2078,21 +2089,53 @@ def get_extracted_advisories(auto_init: bool = Query(False)):
 
 @app.get("/api/export/report")
 def export_security_report(format: str = Query("markdown", description="markdown, json, or sarif")):
-    """Exports a comprehensive security code review, RACI governance & SAST++++++ ASPM report."""
+    """Exports a comprehensive security code review, RACI governance, 7-Stage PASTA & SAST++++++ ASPM report."""
     global current_scan_dir, current_app_tree, _cached_advisories
-    findings = get_or_compute_findings()
+    raw_findings = get_or_compute_findings()
     metrics = get_metrics()
-    raci = enterprise_mgr.get_raci_governance(findings)
+    raci_raw = enterprise_mgr.get_raci_governance(raw_findings)
     active_target = current_scan_dir or enterprise_mgr.platform_root
     app_name = os.path.basename(os.path.abspath(active_target)) or active_target
+    sast_plus_raw = enterprise_mgr.get_sast_plus_suite(active_target, raw_findings)
+    pasta_raw = sast_plus_raw.pasta_assessment or enterprise_mgr.pasta_engine.evaluate_pasta(
+        active_target, raw_findings
+    )
+    sanitized_export = sanitize_bundle_for_export(
+        SarReportBundle(
+            application_name=app_name,
+            project_path=active_target,
+            generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            pasta=pasta_raw,
+            sast_plus=sast_plus_raw,
+            raci=raci_raw,
+            metrics=metrics,
+            findings=raw_findings,
+        )
+    )
+    findings = sanitized_export.findings
+    raci = sanitized_export.raci
+    pasta = sanitized_export.pasta
 
     if format.lower() == "json":
         return JSONResponse({
             "platform": "ALASTOR SAST++++++ Deterministic CPG, ASPM & RACI Governance Platform",
-            "application_name": app_name,
-            "target_path": active_target,
-            "metrics": metrics.model_dump(),
+            "application_name": sanitized_export.application_name,
+            "target_path": sanitized_export.project_path,
+            "metrics": sanitized_export.metrics.model_dump(),
             "raci_governance_health_score": raci.governance_health_score,
+            "pasta_golive_summary": {
+                "golive_verdict": pasta.golive_verdict,
+                "golive_verdict_label": pasta.golive_verdict_label,
+                "inherent_risk_score": pasta.inherent_risk_score,
+                "inherent_risk_level": pasta.inherent_risk_level,
+                "residual_risk_score": pasta.residual_risk_score,
+                "residual_risk_level": pasta.residual_risk_level,
+                "projected_golive_risk_score": pasta.projected_golive_risk_score,
+                "projected_golive_risk_level": pasta.projected_golive_risk_level,
+                "mandatory_pre_golive_count": pasta.mandatory_pre_golive_count,
+                "post_golive_sla_count": pasta.post_golive_sla_count,
+                "waived_count": pasta.waived_count,
+            },
             "findings": [f.model_dump() for f in findings],
             "extracted_advisories": [a.model_dump() for a in _cached_advisories],
         })
@@ -2221,6 +2264,25 @@ def export_security_report(format: str = Query("markdown", description="markdown
                 f"  - Source: {adv.reference_url}",
                 f"  - Remediation: {adv.remediation}",
             ])
+
+    md_lines.extend([
+        "",
+        "## PASTA 7-Stage Threat Simulation & Go-Live Readiness",
+        f"- **Go-Live Gate Verdict:** `{pasta.golive_verdict_label}` (`{pasta.golive_verdict}`)",
+        f"- **Business Profile:** `{pasta.effective_business_preset}` ({', '.join(pasta.compliance_frameworks)})",
+        (
+            f"- **3-Stage Risk Scorecard:** Inherent `{pasta.inherent_risk_score}/100 ({pasta.inherent_risk_level})` "
+            f"-> Residual `{pasta.residual_risk_score}/100 ({pasta.residual_risk_level})` "
+            f"-> Projected Go-Live `{pasta.projected_golive_risk_score}/100 ({pasta.projected_golive_risk_level})`"
+        ),
+        (
+            f"- **Gate Dispositions:** `{pasta.mandatory_pre_golive_count}` Mandatory Pre-Go-Live Blocker(s) | "
+            f"`{pasta.post_golive_sla_count}` Post-Go-Live SLA Item(s) | `{pasta.waived_count}` Waiver(s)"
+        ),
+        f"- **Executive Summary:** {pasta.golive_executive_summary}",
+    ])
+    for st in pasta.stages:
+        md_lines.append(f"  - **{st.stage_code} ({st.stage_roman}) — {st.title}** [`{st.status}`]: {st.summary}")
 
     return PlainTextResponse("\n".join(md_lines), media_type="text/markdown")
 
@@ -4143,23 +4205,8 @@ def reset_raci_governance_matrix():
 # ---------------------------------------------------------------------------
 # 7. SAST ++++++ ASPM Suite (Live SBOM, Attack Surface & Remediation Roadmap)
 # ---------------------------------------------------------------------------
-@app.get("/api/aspm/suite", response_model=SastPlusSuiteResponse)
-def get_sast_plus_aspm_suite(project_path: Optional[str] = Query(None)):
-    """Returns the unified SAST++++++ ASPM suite: Live CycloneDX SBOM, discovered API/Callable Attack Surface, and Prioritized Remediation Roadmap."""
-    target_dir = project_path if project_path and os.path.exists(project_path) else current_scan_dir
-    findings = get_or_compute_findings()
-    if project_path and os.path.exists(project_path) and not findings:
-        cached = enterprise_mgr.get_cached_scan_for_project(project_path)
-        if cached and cached.get("latest_findings"):
-            findings = [Finding(**f) for f in cached["latest_findings"]]
-    return enterprise_mgr.get_sast_plus_suite(target_dir, findings)
-
-
-# ---------------------------------------------------------------------------
-# 8. Token-Efficient Multi-Provider BYOK Frontier AI Endpoints
-# ---------------------------------------------------------------------------
 def _get_ai_allowed_roots() -> List[str]:
-    """Returns confined workspace & active scan roots permitted for Frontier AI micro-slicing."""
+    """Returns confined workspace & active scan roots permitted for workspace inspection and Frontier AI micro-slicing."""
     base_scan_dir = os.getenv("CPG_SCAN_BASE", os.getcwd())
     remote_workspace_root = os.path.realpath(os.path.join(os.path.dirname(base_scan_dir), ".remote_targets"))
     uploaded_workspace_root = os.path.realpath(os.path.join(os.path.dirname(base_scan_dir), ".uploaded_targets"))
@@ -4177,6 +4224,97 @@ def _get_ai_allowed_roots() -> List[str]:
         enterprise_mgr.platform_root,
         *project_roots,
     ]
+
+
+def _resolve_confined_project_target(project_path: Optional[str]) -> str:
+    """Resolves and confines `project_path` against `_get_ai_allowed_roots()` (`HTTP 400` on violation)."""
+    fallback_dir = os.path.realpath(current_scan_dir or enterprise_mgr.platform_root)
+    if project_path is None or not project_path.strip():
+        return fallback_dir
+
+    raw_req_path = project_path.strip()
+    if not os.path.exists(raw_req_path):
+        raise HTTPException(
+            status_code=400,
+            detail="Requested project_path does not exist.",
+        )
+
+    cand_real = os.path.realpath(raw_req_path)
+    confined_target: Optional[str] = None
+    for raw_allowed in _get_ai_allowed_roots():
+        if not raw_allowed:
+            continue
+        allowed_real = os.path.realpath(raw_allowed)
+        try:
+            common_base = os.path.commonpath([allowed_real, cand_real])
+        except ValueError:
+            continue
+        if common_base == allowed_real:
+            confined_target = os.path.commonpath([cand_real, cand_real])
+            break
+
+    if confined_target is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Requested project_path is outside permitted workspace roots.",
+        )
+    return confined_target
+
+
+def _resolve_findings_for_project_target(target_dir: str) -> List[Finding]:
+    """Resolves enriched findings for either the active scan target or a cached registered project."""
+    norm_req = os.path.normcase(os.path.abspath(target_dir))
+    norm_cur = os.path.normcase(os.path.abspath(current_scan_dir or enterprise_mgr.platform_root))
+    if norm_req == norm_cur:
+        findings = get_or_compute_findings()
+        if findings:
+            return findings
+    cached = enterprise_mgr.get_cached_scan_for_project(target_dir)
+    if cached and isinstance(cached.get("latest_findings"), list):
+        return enterprise_mgr.enrich_findings(
+            [Finding(**f) for f in cached["latest_findings"] if isinstance(f, dict)]
+        )
+    return []
+
+
+def _safe_metrics_for_project_target(target_dir: str, findings: List[Finding]) -> MetricsResponse:
+    """Computes or retrieves `MetricsResponse` for `target_dir` with graceful fallback when Neo4j is unqueried."""
+    norm_req = os.path.normcase(os.path.abspath(target_dir))
+    norm_cur = os.path.normcase(os.path.abspath(current_scan_dir or enterprise_mgr.platform_root))
+    if norm_req == norm_cur:
+        try:
+            return get_metrics()
+        except Exception:
+            pass
+
+    cached_m = enterprise_mgr.get_cached_scan_for_project(target_dir) or {}
+    crit = sum(1 for f in findings if f.severity == "CRITICAL")
+    high = sum(1 for f in findings if f.severity == "HIGH")
+    med = sum(1 for f in findings if f.severity == "MEDIUM")
+    low = sum(1 for f in findings if f.severity in ("LOW", "INFO"))
+    return MetricsResponse(
+        total_nodes=int(cached_m.get("nodes_created") or 0),
+        total_edges=int(cached_m.get("edges_created") or 0),
+        total_findings=len(findings),
+        critical_count=crit,
+        high_count=high,
+        medium_count=med,
+        low_count=low,
+        total_app_files=int(cached_m.get("files_scanned") or 0),
+    )
+
+
+@app.get("/api/aspm/suite", response_model=SastPlusSuiteResponse)
+def get_sast_plus_aspm_suite(project_path: Optional[str] = Query(None)):
+    """Returns the unified SAST++++++ ASPM suite: Live CycloneDX SBOM, discovered API/Callable Attack Surface, Prioritized Remediation Roadmap, and 7-Stage PASTA Assessment."""
+    target_dir = _resolve_confined_project_target(project_path)
+    findings = _resolve_findings_for_project_target(target_dir)
+    return enterprise_mgr.get_sast_plus_suite(target_dir, findings)
+
+
+# ---------------------------------------------------------------------------
+# 8. Token-Efficient Multi-Provider BYOK Frontier AI Endpoints
+# ---------------------------------------------------------------------------
 
 
 @app.get("/api/ai/config", response_model=AiPublicConfigResponse)
@@ -4370,6 +4508,104 @@ def get_api_endpoints_operations(project_path: Optional[str] = Query(None)):
             )
 
     return api_operations_engine.analyze_workspace_api_operations(target_dir, findings)
+
+
+# ---------------------------------------------------------------------------
+# 7-Stage PASTA Threat Modeling, Gate Policy & Native Word/PDF SAR Reports
+# ---------------------------------------------------------------------------
+@app.get("/api/aspm/pasta", response_model=PastaAssessmentResponse)
+def get_pasta_threat_assessment(project_path: Optional[str] = Query(None)):
+    """Evaluates the deterministic 7-Stage PASTA threat model, multi-hop attack trees, and Go-Live gate policy."""
+    target_dir = _resolve_confined_project_target(project_path)
+    findings = _resolve_findings_for_project_target(target_dir)
+    suite = enterprise_mgr.get_sast_plus_suite(target_dir, findings)
+    if suite.pasta_assessment is not None:
+        return suite.pasta_assessment
+    return enterprise_mgr.pasta_engine.evaluate_pasta(target_dir=target_dir, findings=findings)
+
+
+@app.post("/api/aspm/pasta/profile", response_model=PastaAssessmentResponse)
+def update_pasta_business_profile(req: PastaProfileUpdateRequest):
+    """Updates persisted PASTA business criticality preset and Crown Jewel weights, returning fresh assessment."""
+    target_dir = _resolve_confined_project_target(req.project_path)
+    enterprise_mgr.pasta_engine.update_profile(target_dir, req)
+    findings = _resolve_findings_for_project_target(target_dir)
+    suite = enterprise_mgr.get_sast_plus_suite(target_dir, findings)
+    if suite.pasta_assessment is not None:
+        return suite.pasta_assessment
+    return enterprise_mgr.pasta_engine.evaluate_pasta(target_dir=target_dir, findings=findings)
+
+
+@app.post("/api/aspm/pasta/gate-override", response_model=PastaAssessmentResponse)
+def update_pasta_golive_gate_override(req: PastaGateOverrideRequest):
+    """Applies or resets an ARB / Architect Go-Live gate override or risk-acceptance waiver for an observation."""
+    target_dir = _resolve_confined_project_target(req.project_path)
+    enterprise_mgr.pasta_engine.update_gate_override(target_dir, req)
+    findings = _resolve_findings_for_project_target(target_dir)
+    suite = enterprise_mgr.get_sast_plus_suite(target_dir, findings)
+    if suite.pasta_assessment is not None:
+        return suite.pasta_assessment
+    return enterprise_mgr.pasta_engine.evaluate_pasta(target_dir=target_dir, findings=findings)
+
+
+@app.get("/api/export/sar-report")
+def export_sar_golive_report(
+    format: str = Query("pdf", description="docx, pdf, or json"),
+    project_path: Optional[str] = Query(None),
+):
+    """Exports a strictly redacted 10-section SAR Go-Live Architecture Dossier in Word (.docx), PDF (.pdf), or JSON."""
+    fmt = (format or "").strip().lower()
+    if fmt not in ("docx", "pdf", "json"):
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported SAR report format; expected 'docx', 'pdf', or 'json'.",
+        )
+
+    target_dir = _resolve_confined_project_target(project_path)
+    raw_findings = _resolve_findings_for_project_target(target_dir)
+    sast_plus = enterprise_mgr.get_sast_plus_suite(target_dir, raw_findings)
+    pasta = sast_plus.pasta_assessment or enterprise_mgr.pasta_engine.evaluate_pasta(
+        target_dir=target_dir, findings=raw_findings
+    )
+    raci = enterprise_mgr.get_raci_governance(raw_findings)
+    metrics = _safe_metrics_for_project_target(target_dir, raw_findings)
+    app_name = pasta.application_name or os.path.basename(os.path.abspath(target_dir)) or "alastor_target"
+
+    bundle = sanitize_bundle_for_export(
+        SarReportBundle(
+            application_name=app_name,
+            project_path=target_dir,
+            generated_at=pasta.generated_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            pasta=pasta,
+            sast_plus=sast_plus,
+            raci=raci,
+            metrics=metrics,
+            findings=raw_findings,
+        )
+    )
+
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", app_name).strip("_") or "alastor_target"
+
+    if fmt == "docx":
+        docx_bytes = generate_sar_docx_bytes(bundle)
+        return Response(
+            content=docx_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={
+                "Content-Disposition": f'attachment; filename="ALASTOR_SAR_GoLive_{slug}.docx"',
+            },
+        )
+    if fmt == "pdf":
+        pdf_bytes = generate_sar_pdf_bytes(bundle)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="ALASTOR_SAR_GoLive_{slug}.pdf"',
+            },
+        )
+    return JSONResponse(content=build_sar_json_dict(bundle))
+
 
 
 

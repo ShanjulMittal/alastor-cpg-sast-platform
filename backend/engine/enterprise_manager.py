@@ -42,6 +42,7 @@ from models import (
 from engine.rule_executor import RULES
 from engine.osv_lockfile_scanner import run_live_osv_lockfile_scan, run_cicd_workflow_security_scan
 from engine.api_operations_engine import analyze_workspace_api_operations
+from engine.pasta_threat_engine import PastaThreatEngine
 from compiler.ast_parser import SANITIZER_PATTERNS
 
 logger = logging.getLogger("cpg-sast.enterprise")
@@ -1187,6 +1188,7 @@ class EnterpriseManager:
         self.state_file = os.path.join(self.data_dir, "integration_hub_state.json")
         self.scan_cache_file = os.path.join(self.data_dir, "scan_history_cache.json")
         self.vault_dir = os.path.join(self.platform_root, ".alastor_vault")
+        self.pasta_engine = PastaThreatEngine(vault_dir=self.vault_dir)
         self.repo_creds_file = os.path.join(self.vault_dir, "repo_credentials.json")
         self.saved_repo_tokens: Dict[str, Dict[str, str]] = {}
         self.project_scan_cache: Dict[str, Dict[str, Any]] = {}
@@ -4417,6 +4419,38 @@ class EnterpriseManager:
     # 7. SAST ++++++ ASPM Suite (Live SBOM, API Attack Surface & Roadmap)
     # -----------------------------------------------------------------------
     def get_sast_plus_suite(self, scan_dir: str, findings: List[Finding]) -> SastPlusSuiteResponse:
+        raw_cred_tokens = sorted(
+            {
+                f.secret_value_raw: (f.secret_value_masked or "[REDACTED]")
+                for f in (findings or [])
+                if f.secret_value_raw and len(f.secret_value_raw) >= 4
+            }.items(),
+            key=lambda kv: len(kv[0]),
+            reverse=True,
+        )
+        if raw_cred_tokens:
+            scrubbed_input: List[Finding] = []
+            for f_in in findings:
+                f_cp = f_in.model_copy(deep=True)
+                f_cp.secret_value_raw = None
+                for raw_tok, mask_lbl in raw_cred_tokens:
+                    for attr_name in ("title", "description", "remediation", "plain_english_summary"):
+                        cur_s = getattr(f_cp, attr_name, None)
+                        if isinstance(cur_s, str) and raw_tok in cur_s:
+                            setattr(f_cp, attr_name, cur_s.replace(raw_tok, mask_lbl))
+                    if f_cp.best_fix_location:
+                        for bfl_attr in ("code_snippet", "explanation", "recommended_fix", "before_code_block", "after_code_block"):
+                            cur_b = getattr(f_cp.best_fix_location, bfl_attr, None)
+                            if isinstance(cur_b, str) and raw_tok in cur_b:
+                                setattr(f_cp.best_fix_location, bfl_attr, cur_b.replace(raw_tok, mask_lbl))
+                    for p_node in f_cp.path_nodes or []:
+                        if isinstance(p_node, dict):
+                            for n_key in ("code", "name"):
+                                if isinstance(p_node.get(n_key), str) and raw_tok in p_node[n_key]:
+                                    p_node[n_key] = p_node[n_key].replace(raw_tok, mask_lbl)
+                scrubbed_input.append(f_cp)
+            findings = scrubbed_input
+
         target_dir = scan_dir if scan_dir and os.path.exists(scan_dir) else self.platform_root
         if not os.path.exists(target_dir):
             target_dir = self.platform_root
@@ -4647,6 +4681,7 @@ class EnterpriseManager:
 
         covered_route_handlers = set()
         seen_route_keys = set()
+        api_ops_report = None
         try:
             api_ops_report = analyze_workspace_api_operations(
                 target_dir if is_file_target else root_dir,
@@ -5912,6 +5947,16 @@ class EnterpriseManager:
             f"({crit_c} Critical, {high_c} High, {med_c} Medium — {reachable_c} Reachable, {dormant_c} Dormant)."
         )
 
+        pasta_res = self.pasta_engine.evaluate_pasta(
+            target_dir=root_dir,
+            findings=findings,
+            api_ops=api_ops_report,
+            sbom_components=sbom_items,
+            endpoints=endpoints,
+            stride_threats=stride_threats,
+            pipeline_checks=pipeline_checks,
+        )
+
         return SastPlusSuiteResponse(
             project_path=target_dir,
             total_sbom_components=len(sbom_items),
@@ -5928,7 +5973,8 @@ class EnterpriseManager:
             dormant_findings_count=dormant_c,
             executive_plain_summary=exec_summary,
             overall_maturity_grade=grade,
-            maturity_score=maturity_score
+            maturity_score=maturity_score,
+            pasta_assessment=pasta_res,
         )
 
     # -----------------------------------------------------------------------
