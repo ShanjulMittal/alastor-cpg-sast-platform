@@ -221,6 +221,12 @@ export default function AuditPage() {
   const fetchApiOperationsState = useAuditStore(
     (s) => s.fetchApiOperationsState
   );
+  const pastaAssessment = useAuditStore((s) => s.pastaAssessment);
+  const exportingSarFormat = useAuditStore((s) => s.exportingSarFormat);
+  const fetchPastaState = useAuditStore((s) => s.fetchPastaState);
+  const downloadSarGoLiveReport = useAuditStore(
+    (s) => s.downloadSarGoLiveReport
+  );
 
   // Local UI state for Stage 1 Quick Scan bar, Stage 4 Rules/CVE sub-mode, and Export Center feedback
   const [quickScanTarget, setQuickScanTarget] = useState(projectPath);
@@ -262,6 +268,7 @@ export default function AuditPage() {
     void fetchSecretConfigState();
     void fetchSecretInventoryState();
     void fetchApiOperationsState();
+    void fetchPastaState();
   }, [
     hydrateUiPreferences,
     fetchFindings,
@@ -279,6 +286,7 @@ export default function AuditPage() {
     fetchSecretConfigState,
     fetchSecretInventoryState,
     fetchApiOperationsState,
+    fetchPastaState,
   ]);
 
   const handleEnterApp = (
@@ -293,9 +301,23 @@ export default function AuditPage() {
     return <AlastorPortalGate onEnterApp={handleEnterApp} />;
   }
 
+  const effectivePasta =
+    pastaAssessment ?? sastPlusSuite?.pasta_assessment ?? null;
+
   const showExportFeedback = (msg: string) => {
     setExportToast(msg);
     setTimeout(() => setExportToast(null), 3500);
+  };
+
+  const handleDownloadSarExport = async (format: "docx" | "pdf") => {
+    const ok = await downloadSarGoLiveReport(format);
+    if (ok) {
+      showExportFeedback(
+        format === "docx"
+          ? "Downloaded Threat Modeling & Go-Live SAR Report (.docx)"
+          : "Downloaded Threat Modeling & Go-Live SAR Report (.pdf)"
+      );
+    }
   };
 
   const fetchExportJsonBundle = async (): Promise<{
@@ -366,6 +388,11 @@ export default function AuditPage() {
     .kpi { padding: 14px; border-radius: 12px; background: #f8fafc; border: 1px solid #cbd5e1; }
     .kpi .lbl { font-size: 11px; text-transform: uppercase; color: #475569; font-weight: 700; }
     .kpi .val { font-size: 22px; font-weight: 800; color: #0f172a; margin-top: 4px; }
+    .pasta-banner { margin-bottom: 24px; padding: 16px 20px; border-radius: 12px; background: #eef2ff; border: 1px solid #a5b4fc; color: #0f172a; }
+    .pasta-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+    .pasta-badge { display: inline-block; padding: 3px 10px; border-radius: 6px; font-size: 11px; font-weight: 800; background: #3730a3; color: #ffffff; letter-spacing: 0.03em; }
+    .pasta-meta { font-size: 12px; font-weight: 700; color: #1e1b4b; }
+    .pasta-summary { font-size: 12px; color: #334155; margin: 0; }
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
     th { background: #f1f5f9; color: #0f172a; text-align: left; padding: 10px; border-bottom: 2px solid #cbd5e1; }
     td { padding: 10px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
@@ -380,19 +407,50 @@ export default function AuditPage() {
         generatedAt
       )}</div>
     <div class="kpis">
-      <div class="kpi"><div class="lbl">Total Active Findings</div><div class="val">${
+      <div class="kpi"><div class="lbl">Total Active Findings</div><div class="val">${escapeHtml(
         bundle.findings.length
-      }</div></div>
-      <div class="kpi"><div class="lbl">Critical / High</div><div class="val">${
+      )}</div></div>
+      <div class="kpi"><div class="lbl">Critical / High</div><div class="val">${escapeHtml(
         bundle.metrics.critical_count ?? 0
-      } / ${bundle.metrics.high_count ?? 0}</div></div>
-      <div class="kpi"><div class="lbl">CPG Nodes / Edges</div><div class="val">${
+      )} / ${escapeHtml(bundle.metrics.high_count ?? 0)}</div></div>
+      <div class="kpi"><div class="lbl">CPG Nodes / Edges</div><div class="val">${escapeHtml(
         bundle.metrics.total_nodes ?? 0
-      } / ${bundle.metrics.total_edges ?? 0}</div></div>
-      <div class="kpi"><div class="lbl">SBOM Components</div><div class="val">${
+      )} / ${escapeHtml(bundle.metrics.total_edges ?? 0)}</div></div>
+      <div class="kpi"><div class="lbl">SBOM Components</div><div class="val">${escapeHtml(
         sastPlusSuite?.total_sbom_components ?? 0
-      }</div></div>
+      )}</div></div>
     </div>
+    ${
+      effectivePasta
+        ? `<div class="pasta-banner">
+      <div class="pasta-head">
+        <span class="pasta-badge">7-STAGE PASTA GO-LIVE VERDICT: ${escapeHtml(
+          effectivePasta.golive_verdict_label || effectivePasta.golive_verdict
+        )}</span>
+        <span class="pasta-meta">Inherent Risk: ${escapeHtml(
+          effectivePasta.inherent_risk_level
+        )} (${escapeHtml(
+          effectivePasta.inherent_risk_score
+        )}/100) &rarr; Residual: ${escapeHtml(
+          effectivePasta.residual_risk_level
+        )} (${escapeHtml(
+          effectivePasta.residual_risk_score
+        )}/100) &rarr; Final Projected Go-Live Risk: ${escapeHtml(
+          effectivePasta.projected_golive_risk_level
+        )} (${escapeHtml(
+          effectivePasta.projected_golive_risk_score
+        )}/100) | Pre-Go-Live Blockers: ${escapeHtml(
+          effectivePasta.mandatory_pre_golive_count
+        )} • Post-Go-Live SLA: ${escapeHtml(
+          effectivePasta.post_golive_sla_count
+        )}</span>
+      </div>
+      <p class="pasta-summary">${escapeHtml(
+        effectivePasta.golive_executive_summary
+      )}</p>
+    </div>`
+        : ""
+    }
     <table>
       <thead>
         <tr>
@@ -1231,10 +1289,11 @@ export default function AuditPage() {
                           Enterprise Audit &amp; Compliance Export Center
                         </h2>
                         <p className="text-xs text-slate-600 mt-0.5">
-                          One-click deliverables for CI/CD SARIF gates, CISO
-                          executive briefings, CycloneDX v1.5 SBOM supply-chain
-                          attestations, spreadsheets, and unified `.patch`
-                          bundles.
+                          One-click deliverables for ARB/CISO Go-Live SAR Word
+                          (`.docx`) &amp; PDF (`.pdf`) sign-off dossiers, CI/CD
+                          SARIF gates, Executive HTML briefings, CycloneDX v1.5
+                          SBOM supply-chain attestations, spreadsheets, and
+                          unified `.patch` bundles.
                         </p>
                       </div>
 
@@ -1244,6 +1303,127 @@ export default function AuditPage() {
                           <span>{exportToast}</span>
                         </div>
                       )}
+                    </div>
+
+                    {/* Flagship Go-Live Architecture & Threat Modeling Deliverables (.docx & .pdf) */}
+                    <div className="rounded-2xl bg-slate-50 border border-indigo-200 p-4 space-y-3.5 shadow-sm">
+                      <div className="flex items-center justify-between gap-3 flex-wrap">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="px-2.5 py-0.5 rounded-full bg-indigo-700 text-white text-[10px] font-mono font-extrabold uppercase tracking-wider">
+                            Flagship Go-Live Architecture &amp; Threat Modeling Deliverables
+                          </span>
+                          <span className="text-xs font-bold text-slate-800">
+                            7-Stage PASTA • STRIDE • Attack Trees • Go-Live Gate &amp; Runbook
+                          </span>
+                        </div>
+                        {effectivePasta && (
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span
+                              className={`px-2.5 py-0.5 rounded text-[11px] font-mono font-extrabold border ${
+                                effectivePasta.golive_verdict ===
+                                "APPROVED_FOR_GO_LIVE"
+                                  ? "bg-emerald-700 text-white border-emerald-800"
+                                  : effectivePasta.golive_verdict ===
+                                    "CONDITIONAL_GO_LIVE"
+                                  ? "bg-amber-700 text-white border-amber-800"
+                                  : "bg-rose-700 text-white border-rose-800"
+                              }`}
+                            >
+                              {effectivePasta.golive_verdict_label}
+                            </span>
+                            <span className="px-2.5 py-0.5 rounded bg-white border border-slate-300 text-slate-900 text-[11px] font-mono font-bold">
+                              Projected Go-Live Risk:{" "}
+                              {effectivePasta.projected_golive_risk_level} (
+                              {effectivePasta.projected_golive_risk_score}/100)
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        {/* Flagship 1: Threat Modeling & Go-Live SAR Report (.docx Word) */}
+                        <div className="p-5 rounded-2xl bg-white border-2 border-indigo-300 shadow-sm flex flex-col justify-between space-y-4">
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-900 border border-indigo-300 font-mono text-[10px] font-bold">
+                                ARB &amp; CISO • MICROSOFT WORD (.DOCX)
+                              </span>
+                              <FileText className="w-4 h-4 text-indigo-700" />
+                            </div>
+                            <h3 className="text-sm font-bold text-slate-900">
+                              Threat Modeling &amp; Go-Live SAR Report (`.docx` Word)
+                            </h3>
+                            <p className="text-xs text-slate-700 leading-relaxed">
+                              Full 10-section editable Word report covering
+                              Security Architecture Review, STRIDE, 7-Stage
+                              PASTA &amp; Attack Trees, Mandatory Pre-Go-Live
+                              Blockers vs. Post-Go-Live SLA &amp; Compensating
+                              Controls, Final Projected Go-Live Risk Level, and
+                              the Step-by-Step &ldquo;Make It Live&rdquo;
+                              Runbook.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={exportingSarFormat !== null}
+                            onClick={() => void handleDownloadSarExport("docx")}
+                            className="w-full py-2.5 px-3 rounded-xl bg-indigo-700 hover:bg-indigo-800 disabled:opacity-50 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm transition-colors"
+                          >
+                            {exportingSarFormat === "docx" ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span>Generating SAR Word (.docx)...</span>
+                              </>
+                            ) : (
+                              <>
+                                <FileText className="w-3.5 h-3.5" />
+                                <span>Download SAR Word (.docx)</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+
+                        {/* Flagship 2: Threat Modeling & Go-Live SAR Report (.pdf PDF) */}
+                        <div className="p-5 rounded-2xl bg-white border-2 border-rose-300 shadow-sm flex flex-col justify-between space-y-4">
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <span className="px-2 py-0.5 rounded bg-rose-50 text-rose-900 border border-rose-300 font-mono text-[10px] font-bold">
+                                EXECUTIVE SIGN-OFF • ADOBE PDF (.PDF)
+                              </span>
+                              <ShieldAlert className="w-4 h-4 text-rose-700" />
+                            </div>
+                            <h3 className="text-sm font-bold text-slate-900">
+                              Threat Modeling &amp; Go-Live SAR Report (`.pdf` PDF)
+                            </h3>
+                            <p className="text-xs text-slate-700 leading-relaxed">
+                              Multi-page paginated corporate PDF dossier with
+                              Executive Go-Live Verdict (`GO` / `CONDITIONAL GO`
+                              / `NO-GO`), Inherent -&gt; Residual -&gt; Final
+                              Go-Live Risk Scorecard, Mandatory vs. Post-Go-Live
+                              SLA registers, RACI ownership, and formal ARB/CISO
+                              Sign-Off table.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={exportingSarFormat !== null}
+                            onClick={() => void handleDownloadSarExport("pdf")}
+                            className="w-full py-2.5 px-3 rounded-xl bg-rose-700 hover:bg-rose-800 disabled:opacity-50 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm transition-colors"
+                          >
+                            {exportingSarFormat === "pdf" ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span>Generating SAR PDF (.pdf)...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Download className="w-3.5 h-3.5" />
+                                <span>Download SAR PDF (.pdf)</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

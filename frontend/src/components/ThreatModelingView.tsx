@@ -29,6 +29,7 @@ import {
   DirectionalFlowEdgeData,
   EdgeBlastState,
 } from "./DirectionalFlowEdge";
+import { PastaThreatWorkbench } from "@/components/PastaThreatWorkbench";
 import {
   ShieldAlert,
   KeyRound,
@@ -51,6 +52,9 @@ import {
   XCircle,
   Wrench,
   FileCode,
+  FileText,
+  Download,
+  Target,
   ExternalLink,
   Sparkles,
   Maximize2,
@@ -939,6 +943,10 @@ export const ThreatModelingView: React.FC = () => {
   const {
     sastPlusSuite,
     fetchSastPlusSuite,
+    pastaAssessment,
+    fetchPastaState,
+    exportingSarFormat,
+    downloadSarGoLiveReport,
     findings,
     appTree,
     projectPath,
@@ -959,8 +967,15 @@ export const ThreatModelingView: React.FC = () => {
     verifySecretsLive,
   } = useAuditStore();
 
+  const effectivePasta =
+    pastaAssessment ?? sastPlusSuite?.pasta_assessment ?? null;
+
   const [activeSubTab, setActiveSubTab] = useState<
-    "TRUST_BOUNDARIES" | "STRIDE_BOARD" | "SECRET_KEYS_VAULT" | "ENTRYPOINTS_PBOM"
+    | "TRUST_BOUNDARIES"
+    | "STRIDE_BOARD"
+    | "PASTA_WORKBENCH"
+    | "SECRET_KEYS_VAULT"
+    | "ENTRYPOINTS_PBOM"
   >("TRUST_BOUNDARIES");
   const [selectedStrideCategory, setSelectedStrideCategory] =
     useState<string>("ALL");
@@ -987,15 +1002,17 @@ export const ThreatModelingView: React.FC = () => {
   });
   const [loadingPreview, setLoadingPreview] = useState<boolean>(false);
 
-  // Synchronize Threat Model & Secret Vault Inventory with active project and findings
+  // Synchronize Threat Model, 7-Stage PASTA & Secret Vault Inventory with active project and findings
   useEffect(() => {
     void fetchSastPlusSuite();
+    void fetchPastaState();
     void fetchSecretConfigState();
     void fetchSecretInventoryState();
   }, [
     projectPath,
     findings.length,
     fetchSastPlusSuite,
+    fetchPastaState,
     fetchSecretConfigState,
     fetchSecretInventoryState,
   ]);
@@ -1454,6 +1471,36 @@ export const ThreatModelingView: React.FC = () => {
 
           <button
             type="button"
+            onClick={() => setActiveSubTab("PASTA_WORKBENCH")}
+            className={`px-3.5 py-2 rounded-lg text-xs font-extrabold flex items-center gap-2 transition-all border ${
+              activeSubTab === "PASTA_WORKBENCH"
+                ? "bg-indigo-700 text-white border-indigo-800 shadow-sm"
+                : "bg-white text-slate-700 hover:bg-slate-100 border-slate-300"
+            }`}
+          >
+            <Target className="w-3.5 h-3.5" />
+            <span>7-Stage PASTA &amp; Go-Live</span>
+            <span
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-extrabold border ${
+                activeSubTab === "PASTA_WORKBENCH"
+                  ? "bg-white text-indigo-950 border-indigo-200"
+                  : effectivePasta?.projected_golive_risk_level === "CRITICAL"
+                  ? "bg-rose-100 text-rose-900 border-rose-300"
+                  : effectivePasta?.projected_golive_risk_level === "HIGH"
+                  ? "bg-amber-100 text-amber-950 border-amber-300"
+                  : effectivePasta?.projected_golive_risk_level === "LOW"
+                  ? "bg-emerald-100 text-emerald-900 border-emerald-300"
+                  : "bg-indigo-50 text-indigo-900 border-indigo-300"
+              }`}
+            >
+              {effectivePasta
+                ? effectivePasta.projected_golive_risk_level
+                : "7 Stages"}
+            </span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveSubTab("SECRET_KEYS_VAULT")}
             className={`px-3.5 py-2 rounded-lg text-xs font-extrabold flex items-center gap-2 transition-all border ${
               activeSubTab === "SECRET_KEYS_VAULT"
@@ -1476,6 +1523,37 @@ export const ThreatModelingView: React.FC = () => {
           >
             <Compass className="w-3.5 h-3.5" />
             Attack Surface Entrypoints &amp; PBOM ({endpoints.length})
+          </button>
+        </div>
+
+        {/* 1-Click Threat Modeling & Go-Live SAR Deliverables (.docx / .pdf) */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            disabled={exportingSarFormat !== null}
+            onClick={() => void downloadSarGoLiveReport("docx")}
+            className="px-3 py-2 rounded-lg text-xs font-extrabold flex items-center gap-1.5 transition-all border bg-indigo-700 hover:bg-indigo-800 disabled:opacity-50 text-white border-indigo-800 shadow-sm"
+          >
+            {exportingSarFormat === "docx" ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <FileText className="w-3.5 h-3.5" />
+            )}
+            <span>SAR Word (.docx)</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={exportingSarFormat !== null}
+            onClick={() => void downloadSarGoLiveReport("pdf")}
+            className="px-3 py-2 rounded-lg text-xs font-extrabold flex items-center gap-1.5 transition-all border bg-rose-700 hover:bg-rose-800 disabled:opacity-50 text-white border-rose-800 shadow-sm"
+          >
+            {exportingSarFormat === "pdf" ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Download className="w-3.5 h-3.5" />
+            )}
+            <span>SAR PDF (.pdf)</span>
           </button>
         </div>
       </div>
@@ -2419,6 +2497,9 @@ export const ThreatModelingView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* TAB 2B: 7-STAGE PASTA THREAT MODELING, ATTACK TREES & GO-LIVE GATE */}
+      {activeSubTab === "PASTA_WORKBENCH" && <PastaThreatWorkbench />}
 
       {/* TAB 3: SECRET KEYS & CREDENTIALS VAULT */}
       {activeSubTab === "SECRET_KEYS_VAULT" && (
