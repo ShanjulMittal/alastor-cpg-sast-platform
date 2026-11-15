@@ -14,6 +14,7 @@ import {
   PastaAssessmentResponse,
   PastaGateOverridePayload,
   PastaProfileUpdatePayload,
+  SastPlusSuiteResponse,
   SecretInventoryResponse,
   SecretScannerConfig,
   SecretScannerConfigUpdate,
@@ -248,14 +249,30 @@ export async function verifySecrets(
   });
 }
 
+export function isLikelyLocalProjectPath(
+  projectPath?: string | null
+): boolean {
+  const trimmed = (projectPath || "").trim();
+  return Boolean(trimmed && !/^(https?:\/\/|git@)/i.test(trimmed));
+}
+
 function normalizeLocalProjectPath(
   projectPath?: string | null
 ): string | undefined {
   const trimmed = (projectPath || "").trim();
-  if (!trimmed || /^(https?:\/\/|git@)/i.test(trimmed)) {
-    return undefined;
+  return isLikelyLocalProjectPath(trimmed) ? trimmed : undefined;
+}
+
+export async function fetchSastPlusSuite(
+  projectPath?: string | null
+): Promise<SastPlusSuiteResponse> {
+  const qs = new URLSearchParams();
+  const localPath = normalizeLocalProjectPath(projectPath);
+  if (localPath) {
+    qs.set("project_path", localPath);
   }
-  return trimmed;
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return apiFetchJson<SastPlusSuiteResponse>(`/api/aspm/suite${suffix}`);
 }
 
 export async function fetchApiOperationsReport(

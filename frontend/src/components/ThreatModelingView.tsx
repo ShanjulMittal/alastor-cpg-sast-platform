@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import ReactFlow, {
   Background,
   Controls,
@@ -944,7 +944,6 @@ export const ThreatModelingView: React.FC = () => {
     sastPlusSuite,
     fetchSastPlusSuite,
     pastaAssessment,
-    fetchPastaState,
     exportingSarFormat,
     downloadSarGoLiveReport,
     findings,
@@ -1001,18 +1000,47 @@ export const ThreatModelingView: React.FC = () => {
     line: 1,
   });
   const [loadingPreview, setLoadingPreview] = useState<boolean>(false);
+  const [sarExportError, setSarExportError] = useState<string | null>(null);
+  const sarErrorTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (sarErrorTimerRef.current !== null) {
+        window.clearTimeout(sarErrorTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleSarExport = useCallback(
+    async (format: "docx" | "pdf") => {
+      if (sarErrorTimerRef.current !== null) {
+        window.clearTimeout(sarErrorTimerRef.current);
+        sarErrorTimerRef.current = null;
+      }
+      setSarExportError(null);
+      const ok = await downloadSarGoLiveReport(format);
+      if (!ok) {
+        setSarExportError(
+          `Failed to export SAR Go-Live Report (.${format}). Verify backend connectivity and active workspace path.`
+        );
+        sarErrorTimerRef.current = window.setTimeout(() => {
+          setSarExportError(null);
+          sarErrorTimerRef.current = null;
+        }, 4500);
+      }
+    },
+    [downloadSarGoLiveReport]
+  );
 
   // Synchronize Threat Model, 7-Stage PASTA & Secret Vault Inventory with active project and findings
   useEffect(() => {
     void fetchSastPlusSuite();
-    void fetchPastaState();
     void fetchSecretConfigState();
     void fetchSecretInventoryState();
   }, [
     projectPath,
     findings.length,
     fetchSastPlusSuite,
-    fetchPastaState,
     fetchSecretConfigState,
     fetchSecretInventoryState,
   ]);
@@ -1488,6 +1516,8 @@ export const ThreatModelingView: React.FC = () => {
                   ? "bg-rose-100 text-rose-900 border-rose-300"
                   : effectivePasta?.projected_golive_risk_level === "HIGH"
                   ? "bg-amber-100 text-amber-950 border-amber-300"
+                  : effectivePasta?.projected_golive_risk_level === "MODERATE"
+                  ? "bg-sky-50 text-sky-950 border-sky-300"
                   : effectivePasta?.projected_golive_risk_level === "LOW"
                   ? "bg-emerald-100 text-emerald-900 border-emerald-300"
                   : "bg-indigo-50 text-indigo-900 border-indigo-300"
@@ -1531,7 +1561,7 @@ export const ThreatModelingView: React.FC = () => {
           <button
             type="button"
             disabled={exportingSarFormat !== null}
-            onClick={() => void downloadSarGoLiveReport("docx")}
+            onClick={() => void handleSarExport("docx")}
             className="px-3 py-2 rounded-lg text-xs font-extrabold flex items-center gap-1.5 transition-all border bg-indigo-700 hover:bg-indigo-800 disabled:opacity-50 text-white border-indigo-800 shadow-sm"
           >
             {exportingSarFormat === "docx" ? (
@@ -1545,7 +1575,7 @@ export const ThreatModelingView: React.FC = () => {
           <button
             type="button"
             disabled={exportingSarFormat !== null}
-            onClick={() => void downloadSarGoLiveReport("pdf")}
+            onClick={() => void handleSarExport("pdf")}
             className="px-3 py-2 rounded-lg text-xs font-extrabold flex items-center gap-1.5 transition-all border bg-rose-700 hover:bg-rose-800 disabled:opacity-50 text-white border-rose-800 shadow-sm"
           >
             {exportingSarFormat === "pdf" ? (
@@ -1557,6 +1587,26 @@ export const ThreatModelingView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {sarExportError && (
+        <div
+          role="alert"
+          className="px-3.5 py-2.5 rounded-xl bg-rose-50 border border-rose-300 text-rose-950 text-xs font-bold flex items-center justify-between gap-2 shadow-sm"
+        >
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0" />
+            <span>{sarExportError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSarExportError(null)}
+            className="p-1 rounded hover:bg-rose-100 text-rose-800"
+            aria-label="Dismiss export error"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* TAB 1: INTERACTIVE 4-ZONE DIRECTIONAL TRUST BOUNDARY FLOW GRAPH + INVENTORY */}
       {activeSubTab === "TRUST_BOUNDARIES" && (

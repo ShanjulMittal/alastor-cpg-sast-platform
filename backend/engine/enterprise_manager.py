@@ -4419,35 +4419,45 @@ class EnterpriseManager:
     # 7. SAST ++++++ ASPM Suite (Live SBOM, API Attack Surface & Roadmap)
     # -----------------------------------------------------------------------
     def get_sast_plus_suite(self, scan_dir: str, findings: List[Finding]) -> SastPlusSuiteResponse:
-        raw_cred_tokens = sorted(
-            {
-                f.secret_value_raw: (f.secret_value_masked or "[REDACTED]")
-                for f in (findings or [])
-                if f.secret_value_raw and len(f.secret_value_raw) >= 4
-            }.items(),
+        raw_cred_tokens: Dict[str, str] = {
+            f.secret_value_raw: (f.secret_value_masked or "[REDACTED]")
+            for f in (findings or [])
+            if f.secret_value_raw and len(f.secret_value_raw) >= 4
+        }
+        sorted_cred_tokens = sorted(
+            raw_cred_tokens.items(),
             key=lambda kv: len(kv[0]),
             reverse=True,
         )
-        if raw_cred_tokens:
+
+        def _scrub_cred_text(text: str) -> str:
+            if not text or not sorted_cred_tokens:
+                return text
+            out_s = text
+            for raw_tok, mask_lbl in sorted_cred_tokens:
+                if raw_tok and raw_tok in out_s:
+                    out_s = out_s.replace(raw_tok, mask_lbl)
+            return out_s
+
+        if sorted_cred_tokens:
             scrubbed_input: List[Finding] = []
             for f_in in findings:
                 f_cp = f_in.model_copy(deep=True)
                 f_cp.secret_value_raw = None
-                for raw_tok, mask_lbl in raw_cred_tokens:
-                    for attr_name in ("title", "description", "remediation", "plain_english_summary"):
-                        cur_s = getattr(f_cp, attr_name, None)
-                        if isinstance(cur_s, str) and raw_tok in cur_s:
-                            setattr(f_cp, attr_name, cur_s.replace(raw_tok, mask_lbl))
-                    if f_cp.best_fix_location:
-                        for bfl_attr in ("code_snippet", "explanation", "recommended_fix", "before_code_block", "after_code_block"):
-                            cur_b = getattr(f_cp.best_fix_location, bfl_attr, None)
-                            if isinstance(cur_b, str) and raw_tok in cur_b:
-                                setattr(f_cp.best_fix_location, bfl_attr, cur_b.replace(raw_tok, mask_lbl))
-                    for p_node in f_cp.path_nodes or []:
-                        if isinstance(p_node, dict):
-                            for n_key in ("code", "name"):
-                                if isinstance(p_node.get(n_key), str) and raw_tok in p_node[n_key]:
-                                    p_node[n_key] = p_node[n_key].replace(raw_tok, mask_lbl)
+                for attr_name in ("title", "description", "remediation", "plain_english_summary"):
+                    cur_s = getattr(f_cp, attr_name, None)
+                    if isinstance(cur_s, str):
+                        setattr(f_cp, attr_name, _scrub_cred_text(cur_s))
+                if f_cp.best_fix_location:
+                    for bfl_attr in ("code_snippet", "explanation", "recommended_fix", "before_code_block", "after_code_block"):
+                        cur_b = getattr(f_cp.best_fix_location, bfl_attr, None)
+                        if isinstance(cur_b, str):
+                            setattr(f_cp.best_fix_location, bfl_attr, _scrub_cred_text(cur_b))
+                for p_node in f_cp.path_nodes or []:
+                    if isinstance(p_node, dict):
+                        for n_key in ("code", "name"):
+                            if isinstance(p_node.get(n_key), str):
+                                p_node[n_key] = _scrub_cred_text(p_node[n_key])
                 scrubbed_input.append(f_cp)
             findings = scrubbed_input
 
@@ -4770,7 +4780,7 @@ class EnterpriseManager:
                         fn_name = fn_m.group(1)
                         if (rel_p.replace("\\", "/"), fn_name) in covered_route_handlers:
                             continue
-                        params = fn_m.group(2).strip()
+                        params = _scrub_cred_text(fn_m.group(2).strip())
                         linked_c = findings_by_file.get(rel_p, 0) or findings_by_file.get(os.path.basename(rel_p), 0)
                         is_high = linked_c > 0 and ("cmd" in params or "user" in params or "exec" in fn_name or "debug" in fn_name or "worker" in fn_name)
                         endpoints.append(
@@ -4886,22 +4896,32 @@ class EnterpriseManager:
                 taint_f.append(f_rem)
 
         def _read_line_snippet(rel_fp: str, ln: int = 1, fallback: str = "") -> str:
-            full_p = discovered_files.get(rel_fp)
+            norm_fp = (rel_fp or "").replace("\\", "/")
+            full_p = discovered_files.get(rel_fp) or discovered_files.get(norm_fp)
+            if not full_p and rel_fp:
+                try:
+                    cand_real = os.path.realpath(rel_fp)
+                    root_real = os.path.realpath(root_dir)
+                    if os.path.commonpath([root_real, cand_real]) == root_real and os.path.isfile(cand_real):
+                        full_p = cand_real
+                except Exception:
+                    full_p = None
             if full_p and os.path.isfile(full_p):
                 try:
                     with open(full_p, "r", encoding="utf-8", errors="replace") as fh:
                         lines = fh.read().splitlines()
                     if lines:
                         idx = max(0, min(len(lines) - 1, ln - 1))
-                        s = lines[idx].strip()
+                        s = _scrub_cred_text(lines[idx].strip())
                         if s:
                             return s[:160]
                         for l_cand in lines:
                             if l_cand.strip():
-                                return l_cand.strip()[:160]
+                                return _scrub_cred_text(l_cand.strip())[:160]
                 except Exception:
                     pass
-            return fallback or f"// Inspected control in {rel_fp}:L{ln}"
+            safe_fallback = _scrub_cred_text(fallback)
+            return safe_fallback or f"// Inspected control in {rel_fp}:L{ln}"
 
         def _extract_loc_from_findings(flist: List[Finding], fallback_fp: str, fallback_ln: int = 1):
             if flist:
@@ -5955,6 +5975,7 @@ class EnterpriseManager:
             endpoints=endpoints,
             stride_threats=stride_threats,
             pipeline_checks=pipeline_checks,
+            extra_forbidden_values=set(raw_cred_tokens.keys()),
         )
 
         return SastPlusSuiteResponse(

@@ -1,6 +1,13 @@
 "use client";
 
-import React, { memo, useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import ReactFlow, {
   Background,
   Controls,
@@ -986,12 +993,19 @@ export const PastaThreatWorkbench: React.FC = () => {
     useState<boolean>(false);
   const [weightDrafts, setWeightDrafts] = useState<Record<string, number>>({});
   const [exportFeedback, setExportFeedback] = useState<string | null>(null);
+  const lastAutoHydratedKeyRef = useRef<string | null>(null);
+  const targetKey = (projectPath || "__active__").trim();
 
   useEffect(() => {
-    if (!pastaAssessment && !isLoadingPasta) {
+    if (pastaAssessment) {
+      lastAutoHydratedKeyRef.current = targetKey;
+      return;
+    }
+    if (!isLoadingPasta && lastAutoHydratedKeyRef.current !== targetKey) {
+      lastAutoHydratedKeyRef.current = targetKey;
       void fetchPastaState();
     }
-  }, [pastaAssessment, isLoadingPasta, projectPath, fetchPastaState]);
+  }, [pastaAssessment, isLoadingPasta, targetKey, fetchPastaState]);
 
   useEffect(() => {
     if (!pastaAssessment) return;

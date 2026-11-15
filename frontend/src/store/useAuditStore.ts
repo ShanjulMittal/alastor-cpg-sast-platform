@@ -73,16 +73,19 @@ import {
   fetchSecretInventory,
   verifySecrets,
   fetchApiOperationsReport,
+  fetchSastPlusSuite as fetchSastPlusSuiteApi,
   fetchPastaAssessment,
   updatePastaProfile,
   overridePastaGate,
   downloadSarReportBlob,
+  isLikelyLocalProjectPath,
 } from "@/lib/api";
 
 export const UI_PREFS_STORAGE_KEY = "alastor_ui_prefs_v4";
 
 let _hasHydratedUiPrefs = false;
-let _inflightSastSuitePromise: Promise<void> | null = null;
+let _sastPlusInFlight: Promise<void> | null = null;
+let _sastPlusInFlightKey = "";
 const _inflightApiOpsPromises = new Map<string, Promise<ApiOperationsReportResponse | null>>();
 let _pastaInFlight: Promise<PastaAssessmentResponse | null> | null = null;
 let _pastaInFlightKey = "";
@@ -480,7 +483,7 @@ interface AuditState {
     accountable_role?: string;
   }) => Promise<void>;
   resetRaciGovernance: () => Promise<void>;
-  fetchSastPlusSuite: () => Promise<void>;
+  fetchSastPlusSuite: (projectPathOverride?: string | null) => Promise<void>;
   setTrackChangesMode: (enabled: boolean) => void;
   setTrackChangesPanelOpen: (open: boolean) => void;
   fetchTrackChanges: (projectPath?: string) => Promise<void>;
@@ -2941,29 +2944,47 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     }
   },
 
-  fetchSastPlusSuite: async () => {
-    if (_inflightSastSuitePromise) {
-      return _inflightSastSuitePromise;
+  fetchSastPlusSuite: async (projectPathOverride?: string | null) => {
+    const rawPath = (
+      projectPathOverride !== undefined && projectPathOverride !== null
+        ? projectPathOverride
+        : get().projectPath || ""
+    ).trim();
+    const key = isLikelyLocalProjectPath(rawPath) ? rawPath : "__active__";
+    if (_sastPlusInFlight && _sastPlusInFlightKey === key) {
+      return _sastPlusInFlight;
     }
-    _inflightSastSuitePromise = (async () => {
+    _sastPlusInFlightKey = key;
+    const reqPromise = (async () => {
       try {
-        const res = await fetch(`${BACKEND_URL}/api/aspm/suite`);
-        if (res.ok) {
-          const data: SastPlusSuiteResponse = await res.json();
-          set({
-            sastPlusSuite: data,
-            ...(data?.pasta_assessment
-              ? { pastaAssessment: data.pasta_assessment }
-              : {}),
-          });
+        const data = await fetchSastPlusSuiteApi(
+          key === "__active__" ? undefined : key
+        );
+        if (_sastPlusInFlight !== reqPromise) {
+          return;
         }
+        const latestRaw = (get().projectPath || "").trim();
+        const latestKey = isLikelyLocalProjectPath(latestRaw)
+          ? latestRaw
+          : "__active__";
+        if (projectPathOverride === undefined && latestKey !== key) {
+          return;
+        }
+        set((state) => ({
+          sastPlusSuite: data,
+          pastaAssessment: data.pasta_assessment ?? state.pastaAssessment,
+        }));
       } catch (err) {
         console.error("Failed to fetch SAST++++++ ASPM suite:", err);
       } finally {
-        _inflightSastSuitePromise = null;
+        if (_sastPlusInFlight === reqPromise) {
+          _sastPlusInFlight = null;
+          _sastPlusInFlightKey = "";
+        }
       }
     })();
-    return _inflightSastSuitePromise;
+    _sastPlusInFlight = reqPromise;
+    return reqPromise;
   },
 
   fetchTrackChanges: async (projectPath?: string) => {
@@ -3184,8 +3205,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         ? projectPathOverride
         : get().projectPath || ""
     ).trim();
-    const key =
-      rawPath && !/^(https?:\/\/|git@)/i.test(rawPath) ? rawPath : "__active__";
+    const key = isLikelyLocalProjectPath(rawPath) ? rawPath : "__active__";
     if (_pastaInFlight && _pastaInFlightKey === key) {
       return _pastaInFlight;
     }
@@ -3196,6 +3216,17 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         const data = await fetchPastaAssessment(
           key === "__active__" ? undefined : key
         );
+        if (_pastaInFlight !== reqPromise) {
+          return data;
+        }
+        const latestRaw = (get().projectPath || "").trim();
+        const latestKey = isLikelyLocalProjectPath(latestRaw)
+          ? latestRaw
+          : "__active__";
+        if (projectPathOverride === undefined && latestKey !== key) {
+          set({ isLoadingPasta: false });
+          return data;
+        }
         set((state) => ({
           pastaAssessment: data,
           isLoadingPasta: false,
@@ -3211,7 +3242,9 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         return data;
       } catch (err) {
         console.error("Failed to fetch PASTA threat assessment:", err);
-        set({ isLoadingPasta: false });
+        if (_pastaInFlight === reqPromise || _pastaInFlight === null) {
+          set({ isLoadingPasta: false });
+        }
         return null;
       } finally {
         if (_pastaInFlight === reqPromise) {
@@ -3292,7 +3325,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       document.body.appendChild(a);
       a.click();
       a.remove();
-      window.URL.revokeObjectURL(url);
+      window.setTimeout(() => window.URL.revokeObjectURL(url), 1000);
       return true;
     } catch (err) {
       console.error(`Failed to export SAR Go-Live report (${format}):`, err);

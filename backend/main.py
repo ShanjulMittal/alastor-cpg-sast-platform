@@ -4263,8 +4263,8 @@ def _resolve_confined_project_target(project_path: Optional[str]) -> str:
 
 def _resolve_findings_for_project_target(target_dir: str) -> List[Finding]:
     """Resolves enriched findings for either the active scan target or a cached registered project."""
-    norm_req = os.path.normcase(os.path.abspath(target_dir))
-    norm_cur = os.path.normcase(os.path.abspath(current_scan_dir or enterprise_mgr.platform_root))
+    norm_req = os.path.normcase(os.path.realpath(target_dir))
+    norm_cur = os.path.normcase(os.path.realpath(current_scan_dir or enterprise_mgr.platform_root))
     if norm_req == norm_cur:
         findings = get_or_compute_findings()
         if findings:
@@ -4279,8 +4279,8 @@ def _resolve_findings_for_project_target(target_dir: str) -> List[Finding]:
 
 def _safe_metrics_for_project_target(target_dir: str, findings: List[Finding]) -> MetricsResponse:
     """Computes or retrieves `MetricsResponse` for `target_dir` with graceful fallback when Neo4j is unqueried."""
-    norm_req = os.path.normcase(os.path.abspath(target_dir))
-    norm_cur = os.path.normcase(os.path.abspath(current_scan_dir or enterprise_mgr.platform_root))
+    norm_req = os.path.normcase(os.path.realpath(target_dir))
+    norm_cur = os.path.normcase(os.path.realpath(current_scan_dir or enterprise_mgr.platform_root))
     if norm_req == norm_cur:
         try:
             return get_metrics()
@@ -4494,8 +4494,8 @@ def get_api_endpoints_operations(project_path: Optional[str] = Query(None)):
             )
         target_dir = confined_target
 
-    norm_req = os.path.normcase(os.path.abspath(target_dir))
-    norm_cur = os.path.normcase(os.path.abspath(current_scan_dir or enterprise_mgr.platform_root))
+    norm_req = os.path.normcase(os.path.realpath(target_dir))
+    norm_cur = os.path.normcase(os.path.realpath(current_scan_dir or enterprise_mgr.platform_root))
 
     findings: List[Finding] = []
     if norm_req == norm_cur and (_cached_findings is not None or _last_neo4j_ingested_dir is not None):

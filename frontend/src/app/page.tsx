@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { StudioCommandHeader } from "@/components/StudioCommandHeader";
 import { StudioStatusBar } from "@/components/StudioStatusBar";
@@ -236,7 +236,19 @@ export default function AuditPage() {
   const [cveCustomUrl, setCveCustomUrl] = useState("");
   const [cveKeyword, setCveKeyword] = useState("");
   const [exportToast, setExportToast] = useState<string | null>(null);
+  const [exportToastTone, setExportToastTone] = useState<"success" | "error">(
+    "success"
+  );
+  const exportToastTimerRef = useRef<number | null>(null);
   const [isExporting, setIsExporting] = useState<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (exportToastTimerRef.current !== null) {
+        window.clearTimeout(exportToastTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     setQuickScanTarget(projectPath);
@@ -304,9 +316,22 @@ export default function AuditPage() {
   const effectivePasta =
     pastaAssessment ?? sastPlusSuite?.pasta_assessment ?? null;
 
-  const showExportFeedback = (msg: string) => {
+  const showExportFeedback = (
+    msg: string,
+    tone: "success" | "error" = "success"
+  ) => {
+    if (exportToastTimerRef.current !== null) {
+      window.clearTimeout(exportToastTimerRef.current);
+    }
+    setExportToastTone(tone);
     setExportToast(msg);
-    setTimeout(() => setExportToast(null), 3500);
+    exportToastTimerRef.current = window.setTimeout(
+      () => {
+        setExportToast(null);
+        exportToastTimerRef.current = null;
+      },
+      tone === "error" ? 4500 : 3500
+    );
   };
 
   const handleDownloadSarExport = async (format: "docx" | "pdf") => {
@@ -315,7 +340,13 @@ export default function AuditPage() {
       showExportFeedback(
         format === "docx"
           ? "Downloaded Threat Modeling & Go-Live SAR Report (.docx)"
-          : "Downloaded Threat Modeling & Go-Live SAR Report (.pdf)"
+          : "Downloaded Threat Modeling & Go-Live SAR Report (.pdf)",
+        "success"
+      );
+    } else {
+      showExportFeedback(
+        `Failed to export Threat Modeling & Go-Live SAR Report (.${format}). Verify backend connectivity and workspace path.`,
+        "error"
       );
     }
   };
@@ -1298,8 +1329,19 @@ export default function AuditPage() {
                       </div>
 
                       {exportToast && (
-                        <div className="px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-300 text-emerald-900 text-xs font-mono font-bold flex items-center gap-1.5">
-                          <CheckCircle2 className="w-4 h-4 text-emerald-700" />
+                        <div
+                          role={exportToastTone === "error" ? "alert" : "status"}
+                          className={`px-3 py-1.5 rounded-xl border text-xs font-mono font-bold flex items-center gap-1.5 ${
+                            exportToastTone === "error"
+                              ? "bg-rose-50 border-rose-300 text-rose-950"
+                              : "bg-emerald-50 border-emerald-300 text-emerald-900"
+                          }`}
+                        >
+                          {exportToastTone === "error" ? (
+                            <ShieldAlert className="w-4 h-4 text-rose-700 shrink-0" />
+                          ) : (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+                          )}
                           <span>{exportToast}</span>
                         </div>
                       )}

@@ -256,7 +256,7 @@ def _redact_sensitive_text(text: str, forbidden_values: Set[str]) -> str:
     safe_txt = (text or "").replace("\x00", "").strip()
     if not safe_txt or not forbidden_values:
         return safe_txt
-    for raw_val in forbidden_values:
+    for raw_val in sorted(forbidden_values, key=len, reverse=True):
         if raw_val and raw_val in safe_txt:
             safe_txt = safe_txt.replace(raw_val, "[REDACTED]")
     return safe_txt
@@ -295,7 +295,7 @@ def _classify_threat_taxonomy(f: Finding) -> Tuple[str, str, str, str, str]:
             "SECRETS_AND_CREDENTIALS",
             "Credential Harvesting & Cloud Takeover Actor",
         )
-    if cwe in ("CWE-78", "CWE-94") or "TAINT" in rule_up or "INJECTION" in rule_up and "SQL" not in rule_up and "LOG" not in rule_up:
+    if cwe in ("CWE-78", "CWE-94"):
         return (
             "CAPEC-88 / T1190",
             "E",
@@ -303,7 +303,7 @@ def _classify_threat_taxonomy(f: Finding) -> Tuple[str, str, str, str, str]:
             "HOST_RUNTIME_AND_OS",
             "External RCE / Public-Facing Exploit Adversary",
         )
-    if cwe == "CWE-89" or "SQLI" in rule_up:
+    if cwe == "CWE-89" or "SQLI" in rule_up or (("SQL" in rule_up) and ("INJECTION" in rule_up)):
         return (
             "CAPEC-66 / T1190",
             "T",
@@ -375,6 +375,14 @@ def _classify_threat_taxonomy(f: Finding) -> Tuple[str, str, str, str, str]:
             "AUTH_AND_SESSION_BOUNDARY",
             "Token Forgery & Payload Tampering Actor",
         )
+    if ("TAINT" in rule_up) or (("INJECTION" in rule_up) and ("SQL" not in rule_up) and ("LOG" not in rule_up)):
+        return (
+            "CAPEC-88 / T1190",
+            "E",
+            "STRIDE-E (Elevation of Privilege)",
+            "HOST_RUNTIME_AND_OS",
+            "External RCE / Public-Facing Exploit Adversary",
+        )
     return (
         "CAPEC-88 / T1190",
         "T",
@@ -416,7 +424,7 @@ class PastaThreatEngine:
 
     def _project_key(self, target_dir: str) -> str:
         raw_dir = (target_dir or ".").strip() or "."
-        return os.path.normcase(os.path.abspath(raw_dir)).replace("\\", "/")
+        return os.path.normcase(os.path.realpath(raw_dir)).replace("\\", "/")
 
     def _resolve_profiles_path(self) -> Tuple[str, str]:
         vault_real = os.path.realpath(self.vault_dir)
@@ -1786,6 +1794,8 @@ class PastaThreatEngine:
         endpoints: Optional[List[AttackSurfaceEndpoint]] = None,
         stride_threats: Optional[List[StrideThreatItem]] = None,
         pipeline_checks: Optional[List[PipelineSecurityCheck]] = None,
+        extra_forbidden_values: Optional[Set[str]] = None,
+        forbidden_raw_secrets: Optional[Set[str]] = None,
     ) -> PastaAssessmentResponse:
         eff_target = (target_dir or ".").strip() or "."
         abs_target = os.path.abspath(eff_target)
@@ -1798,6 +1808,11 @@ class PastaThreatEngine:
             for f in (findings or [])
             if f.secret_value_raw and len(f.secret_value_raw) >= 4
         }
+        for extra_vals in (extra_forbidden_values, forbidden_raw_secrets):
+            if extra_vals:
+                forbidden_raw_values.update(
+                    val for val in extra_vals if isinstance(val, str) and len(val) >= 5
+                )
 
         active_findings: List[Finding] = [
             f for f in (findings or [])
@@ -2216,7 +2231,10 @@ class PastaThreatEngine:
                         stage_number=4,
                         verdict="GAP",
                         severity=st_item.severity,
-                        title=f"STRIDE-{st_item.stride_letter} ({st_item.stride_category}): {st_item.title}",
+                        title=_redact_sensitive_text(
+                            f"STRIDE-{st_item.stride_letter} ({st_item.stride_category}): {st_item.title}",
+                            forbidden_raw_values,
+                        ),
                         detail=_redact_sensitive_text(st_item.issue_summary or st_item.threat_scenario, forbidden_raw_values)[:220],
                         filepath=st_item.primary_filepath or sample_root_fp,
                         line=max(1, st_item.primary_line),

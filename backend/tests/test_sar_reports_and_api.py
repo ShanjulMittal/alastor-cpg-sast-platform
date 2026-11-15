@@ -11,7 +11,11 @@ import docx
 from fastapi.testclient import TestClient
 
 from engine.enterprise_manager import EnterpriseManager
-from engine.pasta_threat_engine import PastaThreatEngine
+from engine.pasta_threat_engine import (
+    PastaThreatEngine,
+    _classify_threat_taxonomy,
+    _redact_sensitive_text,
+)
 from engine.sar_report_generator import (
     SarReportBundle,
     build_sar_json_dict,
@@ -755,4 +759,194 @@ def test_sar_report_conditional_golive_verdict_banner(tmp_path: Path):
     assert len(pdf_bytes) > 2500
     decompressed = _extract_decompressed_pdf_streams(pdf_bytes)
     assert b"CONDITIONAL GO-LIVE" in decompressed
+
+
+def test_aspm_suite_scrubs_disk_backed_line_snippets_and_pasta(tmp_path: Path):
+    import subprocess
+    import main
+
+    vault_dir = tmp_path / "disk_scrub_vault"
+    repo_dir = tmp_path / "disk_scrub_workspace"
+    repo_dir.mkdir(parents=True)
+
+    raw_short_canary = "sk_live_" + "SUPER_SECRET_DISK"
+    raw_disk_canary = raw_short_canary + "_LINE_9876543210"
+    (repo_dir / "billing_keys.py").write_text(
+        f'STRIPE_SECRET = "{raw_disk_canary}"\n'
+        "def charge_customer(amount: int) -> bool:\n"
+        "    return amount > 0\n",
+        encoding="utf-8",
+    )
+
+    disk_cred_finding = Finding(
+        id="FIND-DISK-SECRET-01",
+        rule_id="RULE-8-HARDCODED-SECRET",
+        severity="CRITICAL",
+        title=f"Hardcoded Stripe Live Key in billing_keys.py ({raw_disk_canary})",
+        description=f"Detected live Stripe key {raw_disk_canary} on disk.",
+        cwe_id="CWE-798",
+        scan_engine="SAST",
+        is_secret_finding=True,
+        secret_key_name="STRIPE_SECRET",
+        secret_value_masked="sk_l••••••••3210",
+        secret_value_raw=raw_disk_canary,
+        secret_type="Stripe API Credential",
+        secret_detector_id="stripe_key",
+        secret_validation_status="VERIFIED_ACTIVE",
+        secret_source="WORKING_TREE",
+        best_fix_location=BestFixLocation(
+            node_id="n-disk-sec-1",
+            filepath="billing_keys.py",
+            line=1,
+            column=0,
+            code_snippet="",
+            explanation="Load Stripe key from secret manager vault.",
+            recommended_fix='os.environ["STRIPE_SECRET"]',
+        ),
+    )
+    short_prefix_finding = Finding(
+        id="FIND-DISK-SECRET-PREFIX",
+        rule_id="RULE-8-HARDCODED-SECRET",
+        severity="HIGH",
+        title="Legacy Stripe Prefix Key",
+        description=f"Detected prefix token {raw_short_canary}.",
+        cwe_id="CWE-798",
+        scan_engine="SAST",
+        is_secret_finding=True,
+        secret_key_name="STRIPE_LEGACY_PREFIX",
+        secret_value_masked="sk_l••••••••DISK",
+        secret_value_raw=raw_short_canary,
+        secret_type="Stripe API Credential",
+        secret_detector_id="stripe_key",
+        secret_validation_status="OFFLINE_STRUCTURALLY_VALID",
+        secret_source="GIT_HISTORY",
+        best_fix_location=BestFixLocation(
+            node_id="n-disk-sec-2",
+            filepath="billing_keys.py",
+            line=1,
+            column=0,
+            code_snippet="",
+            explanation="Purge historical key from git history.",
+            recommended_fix="git filter-repo",
+        ),
+    )
+
+    # Create a junction/symlink alias pointing to repo_dir to verify canonical realpath resolution
+    alias_dir = tmp_path / "disk_scrub_junction_alias"
+    alias_created = False
+    try:
+        os.symlink(str(repo_dir), str(alias_dir), target_is_directory=True)
+        alias_created = True
+    except OSError:
+        if os.name == "nt":
+            proc = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(alias_dir), str(repo_dir)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            alias_created = proc.returncode == 0 and alias_dir.exists()
+
+    iso_pasta_engine = PastaThreatEngine(vault_dir=str(vault_dir))
+
+    prev_scan_dir = main.current_scan_dir
+    main.current_scan_dir = str(repo_dir)
+    try:
+        with (
+            patch.object(main, "startup_event", return_value=None),
+            patch.object(main, "shutdown_event", return_value=None),
+            patch.object(main.enterprise_mgr, "pasta_engine", iso_pasta_engine),
+            patch.object(
+                main,
+                "get_or_compute_findings",
+                return_value=[short_prefix_finding, disk_cred_finding],
+            ),
+            TestClient(main.app) as client,
+        ):
+            r_suite = client.get("/api/aspm/suite", params={"project_path": str(repo_dir)})
+            assert r_suite.status_code == 200
+            assert raw_disk_canary not in r_suite.text
+            assert raw_short_canary not in r_suite.text
+            assert "_LINE_9876543210" not in r_suite.text
+            suite_json = r_suite.json()
+            assert suite_json["pasta_assessment"]["mandatory_pre_golive_count"] >= 1
+
+            r_pasta = client.get("/api/aspm/pasta", params={"project_path": str(repo_dir)})
+            assert r_pasta.status_code == 200
+            assert raw_disk_canary not in r_pasta.text
+            assert raw_short_canary not in r_pasta.text
+            assert "_LINE_9876543210" not in r_pasta.text
+            assert r_pasta.json()["mandatory_pre_golive_count"] >= 1
+
+            if alias_created:
+                assert iso_pasta_engine._project_key(str(alias_dir)) == iso_pasta_engine._project_key(
+                    str(repo_dir)
+                )
+                main.current_scan_dir = str(alias_dir)
+                r_alias = client.get("/api/aspm/pasta", params={"project_path": str(repo_dir)})
+                assert r_alias.status_code == 200
+                assert r_alias.json()["mandatory_pre_golive_count"] >= 1
+                assert raw_disk_canary not in r_alias.text
+    finally:
+        main.current_scan_dir = prev_scan_dir
+        if alias_created and alias_dir.exists():
+            if os.name == "nt" and not alias_dir.is_symlink():
+                subprocess.run(["cmd", "/c", "rmdir", str(alias_dir)], check=False)
+            else:
+                alias_dir.unlink(missing_ok=True)
+
+
+def test_redact_sensitive_text_sorts_overlapping_prefix_secrets():
+    set_short_first: set[str] = set()
+    set_short_first.add("TOK_ABC")
+    set_short_first.add("TOK_ABC_SUPER_PROD_9999")
+
+    set_long_first: set[str] = set()
+    set_long_first.add("TOK_ABC_SUPER_PROD_9999")
+    set_long_first.add("TOK_ABC")
+
+    sample_text = "token=TOK_ABC_SUPER_PROD_9999 and short=TOK_ABC"
+    for candidate_set in (
+        {"TOK_ABC", "TOK_ABC_SUPER_PROD_9999"},
+        {"TOK_ABC_SUPER_PROD_9999", "TOK_ABC"},
+        set_short_first,
+        set_long_first,
+    ):
+        redacted = _redact_sensitive_text(sample_text, candidate_set)
+        assert "_SUPER_PROD_9999" not in redacted
+        assert "TOK_ABC" not in redacted
+
+    # Exercise multiple hash-bucket collisions so unsorted set order cannot pass by luck
+    for idx in range(12):
+        short_tok = f"TOK_ABC_{idx}"
+        long_tok = f"{short_tok}_SUPER_PROD_9999"
+        out = _redact_sensitive_text(
+            f"primary={long_tok} fallback={short_tok}",
+            {short_tok, long_tok},
+        )
+        assert "_SUPER_PROD_9999" not in out
+        assert short_tok not in out
+
+    # Verify explicit CWE precedence over generic "TAINT" / "INJECTION" rule_id substrings
+    custom_sqli = Finding(
+        id="F-CUST-SQLI",
+        rule_id="CUSTOM-TAINT-INJECTION-QUERY",
+        severity="HIGH",
+        title="Custom SQL Taint Rule",
+        description="Taint reaches SQL query sink.",
+        cwe_id="CWE-89",
+        scan_engine="SAST",
+    )
+    custom_xss = Finding(
+        id="F-CUST-XSS",
+        rule_id="CUSTOM-TAINT-DOM-RENDER",
+        severity="HIGH",
+        title="Custom XSS Taint Rule",
+        description="Taint reaches innerHTML sink.",
+        cwe_id="CWE-79",
+        scan_engine="SAST",
+    )
+    assert _classify_threat_taxonomy(custom_sqli)[0] == "CAPEC-66 / T1190"
+    assert _classify_threat_taxonomy(custom_xss)[0] == "CAPEC-63 / T1189"
+
 
