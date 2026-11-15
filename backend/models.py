@@ -1098,6 +1098,7 @@ class SastPlusSuiteResponse(BaseModel):
     executive_plain_summary: str = ""
     overall_maturity_grade: str = "B+"
     maturity_score: int = 85
+    pasta_assessment: Optional["PastaAssessmentResponse"] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1379,6 +1380,208 @@ class ApiOperationsReportResponse(BaseModel):
     vulnerable_endpoints_count: int
     frameworks_detected: List[str] = Field(default_factory=list)
     endpoints: List[ApiEndpointOperationDossier] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# 13. 7-Stage PASTA Threat Modeling & SAR Go-Live Gate Models
+# ---------------------------------------------------------------------------
+PastaBusinessPreset = Literal[
+    "AUTO_INFERRED",
+    "FINTECH_PAYMENTS",
+    "HEALTHCARE_PHI",
+    "AI_SAAS_PUBLIC",
+    "ENTERPRISE_INTERNAL",
+]
+
+GoLiveGateStatus = Literal[
+    "MANDATORY_PRE_GO_LIVE",
+    "POST_GO_LIVE_SLA",
+    "RISK_ACCEPTED_WAIVER",
+]
+
+GoLiveSlaWindow = Literal[
+    "PRE_LAUNCH",
+    "7_DAYS",
+    "14_DAYS",
+    "30_DAYS",
+    "90_DAYS",
+    "WAIVED",
+]
+
+GoLiveVerdict = Literal[
+    "APPROVED_FOR_GO_LIVE",
+    "CONDITIONAL_GO_LIVE",
+    "NO_GO_HOLD_RELEASE",
+]
+
+
+class PastaCrownJewelItem(BaseModel):
+    id: str
+    name: str
+    category: str
+    asset_count: int = 0
+    weight_multiplier: float = 1.0
+    sensitivity_label: str = "STANDARD"
+    rationale: str = ""
+    sample_locations: List[str] = Field(default_factory=list)
+
+
+class PastaEvidenceItem(BaseModel):
+    id: str
+    stage_number: int
+    verdict: Literal["OK", "GAP"] = "OK"
+    severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW", "PASS"] = "PASS"
+    title: str
+    detail: str = ""
+    filepath: str = ""
+    line: int = 1
+    cwe_or_capec: str = ""
+    stride_cross_ref: str = ""
+    linked_finding_id: Optional[str] = None
+
+
+class PastaStageItem(BaseModel):
+    stage_number: int
+    stage_code: str
+    stage_roman: str
+    title: str
+    methodology_goal: str
+    status: Literal["PASS", "MONITORED", "ACTION_REQUIRED"] = "PASS"
+    ok_count: int = 0
+    gap_count: int = 0
+    summary: str = ""
+    what_passed: List[str] = Field(default_factory=list)
+    what_failed: List[str] = Field(default_factory=list)
+    evidence_items: List[PastaEvidenceItem] = Field(default_factory=list)
+
+
+class PastaAttackTreeNode(BaseModel):
+    id: str
+    node_role: Literal[
+        "GOAL",
+        "CAPEC_VECTOR",
+        "ENTRYPOINT",
+        "PROPAGATION",
+        "VULN_SINK",
+        "BFL_SHIELD",
+        "CROWN_JEWEL",
+    ]
+    title: str
+    subtitle: str = ""
+    severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW", "PASS"] = "MEDIUM"
+    filepath: str = ""
+    line: int = 1
+    cwe_or_capec: str = ""
+    is_severed: bool = False
+    linked_finding_id: Optional[str] = None
+
+
+class PastaAttackTreeEdge(BaseModel):
+    id: str
+    source: str
+    target: str
+    label: str = ""
+    is_blocked: bool = False
+
+
+class PastaAttackTreeScenario(BaseModel):
+    id: str
+    title: str
+    attacker_persona: str = "External Opportunistic Attacker"
+    mitre_capec: str = ""
+    stride_letter: str = "T"
+    target_crown_jewel: str = ""
+    status: Literal["EXPLOITABLE_PATH", "PARTIALLY_GUARDED", "SEVERED_BY_CONTROLS"] = "SEVERED_BY_CONTROLS"
+    severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"] = "LOW"
+    narrative: str = ""
+    bfl_remediation: str = ""
+    projected_risk_reduction: int = 0
+    linked_finding_id: Optional[str] = None
+    primary_filepath: str = ""
+    primary_line: int = 1
+    nodes: List[PastaAttackTreeNode] = Field(default_factory=list)
+    edges: List[PastaAttackTreeEdge] = Field(default_factory=list)
+
+
+class GoLiveObservationItem(BaseModel):
+    id: str
+    source_type: Literal[
+        "SAST",
+        "SCA",
+        "IAC",
+        "SECRET_VAULT",
+        "API_EXPOSURE",
+        "PBOM",
+        "STRIDE_GAP",
+    ] = "SAST"
+    title: str
+    severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"] = "MEDIUM"
+    cwe_or_standard: str = ""
+    pasta_stage: int = 5
+    stride_letter: str = "T"
+    filepath: str = ""
+    line: int = 1
+    reachability_status: str = "REACHABLE"
+    gate_status: GoLiveGateStatus = "POST_GO_LIVE_SLA"
+    default_gate_status: GoLiveGateStatus = "POST_GO_LIVE_SLA"
+    is_overridden: bool = False
+    sla_window: GoLiveSlaWindow = "30_DAYS"
+    why_issue: str = ""
+    why_gate_classification: str = ""
+    mandatory_fix_action: str = ""
+    compensating_control: str = ""
+    effort_estimate: str = "~30 mins"
+    raci_owner: str = "Lead Developer (TECH_LEAD)"
+    risk_reduction_points: int = 5
+    linked_finding_id: Optional[str] = None
+
+
+class PastaProfileUpdateRequest(BaseModel):
+    project_path: Optional[str] = None
+    business_preset: PastaBusinessPreset = "AUTO_INFERRED"
+    crown_jewel_weights: Dict[str, float] = Field(default_factory=dict)
+    reset_defaults: bool = False
+
+
+class PastaGateOverrideRequest(BaseModel):
+    project_path: Optional[str] = None
+    observation_id: str
+    gate_status: GoLiveGateStatus = "POST_GO_LIVE_SLA"
+    sla_window: Optional[GoLiveSlaWindow] = None
+    compensating_control_note: Optional[str] = None
+    reset_override: bool = False
+
+
+class PastaAssessmentResponse(BaseModel):
+    project_path: str
+    application_name: str
+    generated_at: str
+    selected_business_preset: PastaBusinessPreset = "AUTO_INFERRED"
+    effective_business_preset: PastaBusinessPreset = "ENTERPRISE_INTERNAL"
+    inferred_business_reason: str = ""
+    compliance_frameworks: List[str] = Field(default_factory=list)
+    crown_jewels: List[PastaCrownJewelItem] = Field(default_factory=list)
+    inherent_risk_score: int = 20
+    inherent_risk_level: Literal["CRITICAL", "HIGH", "MEDIUM", "MODERATE", "LOW"] = "LOW"
+    residual_risk_score: int = 12
+    residual_risk_level: Literal["CRITICAL", "HIGH", "MODERATE", "LOW"] = "LOW"
+    projected_golive_risk_score: int = 10
+    projected_golive_risk_level: Literal["CRITICAL", "HIGH", "MODERATE", "LOW"] = "LOW"
+    golive_verdict: GoLiveVerdict = "APPROVED_FOR_GO_LIVE"
+    golive_verdict_label: str = "APPROVED FOR GO-LIVE"
+    golive_executive_summary: str = ""
+    mandatory_pre_golive_count: int = 0
+    post_golive_sla_count: int = 0
+    waived_count: int = 0
+    passing_controls_count: int = 0
+    stages: List[PastaStageItem] = Field(default_factory=list)
+    attack_trees: List[PastaAttackTreeScenario] = Field(default_factory=list)
+    golive_observations: List[GoLiveObservationItem] = Field(default_factory=list)
+    make_it_live_checklist: List[str] = Field(default_factory=list)
+
+
+SastPlusSuiteResponse.model_rebuild()
+
 
 
 
