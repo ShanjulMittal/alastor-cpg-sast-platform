@@ -140,6 +140,7 @@ class Finding(BaseModel):
     cisa_kev_listed: bool = False
     exploit_maturity: Literal[
         "ACTIVE_IN_THE_WILD",
+        "KNOWN_CVE_ADVISORY",
         "PROOF_OF_CONCEPT",
         "SUPPLY_CHAIN_EXPOSURE",
         "CONFIGURATION_EXPOSURE",

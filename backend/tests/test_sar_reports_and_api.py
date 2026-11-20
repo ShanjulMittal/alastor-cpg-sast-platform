@@ -950,3 +950,67 @@ def test_redact_sensitive_text_sorts_overlapping_prefix_secrets():
     assert _classify_threat_taxonomy(custom_xss)[0] == "CAPEC-63 / T1189"
 
 
+def test_sar_export_handles_sca_lockfile_known_cve_advisory_and_cors_headers(
+    tmp_path: Path, monkeypatch
+):
+    """
+    Regression: EnterpriseManager.enrich_findings assigns exploit_maturity='KNOWN_CVE_ADVISORY'
+    for SCA-2-LIVE-CVE-LOCKFILE findings; sanitize_bundle_for_export and /api/export/sar-report
+    must validate and export DOCX/PDF cleanly without Pydantic ValidationError or missing CORS headers.
+    """
+    import main as main_mod
+
+    ws = tmp_path / "fintech_lockfile_ws"
+    _seed_sample_fintech_repo(ws)
+    orig_allowed = main_mod._get_ai_allowed_roots
+    monkeypatch.setattr(
+        main_mod,
+        "_get_ai_allowed_roots",
+        lambda: list(orig_allowed()) + [os.path.realpath(str(tmp_path))],
+    )
+
+    sca_finding = Finding(
+        id="F-SCA-LOCKFILE-1",
+        rule_id="SCA-2-LIVE-CVE-LOCKFILE",
+        severity="HIGH",
+        title="Vulnerable Package in package-lock.json (CVE-2024-99999)",
+        description="Known vulnerability in lockfile dependency.",
+        cwe_id="CWE-1395",
+        cve_id="CVE-2024-99999",
+        scan_engine="SCA",
+        language="JavaScript",
+        best_fix_location=BestFixLocation(
+            filepath="package-lock.json",
+            line=12,
+            code_snippet='"lodash": "4.17.15"',
+            explanation="Upgrade lodash to 4.17.21+.",
+            recommended_fix="Upgrade lodash to >=4.17.21.",
+        ),
+    )
+    enriched = main_mod.enterprise_mgr.enrich_findings([sca_finding])
+    assert enriched[0].exploit_maturity == "KNOWN_CVE_ADVISORY"
+    monkeypatch.setattr(main_mod, "_resolve_findings_for_project_target", lambda _t: enriched)
+
+    client = TestClient(main_mod.app)
+    headers = {"Origin": "http://localhost:3000"}
+
+    r_docx = client.get(
+        "/api/export/sar-report",
+        params={"format": "docx", "project_path": str(ws)},
+        headers=headers,
+    )
+    assert r_docx.status_code == 200
+    assert r_docx.content[:4] == b"PK\x03\x04"
+    expose_hdr = (r_docx.headers.get("access-control-expose-headers") or "").lower()
+    assert "content-disposition" in expose_hdr
+
+    r_pdf = client.get(
+        "/api/export/sar-report",
+        params={"format": "pdf", "project_path": str(ws)},
+        headers=headers,
+    )
+    assert r_pdf.status_code == 200
+    assert r_pdf.content[:5] == b"%PDF-"
+
+
+
