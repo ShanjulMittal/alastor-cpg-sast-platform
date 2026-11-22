@@ -662,3 +662,280 @@ def test_self_audit_zero_false_positives_on_alastor():
     )
     assert res.execution_mode == "DETERMINISTIC"
     assert res.findings == [], f"Unexpected self-audit findings: {[(f.rule_id, f.best_fix_location.filepath if f.best_fix_location else '', f.best_fix_location.line if f.best_fix_location else 0, f.title) for f in res.findings]}"
+
+
+# ---------------------------------------------------------------------------
+# 8. Fix Round 1 Regression Tests (Review Items #1 - #7)
+# ---------------------------------------------------------------------------
+def test_regression_exact_cwe_token_and_rule_boundary_no_substring_collision(tmp_path: Path):
+    web_files = [_sf("api/server.py", "python", "from fastapi import FastAPI\napp = FastAPI()\n@app.get('/health')\ndef ok(): return {}")]
+    findings = [
+        Finding(id="F-CRED-14", rule_id="RULE-14", severity="HIGH", title="Hardcoded Secret", cwe_id="CWE-798"),
+        Finding(id="F-CORS-942", rule_id="COG-3-CORS-CSRF-CONTROLS", severity="HIGH", title="Wildcard CORS", cwe_id="CWE-942"),
+    ]
+    resp = classify_repo_kinds_and_baselines(str(tmp_path), web_files, findings)
+    by_id = {b.id: b for b in resp.baseline_items}
+
+    # CWE-798 / RULE-14 maps ONLY to A02 (NOT web-api-xss CWE-79 and NOT web-api-a03 RULE-1!)
+    assert by_id["web-api-a02"].status == "FINDING_DETECTED"
+    assert "F-CRED-14" in by_id["web-api-a02"].linked_finding_ids
+    assert by_id["web-api-xss"].status == "UNDISPOSED_GAP"
+    assert by_id["web-api-xss"].linked_finding_ids == []
+
+    # CWE-942 maps to A05, NEVER to web-api-a03 (CWE-94)!
+    assert by_id["web-api-a05"].status == "FINDING_DETECTED"
+    assert "F-CORS-942" in by_id["web-api-a05"].linked_finding_ids
+    assert by_id["web-api-a03"].status == "UNDISPOSED_GAP"
+    assert by_id["web-api-a03"].linked_finding_ids == []
+
+    # Native CWE-787 maps to native-buf, NEVER to native-cmdi (CWE-78)!
+    nat_files = [_sf("src/buf.c", "c", "void f(char *p) { p[10] = 0; }")]
+    nat_finding = Finding(id="F-OOB-787", rule_id="RULE-22-CPP-BUFFER-OVERFLOW", severity="CRITICAL", title="OOB Write", cwe_id="CWE-787")
+    nat_resp = classify_repo_kinds_and_baselines(str(tmp_path), nat_files, [nat_finding])
+    nat_by_id = {b.id: b for b in nat_resp.baseline_items}
+    assert nat_by_id["native-buf"].status == "FINDING_DETECTED"
+    assert nat_by_id["native-cmdi"].status == "UNDISPOSED_GAP"
+
+
+def test_regression_ai_coordinate_rejects_unscanned_dotenv_and_bool_line_and_uses_resolved_language(tmp_path: Path):
+    (tmp_path / ".env").write_text("DATABASE_URL=postgres://user:super_secret_env_value@db/prod\n", encoding="utf-8")
+    (tmp_path / "api.py").write_text("def handle_req(url: str):\n    return url\n", encoding="utf-8")
+    (tmp_path / "client.ts").write_text("export function render(v: string) { return v; }\n", encoding="utf-8")
+
+    engine = FrontierAiEngine(vault_dir=str(tmp_path / ".alastor_vault"))
+    engine.update_config(
+        AiConfigUpdateRequest(
+            provider="openai",
+            model="gpt-4o-mini",
+            api_key="test_byok_key_dotenv_guard_8888",
+            persist_key=False,
+        )
+    )
+
+    mock_payload = {
+        "text": json.dumps({
+            "findings": [
+                {"filepath": ".env", "line": 1, "title": "Dotenv Leak", "severity": "CRITICAL", "cwe_id": "CWE-798", "lens": "hardcoded-creds"},
+                {"filepath": "api.py", "line": True, "title": "Bool Line Bug", "severity": "HIGH", "cwe_id": "CWE-89", "lens": "injection"},
+                {"filepath": "client.ts", "line": 1, "title": "Client Cross-File Hit", "severity": "MEDIUM", "cwe_id": "CWE-79", "lens": "client-side"},
+            ]
+        }),
+        "prompt_tokens": 50,
+        "completion_tokens": 40,
+    }
+
+    with patch.object(engine, "_dispatch_provider_call", return_value=mock_payload):
+        res = run_cognitive_hunt(
+            str(tmp_path),
+            active_findings=[],
+            ai_engine=engine,
+            use_ai=True,
+            include_sibling_sweep=False,
+            max_ai_units=1,
+        )
+
+    titles = {f.title for f in res.findings}
+    assert "Dotenv Leak" not in titles
+    assert "Bool Line Bug" not in titles
+    assert "Client Cross-File Hit" in titles
+    # Secret from .env must NEVER be read or leaked
+    assert "super_secret_env_value" not in json.dumps([f.model_dump() for f in res.findings])
+    # Language must come from resolved ScannedFile (client.ts -> TypeScript, not api.py -> Python)
+    ts_finding = next(f for f in res.findings if f.title == "Client Cross-File Hit")
+    assert ts_finding.language == "TypeScript"
+
+
+def test_regression_failed_stage_b_ai_does_not_mark_baselines_covered_clean(tmp_path: Path):
+    (tmp_path / "app.py").write_text(
+        "from fastapi import FastAPI\napp = FastAPI()\n@app.get('/ping')\ndef ping(): return {'ok': True}\n",
+        encoding="utf-8",
+    )
+    engine = FrontierAiEngine(vault_dir=str(tmp_path / ".alastor_vault"))
+    engine.update_config(
+        AiConfigUpdateRequest(
+            provider="openai",
+            model="gpt-4o-mini",
+            api_key="test_byok_key_fail_9999",
+            persist_key=False,
+        )
+    )
+
+    with patch.object(engine, "_dispatch_provider_call", side_effect=RuntimeError("upstream 503")):
+        res = run_cognitive_hunt(
+            str(tmp_path),
+            active_findings=[],
+            ai_engine=engine,
+            playbook_ids=["ssrf", "injection"],
+            use_ai=True,
+            include_sibling_sweep=False,
+            max_ai_units=2,
+        )
+
+    assert res.execution_mode == "DETERMINISTIC"
+    assert "ssrf" not in res.executed_playbooks
+    assert "injection" not in res.executed_playbooks
+    by_id = {b.id: b for b in res.baseline_items}
+    assert by_id["web-api-a10"].status == "UNDISPOSED_GAP"
+    assert by_id["web-api-a03"].status == "UNDISPOSED_GAP"
+
+
+def test_regression_cog2_handler_block_does_not_bleed_into_next_function(tmp_path: Path):
+    (tmp_path / "payments.py").write_text(
+        "def transfer_funds(amount: float, account):\n"
+        "    account.balance -= amount\n"
+        "    return account.balance\n\n"
+        "def validate_unrelated_order(amount: float):\n"
+        "    if amount <= 0:\n"
+        "        raise ValueError('must be positive')\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "wallet.js").write_text(
+        "export function withdrawBalance(amount, wallet) {\n"
+        "  wallet.balance -= amount;\n"
+        "}\n"
+        "export function unrelatedCheck(amount) {\n"
+        "  if (amount <= 0) throw new Error('Invalid amount');\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    res = run_cognitive_hunt(
+        str(tmp_path),
+        active_findings=[],
+        playbook_ids=["logic-bug"],
+        use_ai=False,
+        include_sibling_sweep=False,
+    )
+    cog2_files = {
+        f.best_fix_location.filepath
+        for f in res.findings
+        if f.rule_id == "COG-2-BUSINESS-LOGIC-TOCTOU" and f.best_fix_location
+    }
+    assert "payments.py" in cog2_files
+    assert "wallet.js" in cog2_files
+
+
+def test_regression_dispatch_structured_json_max_tokens_and_invalid_input_safety(tmp_path: Path):
+    engine = FrontierAiEngine(vault_dir=str(tmp_path / ".alastor_vault"))
+    engine.update_config(
+        AiConfigUpdateRequest(
+            provider="openai",
+            model="gpt-4o-mini",
+            api_key="test_byok_key_tokens_1111",
+            persist_key=False,
+        )
+    )
+
+    # Invalid max_output_tokens must never raise unhandled exceptions
+    for bad_tok in ("not_an_int", True):
+        data, hit, err = engine.dispatch_structured_json(
+            workflow="cognitive_hunt",
+            system_prompt="Return JSON.",
+            user_prompt="x = 1",
+            cache_material="k-bad-tok",
+            max_output_tokens=bad_tok,  # type: ignore[arg-type]
+        )
+        assert data is None
+        assert hit is False
+        assert err is not None
+
+    # Valid max_output_tokens is forwarded to _dispatch_provider_call when accepted
+    captured_kwargs = []
+
+    def four_arg_dispatch(system_prompt: str, user_prompt: str, expect_json: bool = True, max_output_tokens=None):
+        captured_kwargs.append(max_output_tokens)
+        return {"text": '{"ok": true}', "prompt_tokens": 10, "completion_tokens": 5}
+
+    with patch.object(engine, "_dispatch_provider_call", side_effect=four_arg_dispatch):
+        data_ok, hit_ok, err_ok = engine.dispatch_structured_json(
+            workflow="cognitive_hunt",
+            system_prompt="Return JSON.",
+            user_prompt="x = 1",
+            cache_material="k-good-tok",
+            max_output_tokens=777,
+        )
+    assert err_ok is None
+    assert hit_ok is False
+    assert data_ok == {"ok": True}
+    assert captured_kwargs == [777]
+
+
+def test_regression_cog5_anchored_benign_keys_do_not_suppress_database_token_or_model_api_key(tmp_path: Path):
+    (tmp_path / "storage.ts").write_text(
+        "export function saveSecrets(tok: string, key: string) {\n"
+        "  localStorage.setItem('database_token', tok);\n"
+        "  localStorage.setItem('model_api_key', key);\n"
+        "  localStorage.setItem('alastor_app_theme_v4', 'light');\n"
+        "  localStorage.setItem('ui_mode_pref', 'daylight');\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    res = run_cognitive_hunt(
+        str(tmp_path),
+        active_findings=[],
+        playbook_ids=["client-side"],
+        use_ai=False,
+        include_sibling_sweep=False,
+    )
+    flagged_lines = sorted(
+        f.best_fix_location.line
+        for f in res.findings
+        if f.rule_id == "COG-5-CLIENT-POSTMESSAGE-STORAGE" and f.best_fix_location
+    )
+    assert flagged_lines == [2, 3]
+
+
+def test_regression_sibling_sweep_never_reemits_dismissed_or_resolved_findings(tmp_path: Path):
+    (tmp_path / "orders.py").write_text(
+        "@app.get('/api/orders/{order_id}')\n"
+        "def get_order(order_id: str, db=None):\n"
+        "    return db.query(Order).filter_by(id=order_id).first()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "invoices.py").write_text(
+        "@app.get('/api/invoices/{invoice_id}')\n"
+        "def get_invoice(invoice_id: str, db=None):\n"
+        "    return db.query(Invoice).filter_by(id=invoice_id).first()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "receipts.py").write_text(
+        "@app.get('/api/receipts/{receipt_id}')\n"
+        "def get_receipt(receipt_id: str, db=None):\n"
+        "    return db.query(Receipt).filter_by(id=receipt_id).first()\n",
+        encoding="utf-8",
+    )
+
+    active = [
+        Finding(
+            id="ACTIVE-IDOR-1",
+            rule_id="COG-1-IDOR-BOLA",
+            severity="HIGH",
+            title="Confirmed IDOR",
+            cwe_id="CWE-639",
+            triage_status="CONFIRMED",
+            best_fix_location=BestFixLocation(filepath="orders.py", line=1),
+        ),
+        Finding(
+            id="DISMISSED-IDOR-2",
+            rule_id="COG-1-IDOR-BOLA",
+            severity="HIGH",
+            title="Dismissed Public Invoice Route",
+            cwe_id="CWE-639",
+            triage_status="NOT_EXPLOITABLE",
+            best_fix_location=BestFixLocation(filepath="invoices.py", line=1),
+        ),
+    ]
+
+    # Run hunt with only code-exploration + sibling-instances so COG-1 doesn't run in Stage A
+    res = run_cognitive_hunt(
+        str(tmp_path),
+        active_findings=active,
+        playbook_ids=["code-exploration", "sibling-instances"],
+        use_ai=False,
+        include_sibling_sweep=True,
+    )
+    sib_files = {f.best_fix_location.filepath for f in res.sibling_findings if f.best_fix_location}
+    assert "receipts.py" in sib_files
+    assert "orders.py" not in sib_files
+    assert "invoices.py" not in sib_files
+

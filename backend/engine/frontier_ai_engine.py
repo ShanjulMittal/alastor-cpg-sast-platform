@@ -16,6 +16,7 @@ Security & Efficiency Invariants:
 import base64
 import hashlib
 import http.client
+import inspect
 import ipaddress
 import json
 import logging
@@ -692,12 +693,14 @@ class FrontierAiEngine:
         - Parses JSON cleanly (including markdown ```json fences) and never raises unhandled exceptions.
         Returns `(parsed_dict_or_none, cache_hit, error_message_or_none)`.
         """
-        _ = max(128, int(max_output_tokens or 1800))
-        sanitized_user = strip_hostile_target_instructions(user_prompt)
-        sanitized_material = strip_hostile_target_instructions(cache_material or sanitized_user)
-        est_tokens = max(1, len(sanitized_user) // 4)
-
         try:
+            if isinstance(max_output_tokens, bool):
+                raise ValueError("max_output_tokens must be an integer, not bool.")
+            eff_max_tokens = max(128, min(8192, int(1800 if max_output_tokens is None else max_output_tokens)))
+            sanitized_user = strip_hostile_target_instructions(user_prompt)
+            sanitized_material = strip_hostile_target_instructions(cache_material or sanitized_user)
+            est_tokens = max(1, len(sanitized_user) // 4)
+
             cache_key = self._build_cache_key(workflow, sanitized_material)
             cached = self._cache_get(cache_key)
             if isinstance(cached, dict):
@@ -716,11 +719,35 @@ class FrontierAiEngine:
                     "MISSING_API_KEY: No usable BYOK AI credentials configured.",
                 )
 
-            raw_res = self._dispatch_provider_call(
-                system_prompt,
-                sanitized_user,
-                expect_json=True,
+            dispatch_fn = self._dispatch_provider_call
+            target_sig_fn = (
+                dispatch_fn.side_effect
+                if callable(getattr(dispatch_fn, "side_effect", None))
+                else dispatch_fn
             )
+            try:
+                sig = inspect.signature(target_sig_fn)
+                accepts_max_tokens = (
+                    "max_output_tokens" in sig.parameters
+                    or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+                )
+            except (TypeError, ValueError):
+                accepts_max_tokens = False
+
+            if accepts_max_tokens:
+                raw_res = dispatch_fn(
+                    system_prompt,
+                    sanitized_user,
+                    expect_json=True,
+                    max_output_tokens=eff_max_tokens,
+                )
+            else:
+                raw_res = dispatch_fn(
+                    system_prompt,
+                    sanitized_user,
+                    expect_json=True,
+                )
+
             parsed = _extract_json_object(str(raw_res.get("text") or ""))
             self._cache_put(cache_key, parsed)
             self._record_call_telemetry(
@@ -732,7 +759,7 @@ class FrontierAiEngine:
             return parsed, False, None
         except _AiDispatchError as err:
             return None, False, f"{err.error_code}: {err.user_message}"
-        except (ValueError, json.JSONDecodeError) as err:
+        except (ValueError, TypeError, json.JSONDecodeError) as err:
             return None, False, f"INVALID_MODEL_RESPONSE: {str(err)[:160]}"
         except Exception as err:
             return None, False, f"DISPATCH_ERROR: {str(err)[:160]}"
@@ -763,6 +790,7 @@ class FrontierAiEngine:
         system_prompt: str,
         user_prompt: str,
         expect_json: bool = True,
+        max_output_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Executes a multi-provider HTTPS (or loopback Ollama/vLLM) POST call via `urllib.request`
@@ -781,6 +809,10 @@ class FrontierAiEngine:
             "User-Agent": "ALASTOR-FrontierAI/4.0",
         }
 
+        bounded_max_tokens: Optional[int] = None
+        if max_output_tokens is not None and not isinstance(max_output_tokens, bool):
+            bounded_max_tokens = max(128, min(8192, int(max_output_tokens)))
+
         if provider == "gemini":
             if not eff_cred:
                 raise _AiDispatchError("MISSING_API_KEY", "No Gemini API key configured.")
@@ -795,6 +827,8 @@ class FrontierAiEngine:
             gen_cfg: Dict[str, Any] = {"temperature": 0.1}
             if expect_json:
                 gen_cfg["responseMimeType"] = "application/json"
+            if bounded_max_tokens is not None:
+                gen_cfg["maxOutputTokens"] = bounded_max_tokens
             body_obj: Dict[str, Any] = {
                 "systemInstruction": {"parts": [{"text": system_prompt}]},
                 "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
@@ -813,7 +847,7 @@ class FrontierAiEngine:
                 target_raw = f"{verified_base}/v1/messages"
             body_obj = {
                 "model": model,
-                "max_tokens": 1536,
+                "max_tokens": bounded_max_tokens if bounded_max_tokens is not None else 1536,
                 "temperature": 0.1,
                 "system": system_prompt,
                 "messages": [{"role": "user", "content": user_prompt}],
@@ -837,6 +871,8 @@ class FrontierAiEngine:
                 ],
                 "temperature": 0.1,
             }
+            if bounded_max_tokens is not None:
+                body_obj["max_tokens"] = bounded_max_tokens
             if expect_json and provider == "openai":
                 body_obj["response_format"] = {"type": "json_object"}
 

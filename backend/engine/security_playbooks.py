@@ -22,7 +22,13 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
-from compiler.scanner import IGNORE_DIRS, ScannedFile, scan_directory_with_telemetry
+from compiler.scanner import (
+    IGNORE_DIRS,
+    ScannedFile,
+    _is_confined,
+    _is_link_or_junction,
+    scan_directory_with_telemetry,
+)
 from engine.frontier_ai_engine import (
     FrontierAiEngine,
     is_hostile_instruction_file,
@@ -563,7 +569,7 @@ _COG1_AUTHZ_GUARD_RX = re.compile(
 
 # COG-2: Business Logic / TOCTOU patterns
 _COG2_HANDLER_RX = re.compile(
-    r"^\s*(?:async\s+)?(?:def|function)\s+[a-zA-Z0-9_]*(?:transfer|withdraw|deposit|payment|pay_|checkout|"
+    r"^\s*(?:export\s+(?:default\s+)?)?(?:async\s+)?(?:def|function)\s+[a-zA-Z0-9_]*(?:transfer|withdraw|deposit|payment|pay_|checkout|"
     r"refund|redeem|coupon|credit|debit|purchase|wallet|discount)[a-zA-Z0-9_]*\s*\(",
     re.IGNORECASE,
 )
@@ -643,8 +649,12 @@ _COG5_SENSITIVE_STORAGE_TOKEN_RX = re.compile(
     re.IGNORECASE,
 )
 _COG5_BENIGN_STORAGE_KEY_RX = re.compile(
-    r"(?:theme|pref|layout|sidebar|backdrop|panel|locale|lang|mode|filter|sort|tab|ui_)",
+    r"(?:^|[^a-zA-Z0-9])(?:theme|pref|prefs|preference|preferences|layout|sidebar|backdrop|panel|locale|lang|mode|filter|sort|tab|ui)(?:$|[^a-zA-Z0-9])",
     re.IGNORECASE,
+)
+_CWE_TOKEN_RX = re.compile(r"CWE-\d+")
+_FUNC_DECL_START_RX = re.compile(
+    r"^(?:export\s+(?:default\s+)?)?(?:async\s+)?(?:def|function)\b"
 )
 
 # Secret scrubbing patterns for AI output safety
@@ -776,7 +786,7 @@ def _count_hostile_instruction_files(target_dir: str) -> int:
         kept: List[str] = []
         for d in sorted(dirnames):
             full_sub = os.path.join(current_dir, d)
-            if os.path.islink(full_sub):
+            if _is_link_or_junction(full_sub):
                 continue
             if not is_synthetic and d == "synthetic_test_target":
                 continue
@@ -785,17 +795,14 @@ def _count_hostile_instruction_files(target_dir: str) -> int:
             # Allow .github and .cursor specifically so copilot-instructions.md / cursor rules are counted
             if d.startswith(".") and d.lower() not in {".github", ".cursor"}:
                 continue
-            try:
-                if os.path.commonpath([real_root, os.path.realpath(full_sub)]) != real_root:
-                    continue
-            except ValueError:
+            if not _is_confined(real_root, full_sub):
                 continue
             kept.append(d)
         dirnames[:] = kept
 
         for fname in filenames:
             full_f = os.path.join(current_dir, fname)
-            if os.path.islink(full_f):
+            if _is_link_or_junction(full_f) or not _is_confined(real_root, full_f):
                 continue
             rel_f = f"{rel_dir}/{fname}" if rel_dir else fname
             if is_hostile_instruction_file(rel_f):
@@ -817,24 +824,22 @@ def _collect_manifest_signals(target_dir: str) -> Set[str]:
         if depth >= 3:
             dirnames[:] = []
         else:
-            dirnames[:] = [
-                d
-                for d in dirnames
-                if d not in IGNORE_DIRS
-                and d != "synthetic_test_target"
-                and (not d.startswith(".") or d.lower() == ".github")
-                and not os.path.islink(os.path.join(current_dir, d))
-            ]
+            kept_dirs: List[str] = []
+            for d in sorted(dirnames):
+                full_sub = os.path.join(current_dir, d)
+                if d in IGNORE_DIRS or d == "synthetic_test_target":
+                    continue
+                if d.startswith(".") and d.lower() != ".github":
+                    continue
+                if _is_link_or_junction(full_sub) or not _is_confined(real_root, full_sub):
+                    continue
+                kept_dirs.append(d)
+            dirnames[:] = kept_dirs
 
         for fname in filenames:
             lower = fname.lower()
             full_f = os.path.join(current_dir, fname)
-            if os.path.islink(full_f):
-                continue
-            try:
-                if os.path.commonpath([real_root, os.path.realpath(full_f)]) != real_root:
-                    continue
-            except ValueError:
+            if _is_link_or_junction(full_f) or not _is_confined(real_root, full_f):
                 continue
 
             if lower in _IAC_FILENAMES or lower.endswith(_IAC_EXTS):
@@ -929,12 +934,20 @@ def classify_repo_kinds_and_baselines(
 
     for rk in repo_kinds:
         for spec in _REPO_BASELINES.get(rk, ()):
+            spec_cwe_set = set(spec.match_cwes)
             linked_ids: List[str] = []
             for f in open_findings:
                 f_cwe = (f.cwe_id or "").upper().strip()
                 f_rule = (f.rule_id or "").upper().strip()
-                matched_cwe = bool(f_cwe and any(f_cwe == mc or mc in f_cwe for mc in spec.match_cwes))
-                matched_rule = bool(f_rule and any(f_rule.startswith(mr) for mr in spec.match_rules))
+                f_cwe_tokens = set(_CWE_TOKEN_RX.findall(f_cwe)) if f_cwe else set()
+                matched_cwe = bool(f_cwe_tokens & spec_cwe_set)
+                matched_rule = bool(
+                    f_rule
+                    and any(
+                        f_rule == mr or f_rule.startswith(f"{mr}-") or f_rule.startswith(f"{mr}_")
+                        for mr in spec.match_rules
+                    )
+                )
                 if matched_cwe or matched_rule:
                     linked_ids.append(f.id)
 
@@ -1000,7 +1013,7 @@ def _extract_handler_block(lines: List[str], start_idx: int, max_lines: int = 32
     end_idx = min(len(lines), start_idx + max_lines)
     collected: List[str] = [lines[start_idx]]
     base_indent = len(lines[start_idx]) - len(lines[start_idx].lstrip())
-    seen_def = False
+    seen_def = bool(_FUNC_DECL_START_RX.match(lines[start_idx].lstrip()))
 
     for idx in range(start_idx + 1, end_idx):
         raw = lines[idx]
@@ -1009,7 +1022,7 @@ def _extract_handler_block(lines: List[str], start_idx: int, max_lines: int = 32
             collected.append(raw)
             continue
         cur_indent = len(raw) - len(raw.lstrip())
-        if stripped.startswith(("def ", "async def ")):
+        if _FUNC_DECL_START_RX.match(stripped):
             if seen_def and cur_indent <= base_indent:
                 break
             seen_def = True
@@ -1386,19 +1399,22 @@ def run_cpg_sibling_sweep(
     target_dir: str,
     seed_findings: Sequence[Finding],
     scanned_files: Sequence[ScannedFile],
+    exclude_findings: Optional[Sequence[Finding]] = None,
 ) -> List[Finding]:
     """
     Deterministically sweeps all non-hostile `scanned_files` for sibling routes or functions
     sharing the same unguarded pattern or sink family as confirmed `seed_findings`.
     Returns deduplicated sibling `Finding` objects (`rule_id="COG-SIBLING-SWEEP"`,
     title containing `"Sibling Instance"`).
+    Coordinates from both `seed_findings` and `exclude_findings` (including dismissed
+    `NOT_EXPLOITABLE` / `RESOLVED` findings) are never re-emitted.
     """
     _ = target_dir
     if not seed_findings or not scanned_files:
         return []
 
     known_coords: Set[Tuple[str, int]] = set()
-    for f in seed_findings:
+    for f in list(seed_findings) + list(exclude_findings or ()):
         if f.best_fix_location and f.best_fix_location.filepath:
             known_coords.add((_norm_fp(f.best_fix_location.filepath), int(f.best_fix_location.line or 1)))
         for n in f.path_nodes or []:
@@ -1522,14 +1538,19 @@ def _build_compact_file_slice(sf: ScannedFile, max_lines: int = 40) -> str:
 
 def _resolve_confined_ai_coordinate(
     real_root: str,
+    clean_files_map: Dict[str, ScannedFile],
     raw_filepath: str,
     raw_line: Any,
-) -> Optional[Tuple[str, int, str]]:
+) -> Optional[Tuple[ScannedFile, int, str]]:
     """
-    Validates an AI-returned `(filepath, line)` strictly against real files on disk inside
-    `real_root`. Drops hallucinated paths, path traversals, hostile instruction files, and
-    out-of-range line numbers.
+    Validates an AI-returned `(filepath, line)` strictly against already-scanned,
+    non-hostile workspace files in `clean_files_map` confined inside `real_root`.
+    Never reads arbitrary disk files (such as `.env` or unscanned dotfiles), rejects
+    hallucinated paths, path traversals, hostile instruction files, boolean lines,
+    and out-of-range line numbers.
     """
+    if isinstance(raw_line, bool):
+        return None
     clean_fp = str(raw_filepath or "").strip().replace("\\", "/")
     if not clean_fp or is_hostile_instruction_file(clean_fp):
         return None
@@ -1545,22 +1566,23 @@ def _resolve_confined_ai_coordinate(
     if not os.path.isfile(candidate) or is_hostile_instruction_file(candidate):
         return None
 
+    rel_norm = os.path.relpath(candidate, real_root).replace("\\", "/")
+    resolved_sf = clean_files_map.get(rel_norm)
+    if resolved_sf is None:
+        return None
+    if os.path.realpath(resolved_sf.full_path) != candidate:
+        return None
+
     try:
         line_num = int(raw_line)
     except (TypeError, ValueError):
         return None
 
-    try:
-        with open(candidate, "r", encoding="utf-8", errors="replace") as fh:
-            file_lines = fh.read().splitlines()
-    except OSError:
-        return None
-
+    file_lines = resolved_sf.content_bytes.decode("utf-8", errors="replace").splitlines()
     if line_num < 1 or line_num > len(file_lines):
         return None
 
-    rel_norm = os.path.relpath(candidate, real_root).replace("\\", "/")
-    return rel_norm, line_num, file_lines[line_num - 1]
+    return resolved_sf, line_num, file_lines[line_num - 1]
 
 
 def _select_priority_ai_units(
@@ -1701,7 +1723,7 @@ def run_cognitive_hunt(
     ]
 
     if use_ai and ai_engine is not None and ai_engine.has_usable_credentials() and clean_files:
-        execution_mode = "HYBRID_AI"
+        clean_files_map: Dict[str, ScannedFile] = {_norm_fp(sf.filepath): sf for sf in clean_files}
         priority_units = _select_priority_ai_units(clean_files, community_map, api_ops, max_ai_units)
         lens_list = sorted(active_pb_set - {"code-exploration", "sibling-instances"})
         lens_summary = ", ".join(lens_list) if lens_list else "access-control, logic-bug, ssrf, injection"
@@ -1712,12 +1734,13 @@ def run_cognitive_hunt(
             '{"findings": [{"filepath": "...", "line": 1, "title": "...", "severity": "CRITICAL|HIGH|MEDIUM|LOW", '
             '"cwe_id": "CWE-...", "lens": "...", "description": "...", "remediation": "..."}]}'
         )
+        successful_ai_units = 0
 
         for sf in priority_units:
             slice_text = _build_compact_file_slice(sf, max_lines=40)
             user_prompt = f"Target File: {sf.filepath} ({sf.language})\nLenses: {lens_summary}\nCode Micro-Slice:\n{slice_text}"
             cache_material = f"{sf.filepath}|{sf.sha256}|{lens_summary}"
-            parsed, cache_hit, _err = ai_engine.dispatch_structured_json(
+            parsed, cache_hit, dispatch_err = ai_engine.dispatch_structured_json(
                 workflow="cognitive_hunt",
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -1726,9 +1749,10 @@ def run_cognitive_hunt(
             )
             if cache_hit:
                 ai_cache_hits += 1
-            if not isinstance(parsed, dict):
+            if dispatch_err is not None or not isinstance(parsed, dict):
                 continue
 
+            successful_ai_units += 1
             raw_items = parsed.get("findings")
             if not isinstance(raw_items, list):
                 continue
@@ -1738,13 +1762,15 @@ def run_cognitive_hunt(
                     continue
                 resolved = _resolve_confined_ai_coordinate(
                     real_root,
+                    clean_files_map,
                     str(item.get("filepath") or ""),
                     item.get("line"),
                 )
                 if resolved is None:
-                    # Hallucinated path, path traversal, hostile instruction file, or out-of-range line -> DROP!
+                    # Hallucinated path, unscanned file (.env), path traversal, hostile file, bool/out-of-range line -> DROP!
                     continue
-                rel_fp, valid_line, real_code_line = resolved
+                resolved_sf, valid_line, real_code_line = resolved
+                rel_fp = _norm_fp(resolved_sf.filepath)
                 lens_tag = re.sub(r"[^a-zA-Z0-9_-]", "", str(item.get("lens") or "semantic")).upper() or "SEMANTIC"
                 rule_id = f"COG-AI-{lens_tag}"
                 key = (rule_id, rel_fp, valid_line)
@@ -1773,14 +1799,16 @@ def run_cognitive_hunt(
                         filepath=rel_fp,
                         line=valid_line,
                         code_snippet=safe_snip,
-                        language=sf.language,
+                        language=resolved_sf.language,
                         node_name=f"cognitive_ai_{lens_tag.lower()}",
                     )
                 )
 
-        for pb in lens_list:
-            if pb not in executed_playbooks:
-                executed_playbooks.append(pb)
+        if successful_ai_units > 0:
+            execution_mode = "HYBRID_AI"
+            for pb in lens_list:
+                if pb not in executed_playbooks:
+                    executed_playbooks.append(pb)
 
     # Stage C: Automatic CPG Sibling Sweep
     sibling_findings: List[Finding] = []
@@ -1792,7 +1820,13 @@ def run_cognitive_hunt(
             for f in (active_findings or ())
             if f.severity in {"CRITICAL", "HIGH"} and f.triage_status not in {"NOT_EXPLOITABLE", "RESOLVED"}
         ]
-        sibling_findings = run_cpg_sibling_sweep(target_dir, seed_pool, clean_files)
+        all_existing = list(active_findings or ()) + deduped_findings
+        sibling_findings = run_cpg_sibling_sweep(
+            target_dir,
+            seed_pool,
+            clean_files,
+            exclude_findings=all_existing,
+        )
 
     # Deduplicate executed_playbooks preserving order
     unique_executed = list(dict.fromkeys(executed_playbooks))
