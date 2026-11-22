@@ -2015,6 +2015,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         ? {}
         : {
             projectPath: path,
+            isLoadingPasta: false,
             ...resetEvSlice(state._evEpoch),
           }
     );
@@ -2633,6 +2634,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       secretInventory: null,
       apiOperationsReport: null,
       pastaAssessment: null,
+      isLoadingPasta: false,
       communityMap: null,
       communitiesCount: 0,
       languagesDetected: {},
@@ -2684,6 +2686,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           secretInventory: null,
           apiOperationsReport: null,
           pastaAssessment: null,
+          isLoadingPasta: false,
           communityMap: null,
           communitiesCount: 0,
           languagesDetected: {},
@@ -3626,7 +3629,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
   savePastaProfileState: async (payload: PastaProfileUpdatePayload) => {
     invalidatePastaAndSastPlusInFlight();
-    set({ isSavingPasta: true });
+    set({ isSavingPasta: true, isLoadingPasta: false });
     try {
       const data = await updatePastaProfile({
         ...payload,
@@ -3654,7 +3657,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
   savePastaGateOverride: async (payload: PastaGateOverridePayload) => {
     invalidatePastaAndSastPlusInFlight();
-    set({ isSavingPasta: true });
+    set({ isSavingPasta: true, isLoadingPasta: false });
     try {
       const data = await overridePastaGate({
         ...payload,
@@ -4150,6 +4153,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       secretInventory: null,
       apiOperationsReport: null,
       pastaAssessment: null,
+      isLoadingPasta: false,
       communityMap: null,
       cognitivePlaybooks: null,
       cognitiveHuntResult: null,
