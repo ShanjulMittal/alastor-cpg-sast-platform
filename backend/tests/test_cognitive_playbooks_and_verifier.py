@@ -1875,5 +1875,231 @@ def test_regression_minors_unclosed_quote_solidity_s11_hostile_byok_and_s6_cvss_
         assert resp_s6_tp.verdicts[0].cvss_score == 9.8
 
 
+# ---------------------------------------------------------------------------
+# 9. Final Whole-Branch Review Regression Tests
+# ---------------------------------------------------------------------------
+def test_regression_final_s11_subprocess_executable_preexec_and_kwunpack_blocked(tmp_path: Path):
+    from engine.adversarial_verifier import check_hostile_patch_post_gate, validate_patch_with_panel
+
+    orig_os_sys = "import os\ndef run_ls(arg: str):\n    return os.system('ls ' + arg)\n"
+
+    # 1. executable="/bin/sh" bypass on subprocess.run(["ls", "-c", "id"], shell=False) MUST be blocked
+    prop_executable = (
+        "import subprocess\n"
+        "def run_ls(arg: str):\n"
+        "    return subprocess.run(['ls', '-c', 'id'], executable='/bin/sh', shell=False)\n"
+    )
+    ok_exe, reasons_exe = check_hostile_patch_post_gate(orig_os_sys, prop_executable, cwe_id="CWE-78", language="python")
+    assert ok_exe is False, f"Expected executable= bypass to be blocked: {reasons_exe}"
+    resp_exe = validate_patch_with_panel(
+        str(tmp_path),
+        PatchPanelValidateRequest(
+            filepath="cmd.py",
+            original_code=orig_os_sys,
+            proposed_code=prop_executable,
+            cwe_id="CWE-78",
+            use_ai=False,
+        ),
+    )
+    assert resp_exe.hostile_patch_blocked is True
+    assert resp_exe.overall_verdict == "REJECTED"
+
+    # 2. preexec_fn=os.system bypass on subprocess.run(["ls"], shell=False) MUST be blocked
+    prop_preexec = (
+        "import os\n"
+        "import subprocess\n"
+        "def run_ls(arg: str):\n"
+        "    return subprocess.run(['ls'], preexec_fn=os.system, shell=False)\n"
+    )
+    ok_pre, reasons_pre = check_hostile_patch_post_gate(orig_os_sys, prop_preexec, cwe_id="CWE-78", language="python")
+    assert ok_pre is False, f"Expected preexec_fn= bypass to be blocked: {reasons_pre}"
+    resp_pre = validate_patch_with_panel(
+        str(tmp_path),
+        PatchPanelValidateRequest(
+            filepath="cmd.py",
+            original_code=orig_os_sys,
+            proposed_code=prop_preexec,
+            cwe_id="CWE-78",
+            use_ai=False,
+        ),
+    )
+    assert resp_pre.hostile_patch_blocked is True
+    assert resp_pre.overall_verdict == "REJECTED"
+
+    # 3. Trailing shell=True MUST NOT mask **evil_kwargs over existing subprocess.run(cmd, shell=True)
+    orig_sp_shell = (
+        "import subprocess\n"
+        "def run_cmd(cmd, evil_kwargs):\n"
+        "    return subprocess.run(cmd, shell=True)\n"
+    )
+    prop_kwunpack_masked = (
+        "import subprocess\n"
+        "def run_cmd(cmd, evil_kwargs):\n"
+        "    return subprocess.run(cmd, **evil_kwargs, shell=True)\n"
+    )
+    ok_kw, reasons_kw = check_hostile_patch_post_gate(
+        orig_sp_shell, prop_kwunpack_masked, cwe_id="CWE-78", language="python"
+    )
+    assert ok_kw is False, f"Expected **evil_kwargs masked by trailing shell=True to be blocked: {reasons_kw}"
+    resp_kw = validate_patch_with_panel(
+        str(tmp_path),
+        PatchPanelValidateRequest(
+            filepath="cmd.py",
+            original_code=orig_sp_shell,
+            proposed_code=prop_kwunpack_masked,
+            cwe_id="CWE-78",
+            use_ai=False,
+        ),
+    )
+    assert resp_kw.hostile_patch_blocked is True
+    assert resp_kw.overall_verdict == "REJECTED"
+
+    # 4. Safe allowlisted kwargs on subprocess.run(["ls", "-la"], shell=False, capture_output=True, text=True) remain allowed for CWE-78
+    prop_safe = (
+        "import subprocess\n"
+        "def run_ls(arg: str):\n"
+        "    return subprocess.run(['ls', '-la', arg], shell=False, capture_output=True, text=True, check=True)\n"
+    )
+    ok_safe, reasons_safe = check_hostile_patch_post_gate(orig_os_sys, prop_safe, cwe_id="CWE-78", language="python")
+    assert ok_safe is True, f"Safe CWE-78 allowlisted subprocess.run was falsely blocked: {reasons_safe}"
+
+
+def test_regression_final_stage_b_outbound_prompt_scrubs_secrets_and_pem_keys(tmp_path: Path):
+    stripe_canary = "sk_live_OUTBOUND_STAGEB_9988776655"
+    custom_canary = "SUPER_CUSTOM_INTERNAL_TOKEN_XYZ99"
+    pem_body_line_1 = "MIIEowIBAAKCAQEA7V8X9Y0Z1A2B3C4D5E6F7G8H9I0J1K2L3M4N5O6P"
+    pem_body_line_2 = "Q7R8S9T0U1V2W3X4Y5Z6a7b8c9d0e1f2g3h4i5j6k7l8m9n0o1p2q3r4"
+    pem_header = "-----BEGIN " + "RSA PRIVATE KEY-----"
+    pem_footer = "-----END " + "RSA PRIVATE KEY-----"
+
+    (tmp_path / "payments.py").write_text(
+        "from fastapi import FastAPI\n"
+        "app = FastAPI()\n"
+        f'STRIPE_KEY = "{stripe_canary}"\n'
+        f'INTERNAL_TOKEN = "{custom_canary}"\n'
+        f'SIGNING_KEY = """{pem_header}\n'
+        f"{pem_body_line_1}\n"
+        f"{pem_body_line_2}\n"
+        f'{pem_footer}"""\n'
+        "@app.get('/pay/{oid}')\n"
+        "def get_pay(oid: str, db=None):\n"
+        "    return db.query(oid)\n",
+        encoding="utf-8",
+    )
+
+    # Also test a dangling/truncated PEM key cut off right at the 40-line micro-slice boundary
+    dangling_body = "MIIEpQIBAAKCAQEA9Z8Y7X6W5V4U3T2S1R0Q9P8O7N6M5L4K3J2I1H0G"
+    filler_lines = "\n".join(f"VAL_{i} = {i}" for i in range(1, 38))
+    (tmp_path / "dangling_pem.py").write_text(
+        f"{filler_lines}\n"
+        f'KEY = """{pem_header}\n'
+        f"{dangling_body}\n"
+        f"{dangling_body[::-1]}\n"
+        f'{pem_footer}"""\n',
+        encoding="utf-8",
+    )
+
+    known_secret_finding = Finding(
+        id="F-OUTBOUND-RAW-SEC",
+        rule_id="RULE-8-HARDCODED-SECRET",
+        severity="CRITICAL",
+        title="Custom Internal Token",
+        cwe_id="CWE-798",
+        is_secret_finding=True,
+        secret_value_raw=custom_canary,
+        secret_value_masked="SUPE••••••••YZ99",
+    )
+
+    engine = FrontierAiEngine(vault_dir=str(tmp_path / ".alastor_vault"))
+    engine.update_config(
+        AiConfigUpdateRequest(
+            provider="openai",
+            model="gpt-4o-mini",
+            api_key="test_byok_key_outbound_scrub_1234",
+            persist_key=False,
+        )
+    )
+
+    captured_user_prompts: list[str] = []
+
+    def spy_dispatch_structured_json(
+        workflow: str,
+        system_prompt: str,
+        user_prompt: str,
+        cache_material: str,
+        max_output_tokens: int = 1800,
+    ):
+        captured_user_prompts.append(user_prompt)
+        return {"findings": []}, False, None
+
+    with patch.object(engine, "dispatch_structured_json", side_effect=spy_dispatch_structured_json):
+        res = run_cognitive_hunt(
+            str(tmp_path),
+            active_findings=[known_secret_finding],
+            ai_engine=engine,
+            use_ai=True,
+            include_sibling_sweep=False,
+            max_ai_units=4,
+        )
+
+    assert res.execution_mode == "HYBRID_AI"
+    assert len(captured_user_prompts) >= 2
+    combined_outbound = "\n".join(captured_user_prompts)
+    assert stripe_canary not in combined_outbound
+    assert custom_canary not in combined_outbound
+    assert pem_body_line_1 not in combined_outbound
+    assert pem_body_line_2 not in combined_outbound
+    assert dangling_body not in combined_outbound
+    assert pem_header not in combined_outbound
+    assert "[REDACTED_SECRET]" in combined_outbound
+
+
+def test_regression_final_stage_b_malformed_findings_does_not_promote_hybrid_or_baselines(tmp_path: Path):
+    (tmp_path / "clean_api.py").write_text(
+        "from fastapi import FastAPI\n"
+        "app = FastAPI()\n\n"
+        "@app.get('/health')\n"
+        "def health():\n"
+        "    return {'ok': True}\n",
+        encoding="utf-8",
+    )
+
+    engine = FrontierAiEngine(vault_dir=str(tmp_path / ".alastor_vault"))
+    engine.update_config(
+        AiConfigUpdateRequest(
+            provider="openai",
+            model="gpt-4o-mini",
+            api_key="test_byok_key_malformed_1234",
+            persist_key=False,
+        )
+    )
+
+    # Return malformed non-list `findings` payload (`{"findings": "none"}`) for AI-only lenses (ssrf, injection)
+    with patch.object(
+        engine,
+        "dispatch_structured_json",
+        return_value=({"findings": "none"}, False, None),
+    ):
+        res = run_cognitive_hunt(
+            str(tmp_path),
+            active_findings=[],
+            ai_engine=engine,
+            playbook_ids=["ssrf", "injection"],
+            use_ai=True,
+            include_sibling_sweep=False,
+            max_ai_units=2,
+        )
+
+    assert res.execution_mode == "DETERMINISTIC"
+    assert "ssrf" not in res.executed_playbooks
+    assert "injection" not in res.executed_playbooks
+    ssrf_bl = next(b for b in res.baseline_items if b.id == "web-api-a10")
+    inj_bl = next(b for b in res.baseline_items if b.id == "web-api-a03")
+    assert ssrf_bl.status == "UNDISPOSED_GAP"
+    assert inj_bl.status == "UNDISPOSED_GAP"
+    assert all(b.status == "UNDISPOSED_GAP" for b in res.baseline_items)
+
+
+
 
 

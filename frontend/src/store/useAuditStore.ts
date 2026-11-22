@@ -2150,6 +2150,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         );
       });
       if (byPathFinding) {
+        const findingChanged = byPathFinding.id !== get().selectedFinding?.id;
         set((state) => ({
           selectedFinding: byPathFinding,
           activeFilepath: byPathFinding.best_fix_location?.filepath || rawPath,
@@ -2159,6 +2160,9 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           workspaceViewMode: "REMEDIATION_IDE",
           ideLayoutMode: "SPLIT_BOTH",
           isSidebarCollapsed: false,
+          ...(findingChanged
+            ? { patchPanelResult: null, patchPanelError: null }
+            : {}),
           ...(state.graphViewMode === "APP_TREE"
             ? { graphViewMode: "FINDING_PATH" as GraphViewMode }
             : {}),
@@ -3797,6 +3801,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
   runPatchPanelValidation: async (payload: PatchPanelValidateRequest) => {
     const reqEpoch = _cognitiveEpoch;
+    const targetFindingId = payload.finding_id ?? null;
     const rawPath = (get().projectPath || "").trim();
     const localPath = isLikelyLocalProjectPath(rawPath) ? rawPath : undefined;
     set({ isValidatingPatchPanel: true, patchPanelError: null });
@@ -3806,6 +3811,14 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         project_path: payload.project_path ?? localPath,
       });
       if (reqEpoch !== _cognitiveEpoch) {
+        return data;
+      }
+      if (
+        targetFindingId &&
+        get().selectedFinding?.id &&
+        get().selectedFinding?.id !== targetFindingId
+      ) {
+        set({ isValidatingPatchPanel: false });
         return data;
       }
       set({
@@ -3818,10 +3831,18 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       const msg = err?.detail || err?.message || "S11 3-Persona Patch Panel validation failed.";
       console.error("Failed to validate patch with S11 3-Persona Panel:", err);
       if (reqEpoch === _cognitiveEpoch) {
-        set({
-          isValidatingPatchPanel: false,
-          patchPanelError: msg,
-        });
+        if (
+          targetFindingId &&
+          get().selectedFinding?.id &&
+          get().selectedFinding?.id !== targetFindingId
+        ) {
+          set({ isValidatingPatchPanel: false });
+        } else {
+          set({
+            isValidatingPatchPanel: false,
+            patchPanelError: msg,
+          });
+        }
       }
       return null;
     }

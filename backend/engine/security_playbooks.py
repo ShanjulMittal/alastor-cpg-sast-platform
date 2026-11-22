@@ -32,6 +32,7 @@ from compiler.scanner import (
 from engine.frontier_ai_engine import (
     FrontierAiEngine,
     is_hostile_instruction_file,
+    scrub_raw_secrets_text,
     strip_hostile_target_instructions,
 )
 from models import (
@@ -657,16 +658,6 @@ _FUNC_DECL_START_RX = re.compile(
     r"^(?:export\s+(?:default\s+)?)?(?:async\s+)?(?:def|function)\b"
 )
 
-# Secret scrubbing patterns for AI output safety
-_RAW_SECRET_SCRUB_PATTERNS: Tuple[re.Pattern[str], ...] = (
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
-    re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b"),
-    re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{15,}\b"),
-    re.compile(r"-----BEGIN [A-Z ]+ PRIVATE KEY-----"),
-)
-
 
 # ---------------------------------------------------------------------------
 # 5. Internal Helper Utilities
@@ -692,13 +683,7 @@ def _is_comment_line(line: str) -> bool:
 
 
 def _scrub_secret_text(text: str, extra_raw_secrets: Optional[Sequence[str]] = None) -> str:
-    out = str(text or "")
-    for raw in extra_raw_secrets or ():
-        if raw and len(raw) >= 4 and raw in out:
-            out = out.replace(raw, "[REDACTED_SECRET]")
-    for rx in _RAW_SECRET_SCRUB_PATTERNS:
-        out = rx.sub("[REDACTED_SECRET]", out)
-    return out
+    return scrub_raw_secrets_text(str(text or ""), extra_raw_secrets)
 
 
 def _build_finding(
@@ -1528,12 +1513,17 @@ def run_cpg_sibling_sweep(
 # ---------------------------------------------------------------------------
 # 9. Stage B — CPG-Micro-Sliced BYOK Agentic Deep-Dive with Confinement Gate
 # ---------------------------------------------------------------------------
-def _build_compact_file_slice(sf: ScannedFile, max_lines: int = 40) -> str:
+def _build_compact_file_slice(
+    sf: ScannedFile,
+    max_lines: int = 40,
+    extra_raw_secrets: Optional[Sequence[str]] = None,
+) -> str:
     lines = sf.content_bytes.decode("utf-8", errors="replace").splitlines()
     picked: List[str] = []
     for idx, raw in enumerate(lines[:max_lines]):
         picked.append(f"L{idx + 1}: {raw}")
-    return strip_hostile_target_instructions("\n".join(picked))
+    cleaned = strip_hostile_target_instructions("\n".join(picked))
+    return _scrub_secret_text(cleaned, extra_raw_secrets)
 
 
 def _resolve_confined_ai_coordinate(
@@ -1737,8 +1727,15 @@ def run_cognitive_hunt(
         successful_ai_units = 0
 
         for sf in priority_units:
-            slice_text = _build_compact_file_slice(sf, max_lines=40)
-            user_prompt = f"Target File: {sf.filepath} ({sf.language})\nLenses: {lens_summary}\nCode Micro-Slice:\n{slice_text}"
+            slice_text = _build_compact_file_slice(
+                sf,
+                max_lines=40,
+                extra_raw_secrets=extra_raw_secrets,
+            )
+            user_prompt = _scrub_secret_text(
+                f"Target File: {sf.filepath} ({sf.language})\nLenses: {lens_summary}\nCode Micro-Slice:\n{slice_text}",
+                extra_raw_secrets,
+            )
             cache_material = f"{sf.filepath}|{sf.sha256}|{lens_summary}"
             parsed, cache_hit, dispatch_err = ai_engine.dispatch_structured_json(
                 workflow="cognitive_hunt",
@@ -1752,10 +1749,11 @@ def run_cognitive_hunt(
             if dispatch_err is not None or not isinstance(parsed, dict):
                 continue
 
-            successful_ai_units += 1
             raw_items = parsed.get("findings")
             if not isinstance(raw_items, list):
                 continue
+
+            successful_ai_units += 1
 
             for item in raw_items:
                 if not isinstance(item, dict):

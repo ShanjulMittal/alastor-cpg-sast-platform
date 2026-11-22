@@ -30,6 +30,7 @@ from compiler.scanner import IGNORE_DIRS, ScannedFile, _is_confined, _is_link_or
 from engine.frontier_ai_engine import (
     FrontierAiEngine,
     is_hostile_instruction_file,
+    scrub_raw_secrets_text,
     strip_hostile_target_instructions,
 )
 from engine.rule_executor import is_sanitizer_compatible_for_sink
@@ -84,16 +85,6 @@ _CVSS31_VECTOR_RX = re.compile(
     r"^CVSS:3\.1/AV:[NALP]/AC:[LH]/PR:[NLH]/UI:[NR]/S:[UC]/C:[NLH]/I:[NLH]/A:[NLH]$"
 )
 
-_CREDENTIAL_REDACTION_REGEXES: Tuple[re.Pattern[str], ...] = (
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{16,}\b"),
-    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
-    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
-    re.compile(r"\bAIza[0-9A-Za-z\-_]{20,}\b"),
-    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"),
-)
-
 _TEST_PATH_DIR_SEGMENTS: Set[str] = {
     "tests",
     "test",
@@ -125,14 +116,8 @@ def _collect_secret_tokens(findings: Sequence[Finding]) -> List[str]:
 
 
 def _scrub_secrets(text: str, raw_tokens: Sequence[str] = ()) -> str:
-    """Redacts known raw secret values and common credential patterns from text."""
-    out = str(text or "")
-    for tok in raw_tokens:
-        if tok and len(tok) >= 4 and tok in out:
-            out = out.replace(tok, "[REDACTED_SECRET]")
-    for rx in _CREDENTIAL_REDACTION_REGEXES:
-        out = rx.sub("[REDACTED_SECRET]", out)
-    return out
+    """Redacts known raw secret values and common credential patterns via shared redactor."""
+    return scrub_raw_secrets_text(str(text or ""), raw_tokens)
 
 
 def _is_dotenv_path(path_str: str) -> bool:
@@ -951,12 +936,33 @@ _DISALLOWED_CWE78_ARGV0: Set[str] = {
 }
 
 
+_SAFE_CWE78_SUBPROCESS_KWARGS: FrozenSet[str] = frozenset({
+    "args",
+    "shell",
+    "capture_output",
+    "text",
+    "universal_newlines",
+    "check",
+    "timeout",
+    "stdout",
+    "stderr",
+    "stdin",
+    "input",
+    "encoding",
+    "errors",
+    "cwd",
+    "bufsize",
+})
+
+
 def _is_safe_cwe78_subprocess_run(call_node: ast.Call, norm_cwe: str) -> bool:
     """
     Narrow CWE-78 Exemption:
     Permits `subprocess.run([...], shell=False)` (or omitting `shell`) ONLY when:
     - `norm_cwe == "CWE-78"`
-    - No `**kwargs` unpacking (`kw.arg is None`) is present
+    - At most one positional argument (`args`) is supplied (blocks positional `executable=` smuggling)
+    - Every keyword argument is explicitly in `_SAFE_CWE78_SUBPROCESS_KWARGS`
+      (rejects `executable=`, `preexec_fn=`, `env=`, `**kwargs` unpacking, or unknown kwargs)
     - First argument (positional or `args=` keyword) is a non-empty literal `list` or `tuple`
     - First argv element is a static string literal whose normalized path AND basename are not
       a shell interpreter or network exfiltration tool
@@ -965,11 +971,16 @@ def _is_safe_cwe78_subprocess_run(call_node: ast.Call, norm_cwe: str) -> bool:
     if norm_cwe != "CWE-78":
         return False
 
+    if len(call_node.args) > 1:
+        return False
+
     cmd_arg: Optional[ast.AST] = call_node.args[0] if call_node.args else None
     for kw in call_node.keywords:
-        if kw.arg is None:
+        if kw.arg is None or kw.arg not in _SAFE_CWE78_SUBPROCESS_KWARGS:
             return False
-        if kw.arg == "args" and cmd_arg is None:
+        if kw.arg == "args":
+            if cmd_arg is not None:
+                return False
             cmd_arg = kw.value
         elif kw.arg == "shell":
             if not (isinstance(kw.value, ast.Constant) and kw.value.value is False):
@@ -991,14 +1002,21 @@ def _is_safe_cwe78_subprocess_run(call_node: ast.Call, norm_cwe: str) -> bool:
 
 
 def _unsafe_subprocess_call_signature(resolved: str, node: ast.Call) -> str:
-    """Builds a normalized call signature differentiating argv0 and shell flags for multiset diffing."""
+    """Builds a normalized call signature differentiating argv0, shell, kwunpack, executable, and preexec_fn flags."""
     shell_tag = "shell=default"
+    has_kwunpack = False
+    has_executable = len(node.args) >= 3
+    has_preexec_fn = False
     cmd_arg: Optional[ast.AST] = node.args[0] if node.args else None
     for kw in node.keywords:
         if kw.arg is None:
-            shell_tag = "shell=kwunpack"
+            has_kwunpack = True
         elif kw.arg == "args" and cmd_arg is None:
             cmd_arg = kw.value
+        elif kw.arg == "executable":
+            has_executable = True
+        elif kw.arg == "preexec_fn":
+            has_preexec_fn = True
         elif kw.arg == "shell":
             if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, bool):
                 shell_tag = f"shell={kw.value.value}"
@@ -1019,7 +1037,10 @@ def _unsafe_subprocess_call_signature(resolved: str, node: ast.Call) -> str:
     elif cmd_arg is not None:
         argv_tag = type(cmd_arg).__name__
 
-    return f"{resolved}({argv_tag},{shell_tag})"
+    return (
+        f"{resolved}|{argv_tag}|{shell_tag}"
+        f"|kw={int(has_kwunpack)}|exe={int(has_executable)}|pre={int(has_preexec_fn)}"
+    )
 
 
 def _extract_python_hostile_signals(

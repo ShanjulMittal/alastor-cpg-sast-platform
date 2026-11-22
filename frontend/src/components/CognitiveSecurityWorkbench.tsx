@@ -823,7 +823,11 @@ export const CognitiveSecurityWorkbench: React.FC = () => {
 
   const handleApplyAdversarialTriage = async (v: AdversarialFindingVerdict) => {
     const targetStatus =
-      v.verdict === "FALSE_POSITIVE" ? "NOT_EXPLOITABLE" : "CONFIRMED";
+      v.verdict === "FALSE_POSITIVE"
+        ? "NOT_EXPLOITABLE"
+        : v.verdict === "TRUE_POSITIVE"
+        ? "CONFIRMED"
+        : "TO_VERIFY";
     const reason = v.exclusion_rule
       ? `S6 Adversarial Verifier (${v.verdict} • ${v.exclusion_rule})`
       : `S6 Adversarial Verifier (${v.verdict} • CVSS ${v.cvss_score.toFixed(1)})`;
@@ -1692,7 +1696,9 @@ export const CognitiveSecurityWorkbench: React.FC = () => {
                         const targetTriage =
                           v.verdict === "FALSE_POSITIVE"
                             ? "NOT_EXPLOITABLE"
-                            : "CONFIRMED";
+                            : v.verdict === "TRUE_POSITIVE"
+                            ? "CONFIRMED"
+                            : "TO_VERIFY";
                         const isApplied =
                           appliedTriageMap[v.finding_id] ||
                           matched?.triage_status === targetTriage;
@@ -1785,7 +1791,11 @@ export const CognitiveSecurityWorkbench: React.FC = () => {
                                 <CheckCircle2 className="w-3 h-3" />
                                 <span>
                                   {isApplied
-                                    ? "Applied"
+                                    ? v.verdict === "NEEDS_REVIEW"
+                                      ? "Applied (To Verify)"
+                                      : "Applied"
+                                    : v.verdict === "NEEDS_REVIEW"
+                                    ? "Keep To Verify"
                                     : "Apply to Triage"}
                                 </span>
                               </button>

@@ -29,7 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from pydantic import BaseModel
 
@@ -359,6 +359,74 @@ def strip_hostile_target_instructions(text: str) -> str:
         else:
             cleaned_lines.append(line)
     return "\n".join(cleaned_lines)
+
+
+_REDACTED_SECRET_TOKEN = "[REDACTED_" + "SECRET]"
+
+_SHARED_CREDENTIAL_REDACTION_REGEXES: Tuple[re.Pattern[str], ...] = (
+    # Full multi-line or single-line PEM private key block (BEGIN ... END)
+    re.compile(
+        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"
+    ),
+    # Dangling PEM private key header (truncated before END) + following base64 / PEM header lines
+    re.compile(
+        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"
+        r"(?:(?:\\r?\\n|[ \t]*\r?\n)"
+        r"(?:(?:L\d+:[ \t]*)?[ \t#/*\"']*(?:[A-Za-z0-9+/=]{12,}|(?:Proc-Type|DEK-Info):[^\r\n]*)[ \t\"'\\,;]*|[ \t]*)"
+        r"(?=\r?\n|\\r?\\n|$))*"
+    ),
+    # Stripe live/test secret keys
+    re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9_]{12,}\b"),
+    # GitHub classic & fine-grained PATs
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{16,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    # AWS access key IDs (AKIA / ASIA)
+    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    # Anthropic & OpenAI API keys
+    re.compile(r"\bsk-ant-[A-Za-z0-9_-]{12,}\b"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    # Google API keys
+    re.compile(r"\bAIza[0-9A-Za-z\-_]{20,}\b"),
+    # Slack tokens
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+    # Bearer JWTs
+    re.compile(
+        r"\bBearer\s+eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b",
+        re.IGNORECASE,
+    ),
+    # Credentialed database/cache/broker URIs (postgres://, mongodb://, redis://, etc.)
+    re.compile(
+        r"\b(?:postgres(?:ql)?|mongodb(?:\+srv)?|rediss?|mysql|amqps?)://[^\s:/@\"'<>]+:[^\s/@\"'<>]+@[^\s\"'<>]+",
+        re.IGNORECASE,
+    ),
+)
+
+
+def scrub_raw_secrets_text(
+    text: str,
+    extra_raw_secrets: Optional[Iterable[str]] = None,
+) -> str:
+    """
+    Centralized authoritative raw-secret and PEM private-key redactor shared across
+    outbound LLM prompts, cognitive hunt findings, S6 adversarial verification, S8 exploit
+    chains, and API responses.
+    - First replaces all `extra_raw_secrets` (len >= 4) sorted by descending length.
+    - Then scrubs full and truncated/dangling PEM private key blocks plus all known
+      credential token and credentialed URI patterns.
+    """
+    if not text:
+        return ""
+    out = str(text)
+    if extra_raw_secrets:
+        raw_set = {
+            s for s in extra_raw_secrets if isinstance(s, str) and len(s) >= 4
+        }
+        for raw_tok in sorted(raw_set, key=len, reverse=True):
+            if raw_tok in out:
+                out = out.replace(raw_tok, _REDACTED_SECRET_TOKEN)
+    for rx in _SHARED_CREDENTIAL_REDACTION_REGEXES:
+        out = rx.sub(_REDACTED_SECRET_TOKEN, out)
+    return out
 
 
 def _read_confined_workspace_file(
@@ -697,8 +765,12 @@ class FrontierAiEngine:
             if isinstance(max_output_tokens, bool):
                 raise ValueError("max_output_tokens must be an integer, not bool.")
             eff_max_tokens = max(128, min(8192, int(1800 if max_output_tokens is None else max_output_tokens)))
-            sanitized_user = strip_hostile_target_instructions(user_prompt)
-            sanitized_material = strip_hostile_target_instructions(cache_material or sanitized_user)
+            sanitized_user = scrub_raw_secrets_text(
+                strip_hostile_target_instructions(user_prompt)
+            )
+            sanitized_material = scrub_raw_secrets_text(
+                strip_hostile_target_instructions(cache_material or sanitized_user)
+            )
             est_tokens = max(1, len(sanitized_user) // 4)
 
             cache_key = self._build_cache_key(workflow, sanitized_material)

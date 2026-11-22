@@ -78,7 +78,7 @@ from engine.rule_executor import RuleExecutor
 from engine.community_detector import detect_code_communities, build_community_graph_view
 from engine.vuln_extractor import VulnExtractorEngine
 from engine.enterprise_manager import EnterpriseManager
-from engine.frontier_ai_engine import FrontierAiEngine
+from engine.frontier_ai_engine import FrontierAiEngine, scrub_raw_secrets_text
 from engine.secret_validator_engine import get_secret_validator_engine
 from engine.api_operations_engine import get_api_operations_engine
 from engine.security_playbooks import (
@@ -1375,10 +1375,10 @@ def _scan_project_locked(req: ScanRequest) -> ScanResponse:
         # Select active GraphStore backend (Neo4j primary or Zero-Docker Embedded SQLite fallback)
         global _cached_findings, _cached_external_findings, _cached_advisories, _last_neo4j_ingested_dir
         global _cached_cognitive_findings, _cached_cognitive_dir
-        _cached_findings = None
-        _cached_external_findings = []
-        _cached_advisories = []
-        if _cached_cognitive_dir and os.path.normcase(os.path.realpath(_cached_cognitive_dir)) != os.path.normcase(os.path.realpath(resolved_path)):
+        with _findings_lock:
+            _cached_findings = None
+            _cached_external_findings = []
+            _cached_advisories = []
             _cached_cognitive_findings = []
             _cached_cognitive_dir = ""
         active_mode = graph_store_mgr.ensure_backend(force_probe=True)
@@ -1862,18 +1862,6 @@ _last_neo4j_ingested_dir: Optional[str] = None
 _findings_lock = threading.Lock()
 
 _COGNITIVE_REDACT_FALLBACK = "[REDACTED_" + "SECRET]"
-_COGNITIVE_CREDENTIAL_REGEXES = (
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{16,}\b"),
-    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9_]{12,}\b"),
-    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
-    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
-    re.compile(r"\bAIza[0-9A-Za-z\-_]{20,}\b"),
-    re.compile(
-        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"
-    ),
-)
 
 
 def _snapshot_cached_cognitive() -> Tuple[List[Finding], str]:
@@ -1885,13 +1873,15 @@ def _snapshot_cached_cognitive() -> Tuple[List[Finding], str]:
 def _scrub_cognitive_text(text: str, replacements: List[Tuple[str, str]]) -> str:
     if not text:
         return text
-    out = text
-    for raw_tok, mask_lbl in replacements:
-        if raw_tok and raw_tok in out:
-            out = out.replace(raw_tok, mask_lbl)
-    for rx in _COGNITIVE_CREDENTIAL_REGEXES:
-        out = rx.sub(_COGNITIVE_REDACT_FALLBACK, out)
-    return out
+    out = str(text)
+    for raw_tok, mask_lbl in sorted(
+        (pair for pair in replacements if pair and pair[0] and len(pair[0]) >= 4),
+        key=lambda kv: len(kv[0]),
+        reverse=True,
+    ):
+        if raw_tok in out:
+            out = out.replace(raw_tok, mask_lbl or _COGNITIVE_REDACT_FALLBACK)
+    return scrub_raw_secrets_text(out)
 
 
 def _scrub_cognitive_findings(
@@ -4085,11 +4075,12 @@ def activate_project(project_id: str, skip_warmup: bool = Query(False)):
     if target.target_path and os.path.exists(target.target_path):
         current_scan_dir = os.path.abspath(target.target_path)
         _norm_act = os.path.normcase(current_scan_dir)
-        _cached_external_findings = []
-        _cached_advisories = []
-        if _cached_cognitive_dir and os.path.normcase(os.path.realpath(_cached_cognitive_dir)) != os.path.normcase(os.path.realpath(current_scan_dir)):
-            _cached_cognitive_findings = []
-            _cached_cognitive_dir = ""
+        with _findings_lock:
+            _cached_external_findings = []
+            _cached_advisories = []
+            if _cached_cognitive_dir and os.path.normcase(os.path.realpath(_cached_cognitive_dir)) != os.path.normcase(os.path.realpath(current_scan_dir)):
+                _cached_cognitive_findings = []
+                _cached_cognitive_dir = ""
         switched_away_from_ingested = (_last_neo4j_ingested_dir != _norm_act)
         if switched_away_from_ingested:
             current_community_map = CommunityMapResponse(graph_engine_mode=graph_store_mgr.mode)
