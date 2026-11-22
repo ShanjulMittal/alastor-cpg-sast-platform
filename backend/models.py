@@ -42,6 +42,9 @@ class CPGNode(BaseModel):
     is_source: bool = False             # True if matches known untrusted input signature
     is_sink: bool = False               # True if matches dangerous execution sink
     is_sanitizer: bool = False          # True if matches known validation/escaping function
+    sanitizer_domains: List[str] = Field(default_factory=list)
+    sink_domain: Optional[str] = None
+    language: str = "python"
 
 
 class CPGEdge(BaseModel):
@@ -288,6 +291,65 @@ class AppTreeSummary(BaseModel):
     cross_file_edges: List[CrossFileEdge] = Field(default_factory=list)
 
 
+GraphEngineMode = Literal["NEO4J_APOC", "EMBEDDED_SQLITE"]
+
+
+class ScanScopeTelemetry(BaseModel):
+    total_discovered: int = 0
+    symlinks_dropped: int = 0
+    gitignore_excluded: int = 0
+    build_dirs_excluded: int = 0
+    generated_excluded: int = 0
+    tests_excluded: int = 0
+    languages_breakdown: Dict[str, int] = Field(default_factory=dict)
+
+
+class GraphCommunityItem(BaseModel):
+    id: str
+    label: str
+    primary_language: str
+    languages: List[str] = Field(default_factory=list)
+    filepaths: List[str] = Field(default_factory=list)
+    file_count: int = 0
+    entrypoint_count: int = 0
+    sink_count: int = 0
+    finding_count: int = 0
+    risk_tier: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"] = "LOW"
+
+
+class CommunityBridgeEdge(BaseModel):
+    id: str
+    source_community_id: str
+    target_community_id: str
+    edge_count: int = 1
+    edge_types: List[str] = Field(default_factory=list)
+    is_polyglot_bridge: bool = False
+    sample_files: List[str] = Field(default_factory=list)
+
+
+class CommunityMapResponse(BaseModel):
+    graph_engine_mode: GraphEngineMode = "NEO4J_APOC"
+    total_communities: int = 0
+    polyglot_bridges_count: int = 0
+    communities: List[GraphCommunityItem] = Field(default_factory=list)
+    cross_community_edges: List[CommunityBridgeEdge] = Field(default_factory=list)
+
+
+class LanguageCapabilityItem(BaseModel):
+    language: str
+    display_name: str
+    extensions: List[str] = Field(default_factory=list)
+    parser_available: bool = False
+    rule_pack_count: int = 0
+    supports_taint: bool = True
+
+
+class LanguageCapabilitiesResponse(BaseModel):
+    total_languages: int = 0
+    ready_parsers: int = 0
+    languages: List[LanguageCapabilityItem] = Field(default_factory=list)
+
+
 class ScanResponse(BaseModel):
     project_path: str
     files_scanned: int
@@ -302,6 +364,10 @@ class ScanResponse(BaseModel):
     branch: Optional[str] = None
     is_private_repo: Optional[bool] = None
     display_name: Optional[str] = None
+    graph_engine_mode: Optional[GraphEngineMode] = None
+    languages_detected: Dict[str, int] = Field(default_factory=dict)
+    scope_telemetry: Optional[ScanScopeTelemetry] = None
+    communities_count: int = 0
 
 
 class MetricsResponse(BaseModel):
@@ -315,6 +381,10 @@ class MetricsResponse(BaseModel):
     total_app_files: int = 0
     categories: Dict[str, int] = Field(default_factory=dict)
     tech_stack: List[str] = Field(default_factory=list)
+    graph_engine_mode: Optional[GraphEngineMode] = None
+    languages_detected: Dict[str, int] = Field(default_factory=dict)
+    scope_telemetry: Optional[ScanScopeTelemetry] = None
+    communities_count: int = 0
 
 
 class ScanProgress(BaseModel):
