@@ -110,7 +110,7 @@ export function FrontierAiCopilotDrawer() {
   const remediationPreview = useAuditStore((s) => s.remediationPreview);
   const patchPanelResult = useAuditStore((s) => s.patchPanelResult);
   const isValidatingPatchPanel = useAuditStore((s) => s.isValidatingPatchPanel);
-  const cognitiveErrorBanner = useAuditStore((s) => s.cognitiveErrorBanner);
+  const patchPanelError = useAuditStore((s) => s.patchPanelError);
   const runPatchPanelValidation = useAuditStore(
     (s) => s.runPatchPanelValidation
   );
@@ -1271,6 +1271,18 @@ export function FrontierAiCopilotDrawer() {
 
             {/* S11 Dual-Verified 3-Persona + AST/CPG Patch Validation Panel */}
             {(() => {
+              const normFp = (fp?: string | null) =>
+                (fp || "").replace(/\\/g, "/").trim().toLowerCase();
+              const activeAiPatch =
+                selectedFinding &&
+                aiLastSynthesizedPatch?.finding_id === selectedFinding.id
+                  ? aiLastSynthesizedPatch
+                  : null;
+              const activePreview =
+                selectedFinding &&
+                remediationPreview?.finding_id === selectedFinding.id
+                  ? remediationPreview
+                  : null;
               const fallbackNode =
                 selectedFinding?.path_nodes &&
                 selectedFinding.path_nodes.length > 0
@@ -1278,42 +1290,77 @@ export function FrontierAiCopilotDrawer() {
                       selectedFinding.path_nodes.length - 1
                     ]
                   : null;
-              const candidateFilepath =
-                aiLastSynthesizedPatch?.filepath ||
-                remediationPreview?.filepath ||
-                selectedFinding?.best_fix_location?.filepath ||
-                fallbackNode?.filepath ||
-                "";
-              const candidateOriginal =
-                (aiLastSynthesizedPatch
-                  ? remediationPreview?.original_content ||
-                    aiLastSynthesizedPatch.before_snippet
-                  : remediationPreview?.original_content ||
-                    selectedFinding?.best_fix_location?.before_code_block ||
-                    selectedFinding?.best_fix_location?.code_snippet) || "";
-              const candidateProposed =
-                aiLastSynthesizedPatch?.patched_full_content ||
-                aiLastSynthesizedPatch?.after_snippet ||
-                remediationPreview?.patched_content ||
-                selectedFinding?.best_fix_location?.after_code_block ||
-                selectedFinding?.best_fix_location?.recommended_fix ||
-                "";
+
+              let candidateFilepath = "";
+              let candidateOriginal = "";
+              let candidateProposed = "";
+
+              // 1. Full-file + full-file (same filepath)
+              const fullOriginal = activePreview?.original_content || "";
+              const fullProposedFromAi = activeAiPatch?.patched_full_content || "";
+              const fullProposedFromPreview = activePreview?.patched_content || "";
+              const sameFileForAiFull =
+                Boolean(fullProposedFromAi.trim()) &&
+                Boolean(activePreview?.filepath) &&
+                (!activeAiPatch?.filepath ||
+                  normFp(activeAiPatch.filepath) ===
+                    normFp(activePreview?.filepath));
+
+              if (fullOriginal.trim() && sameFileForAiFull) {
+                candidateFilepath =
+                  activeAiPatch?.filepath || activePreview?.filepath || "";
+                candidateOriginal = fullOriginal;
+                candidateProposed = fullProposedFromAi;
+              } else if (
+                fullOriginal.trim() &&
+                fullProposedFromPreview.trim() &&
+                activePreview?.filepath
+              ) {
+                candidateFilepath = activePreview.filepath;
+                candidateOriginal = fullOriginal;
+                candidateProposed = fullProposedFromPreview;
+              } else if (
+                // 2. Snippet + snippet from AI synthesized patch
+                activeAiPatch?.before_snippet?.trim() &&
+                activeAiPatch?.after_snippet?.trim()
+              ) {
+                candidateFilepath =
+                  activeAiPatch.filepath ||
+                  selectedFinding?.best_fix_location?.filepath ||
+                  fallbackNode?.filepath ||
+                  "";
+                candidateOriginal = activeAiPatch.before_snippet;
+                candidateProposed = activeAiPatch.after_snippet;
+              } else if (
+                // 3. BFL code block + code block (never prose recommended_fix)
+                selectedFinding?.best_fix_location?.before_code_block?.trim() &&
+                selectedFinding?.best_fix_location?.after_code_block?.trim()
+              ) {
+                candidateFilepath =
+                  selectedFinding.best_fix_location.filepath ||
+                  fallbackNode?.filepath ||
+                  "";
+                candidateOriginal =
+                  selectedFinding.best_fix_location.before_code_block;
+                candidateProposed =
+                  selectedFinding.best_fix_location.after_code_block;
+              }
+
               const canRunPanel = Boolean(
-                candidateFilepath.trim() && candidateProposed.trim()
+                selectedFinding &&
+                  candidateFilepath.trim() &&
+                  candidateOriginal.trim() &&
+                  candidateProposed.trim()
               );
 
               const handleRunS11Validation = () => {
-                if (!canRunPanel) return;
+                if (!canRunPanel || !selectedFinding) return;
                 void runPatchPanelValidation({
-                  finding_id:
-                    aiLastSynthesizedPatch?.finding_id ||
-                    remediationPreview?.finding_id ||
-                    selectedFinding?.id ||
-                    null,
+                  finding_id: selectedFinding.id,
                   filepath: candidateFilepath.trim(),
-                  original_code: candidateOriginal || "# original snippet",
+                  original_code: candidateOriginal,
                   proposed_code: candidateProposed,
-                  cwe_id: selectedFinding?.cwe_id || null,
+                  cwe_id: selectedFinding.cwe_id || null,
                   use_ai: isProviderReady && useAiPatchPersonas,
                 });
               };
@@ -1371,18 +1418,19 @@ export function FrontierAiCopilotDrawer() {
 
                   {!canRunPanel && (
                     <p className="text-[10px] font-mono text-slate-600">
-                      Synthesize an AI patch or select a finding with a
-                      remediation preview to enable S11 validation.
+                      Synthesize an AI patch or open a remediation diff preview
+                      for the selected finding (paired before/after code) to
+                      enable S11 validation.
                     </p>
                   )}
 
-                  {cognitiveErrorBanner && (
+                  {patchPanelError && (
                     <div
                       role="alert"
                       className="p-2.5 rounded-lg bg-rose-50 border border-rose-300 text-rose-950 text-[11px] font-semibold flex items-start gap-1.5"
                     >
                       <AlertTriangle className="w-3.5 h-3.5 text-rose-700 shrink-0 mt-0.5" />
-                      <span className="break-words">{cognitiveErrorBanner}</span>
+                      <span className="break-words">{patchPanelError}</span>
                     </div>
                   )}
 

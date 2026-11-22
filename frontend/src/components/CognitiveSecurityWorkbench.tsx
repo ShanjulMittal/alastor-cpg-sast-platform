@@ -43,23 +43,18 @@ import {
   Code2,
   Compass,
   Crosshair,
-  Crown,
   Filter,
   GitBranch,
-  KeyRound,
   Layers,
   Loader2,
   Maximize2,
-  Network,
   Play,
   RefreshCw,
   Scale,
   Search,
   ShieldAlert,
-  ShieldCheck,
   Sparkles,
   Wrench,
-  XCircle,
 } from "lucide-react";
 
 const CHAIN_NODE_WIDTH = 256;
@@ -537,10 +532,14 @@ const ExploitChainCanvasInner: React.FC<ExploitChainCanvasInnerProps> = ({
           minZoom={0.25}
           maxZoom={2.0}
           nodesDraggable={false}
+          nodesConnectable={false}
           proOptions={{ hideAttribution: true }}
         >
           <Background color="#cbd5e1" gap={20} size={1.25} />
-          <Controls className="!bg-white !border-slate-300 !text-slate-800 !shadow-md rounded-lg overflow-hidden" />
+          <Controls
+            showInteractive={false}
+            className="!bg-white !border-slate-300 !text-slate-800 !shadow-md rounded-lg overflow-hidden"
+          />
           <MiniMap
             nodeColor={(n) => {
               const d = n.data as ExploitChainNodeData | undefined;

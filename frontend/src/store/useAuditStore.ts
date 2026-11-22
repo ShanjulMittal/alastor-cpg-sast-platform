@@ -316,6 +316,7 @@ interface AuditState {
   isRunningExploitChains: boolean;
   isValidatingPatchPanel: boolean;
   cognitiveErrorBanner: string | null;
+  patchPanelError: string | null;
 
   // UI Simplicity, Layout & Command Palette State
   uiDensityMode: "SIMPLE_CLEAN" | "PRO_DETAILED";
@@ -701,6 +702,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   isRunningExploitChains: false,
   isValidatingPatchPanel: false,
   cognitiveErrorBanner: null,
+  patchPanelError: null,
 
   uiDensityMode: "SIMPLE_CLEAN",
   ideLayoutMode: "SPLIT_BOTH",
@@ -2050,7 +2052,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       activePathStepIndex: 0,
       remediationPreview: null,
       ...(state.selectedFinding?.id !== finding.id
-        ? { patchPanelResult: null }
+        ? { patchPanelResult: null, patchPanelError: null }
         : {}),
       selectedGraphNodeId: firstNode ? firstNode.id : null,
       activeFilepath: firstNode ? firstNode.filepath : null,
@@ -2081,6 +2083,9 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     }
     set((state) => ({
       selectedFinding: finding,
+      ...(state.selectedFinding?.id !== finding.id
+        ? { patchPanelResult: null, patchPanelError: null }
+        : {}),
       selectedGraphNodeId: bfl.node_id || null,
       activeFilepath: bfl.filepath,
       activeStartLine: bfl.line,
@@ -2516,7 +2521,13 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       adversarialVerifyResult: null,
       exploitChainsResult: null,
       patchPanelResult: null,
+      isLoadingCognitive: false,
+      isRunningCognitiveHunt: false,
+      isRunningAdversarialVerify: false,
+      isRunningExploitChains: false,
+      isValidatingPatchPanel: false,
       cognitiveErrorBanner: null,
+      patchPanelError: null,
       ...(existingProj?.target_path ? { projectPath: existingProj.target_path } : {}),
     }));
 
@@ -2559,7 +2570,13 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           adversarialVerifyResult: null,
           exploitChainsResult: null,
           patchPanelResult: null,
+          isLoadingCognitive: false,
+          isRunningCognitiveHunt: false,
+          isRunningAdversarialVerify: false,
+          isRunningExploitChains: false,
+          isValidatingPatchPanel: false,
           cognitiveErrorBanner: null,
+          patchPanelError: null,
         }));
         if (needsScan) {
           const hasLocalCheckout =
@@ -2601,6 +2618,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchTrackChanges(),
           get().fetchApiOperationsState(),
           get().fetchPastaState(),
+          get().fetchCognitivePlaybooksState(),
+          get().fetchExploitChainsState(),
         ]);
       }
     } catch (err) {
@@ -3646,6 +3665,9 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         get().fetchFindings(),
         get().fetchMetrics(),
       ]);
+      if (reqEpoch !== _cognitiveEpoch) {
+        return data;
+      }
       void Promise.all([
         get().fetchExploitChainsState({ forceSynthesize: true }),
         get().fetchPastaState(),
@@ -3777,7 +3799,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     const reqEpoch = _cognitiveEpoch;
     const rawPath = (get().projectPath || "").trim();
     const localPath = isLikelyLocalProjectPath(rawPath) ? rawPath : undefined;
-    set({ isValidatingPatchPanel: true, cognitiveErrorBanner: null });
+    set({ isValidatingPatchPanel: true, patchPanelError: null });
     try {
       const data = await validatePatchPanelApi({
         ...payload,
@@ -3789,7 +3811,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       set({
         patchPanelResult: data,
         isValidatingPatchPanel: false,
-        cognitiveErrorBanner: null,
+        patchPanelError: null,
       });
       return data;
     } catch (err: any) {
@@ -3798,7 +3820,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       if (reqEpoch === _cognitiveEpoch) {
         set({
           isValidatingPatchPanel: false,
-          cognitiveErrorBanner: msg,
+          patchPanelError: msg,
         });
       }
       return null;
@@ -3827,7 +3849,13 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       adversarialVerifyResult: null,
       exploitChainsResult: null,
       patchPanelResult: null,
+      isLoadingCognitive: false,
+      isRunningCognitiveHunt: false,
+      isRunningAdversarialVerify: false,
+      isRunningExploitChains: false,
+      isValidatingPatchPanel: false,
       cognitiveErrorBanner: null,
+      patchPanelError: null,
       scanStatusMessage: `Initiating analysis for: ${path}...`,
       scanProgress: {
         is_scanning: true,
@@ -3920,6 +3948,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchTrackChanges(),
           get().fetchApiOperationsState(),
           get().fetchPastaState(),
+          get().fetchCognitivePlaybooksState(),
+          get().fetchExploitChainsState(),
         ]);
         return { ok: true, response: scanData };
       } else {
