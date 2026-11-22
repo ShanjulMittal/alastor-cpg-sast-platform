@@ -75,7 +75,7 @@ _EV_SAFE_PLACEHOLDERS = frozenset(
     {"<USER_A_TOKEN>", "<USER_B_TOKEN>", "<REDACTED_HEADER>", _MASK_FALLBACK_LABEL, "[REDACTED]"}
 )
 _EV_BEARER_BASIC_RX = re.compile(
-    r"\b(Bearer|Basic)\s+(?![<\[]|REDACTED)[A-Za-z0-9._~+/=-]{8,}\b",
+    r"\b(Bearer|Basic)\s+(?![<\[]|REDACTED)[A-Za-z0-9._~+/=-]{8,}(?![A-Za-z0-9._~+/=-])",
     re.IGNORECASE,
 )
 

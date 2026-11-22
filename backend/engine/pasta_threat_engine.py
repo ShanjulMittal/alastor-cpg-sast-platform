@@ -255,7 +255,7 @@ def _normalize_severity(raw_sev: str) -> Literal["CRITICAL", "HIGH", "MEDIUM", "
 
 
 _BEARER_FALLBACK_RX = re.compile(
-    r"\bBearer\s+(?![<\[]|REDACTED)[A-Za-z0-9._~+/=-]{8,}\b",
+    r"\b(Bearer|Basic)\s+(?![<\[]|REDACTED)[A-Za-z0-9._~+/=-]{8,}(?![A-Za-z0-9._~+/=-])",
     re.IGNORECASE,
 )
 
@@ -285,7 +285,7 @@ def _scrub_ev_summary_text(
     if extra_secret and len(extra_secret) >= 4:
         extra.add(extra_secret)
     scrubbed = scrub_raw_secrets_text(txt, extra_raw_secrets=extra)
-    scrubbed = _BEARER_FALLBACK_RX.sub("Bearer [REDACTED_SECRET]", scrubbed)
+    scrubbed = _BEARER_FALLBACK_RX.sub(r"\1 [REDACTED_SECRET]", scrubbed)
     if max_len > 3 and len(scrubbed) > max_len:
         return scrubbed[: max_len - 3] + "..."
     return scrubbed
@@ -958,6 +958,7 @@ class PastaThreatEngine:
     def _classify_default_finding_gate(
         self,
         f: Finding,
+        forbidden_raw_values: Optional[Set[str]] = None,
     ) -> Tuple[GoLiveGateStatus, GoLiveSlaWindow, str, str, int]:
         """
         Applies the deterministic Go-Live Gate policy to an active Finding.
@@ -968,6 +969,7 @@ class PastaThreatEngine:
         ev_status = getattr(f, "ev_status", None)
         ev_sum_clean = _scrub_ev_summary_text(
             getattr(f, "ev_evidence_summary", None),
+            forbidden_values=forbidden_raw_values,
             extra_secret=getattr(f, "secret_value_raw", None),
             max_len=200,
         )
@@ -1062,7 +1064,10 @@ class PastaThreatEngine:
 
             obs_id = _unique_obs_id(kind_tok, f.id or f"{fp}-{ln}")
             mitre_capec, stride_let, _, _, _ = _classify_threat_taxonomy(f)
-            def_gate, def_sla, why_gate, comp_ctrl, red_pts = self._classify_default_finding_gate(f)
+            def_gate, def_sla, why_gate, comp_ctrl, red_pts = self._classify_default_finding_gate(
+                f,
+                forbidden_raw_values=forbidden_raw_values,
+            )
 
             eff_sev = _normalize_severity("CRITICAL" if f.secret_validation_status == "VERIFIED_ACTIVE" else f.severity)
             bfl_fix = (
@@ -1549,7 +1554,10 @@ class PastaThreatEngine:
                 ),
             ]
 
-            _, _, _, _, red_pts = self._classify_default_finding_gate(f)
+            _, _, _, _, red_pts = self._classify_default_finding_gate(
+                f,
+                forbidden_raw_values=forbidden_raw_values,
+            )
             scenarios.append(
                 PastaAttackTreeScenario(
                     id=sc_id,

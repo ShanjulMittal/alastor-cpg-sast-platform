@@ -118,14 +118,56 @@ let _hasHydratedUiPrefs = false;
 let _sastPlusInFlight: Promise<void> | null = null;
 let _communityMapInFlight: Promise<CommunityMapResponse | null> | null = null;
 let _sastPlusInFlightKey = "";
+let _sastPlusRequestSeq = 0;
 const _inflightApiOpsPromises = new Map<string, Promise<ApiOperationsReportResponse | null>>();
 let _pastaInFlight: Promise<PastaAssessmentResponse | null> | null = null;
 let _pastaInFlightKey = "";
+let _pastaRequestSeq = 0;
 let _cognitivePlaybooksInFlight: Promise<CognitivePlaybooksResponse | null> | null = null;
 let _cognitivePlaybooksInFlightKey = "";
 let _exploitChainsInFlight: Promise<ExploitChainResponse | null> | null = null;
 let _exploitChainsInFlightKey = "";
 let _cognitiveEpoch = 0;
+
+type PastaSastFetchOverride =
+  | string
+  | null
+  | { projectPathOverride?: string | null; forceRefresh?: boolean };
+
+function resolvePastaSastFetchArgs(
+  currentProjectPath: string,
+  projectPathOverride?: PastaSastFetchOverride,
+  options?: { forceRefresh?: boolean }
+): {
+  resolvedOverride: string | null | undefined;
+  forceRefresh: boolean;
+  key: string;
+} {
+  const optsObj =
+    typeof projectPathOverride === "object" && projectPathOverride !== null
+      ? projectPathOverride
+      : null;
+  const resolvedOverride: string | null | undefined = optsObj
+    ? optsObj.projectPathOverride
+    : (projectPathOverride as string | null | undefined);
+  const forceRefresh = Boolean(options?.forceRefresh || optsObj?.forceRefresh);
+  const rawPath = (
+    resolvedOverride !== undefined && resolvedOverride !== null
+      ? resolvedOverride
+      : currentProjectPath || ""
+  ).trim();
+  const key = isLikelyLocalProjectPath(rawPath) ? rawPath : "__active__";
+  return { resolvedOverride, forceRefresh, key };
+}
+
+function invalidatePastaAndSastPlusInFlight(): void {
+  _pastaInFlight = null;
+  _pastaInFlightKey = "";
+  _pastaRequestSeq += 1;
+  _sastPlusInFlight = null;
+  _sastPlusInFlightKey = "";
+  _sastPlusRequestSeq += 1;
+}
 
 function resetEvSlice(prevEpoch: number) {
   return {
@@ -572,7 +614,10 @@ interface AuditState {
     accountable_role?: string;
   }) => Promise<void>;
   resetRaciGovernance: () => Promise<void>;
-  fetchSastPlusSuite: (projectPathOverride?: string | null) => Promise<void>;
+  fetchSastPlusSuite: (
+    projectPathOverride?: PastaSastFetchOverride,
+    options?: { forceRefresh?: boolean }
+  ) => Promise<void>;
   setTrackChangesMode: (enabled: boolean) => void;
   setTrackChangesPanelOpen: (open: boolean) => void;
   fetchTrackChanges: (projectPath?: string) => Promise<void>;
@@ -595,7 +640,8 @@ interface AuditState {
     projectPath?: string
   ) => Promise<ApiOperationsReportResponse | null>;
   fetchPastaState: (
-    projectPathOverride?: string | null
+    projectPathOverride?: PastaSastFetchOverride,
+    options?: { forceRefresh?: boolean }
   ) => Promise<PastaAssessmentResponse | null>;
   savePastaProfileState: (
     payload: PastaProfileUpdatePayload
@@ -1961,7 +2007,9 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     persistUiPrefs(get);
   },
 
-  setProjectPath: (path: string) =>
+  setProjectPath: (path: string) => {
+    if (get().projectPath === path) return;
+    invalidatePastaAndSastPlusInFlight();
     set((state) =>
       state.projectPath === path
         ? {}
@@ -1969,7 +2017,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
             projectPath: path,
             ...resetEvSlice(state._evEpoch),
           }
-    ),
+    );
+  },
 
   setGraphViewMode: (mode: GraphViewMode) => set({ graphViewMode: mode }),
 
@@ -2567,12 +2616,13 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       runScan ||
       Boolean(existingProj && !existingProj.last_scan_at && !existingProj.has_cached_scan);
 
-    // Invalidate any in-flight Pillar 2 cognitive requests from previous project
+    // Invalidate any in-flight Pillar 2 cognitive & PASTA/SAST+ requests from previous project
     _cognitiveEpoch += 1;
     _cognitivePlaybooksInFlight = null;
     _cognitivePlaybooksInFlightKey = "";
     _exploitChainsInFlight = null;
     _exploitChainsInFlightKey = "";
+    invalidatePastaAndSastPlusInFlight();
 
     // Optimistically mark the selected project as active on frame 1
     set((state) => ({
@@ -2619,6 +2669,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         _cognitivePlaybooksInFlightKey = "";
         _exploitChainsInFlight = null;
         _exploitChainsInFlightKey = "";
+        invalidatePastaAndSastPlusInFlight();
         set((state) => ({
           projectPath: proj.target_path,
           projects: state.projects.map((p) =>
@@ -3243,30 +3294,37 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     }
   },
 
-  fetchSastPlusSuite: async (projectPathOverride?: string | null) => {
-    const rawPath = (
-      projectPathOverride !== undefined && projectPathOverride !== null
-        ? projectPathOverride
-        : get().projectPath || ""
-    ).trim();
-    const key = isLikelyLocalProjectPath(rawPath) ? rawPath : "__active__";
-    if (_sastPlusInFlight && _sastPlusInFlightKey === key) {
+  fetchSastPlusSuite: async (
+    projectPathOverride?: PastaSastFetchOverride,
+    options?: { forceRefresh?: boolean }
+  ) => {
+    const { resolvedOverride, forceRefresh, key } = resolvePastaSastFetchArgs(
+      get().projectPath,
+      projectPathOverride,
+      options
+    );
+    if (!forceRefresh && _sastPlusInFlight && _sastPlusInFlightKey === key) {
       return _sastPlusInFlight;
     }
+    if (forceRefresh) {
+      _sastPlusInFlight = null;
+      _sastPlusInFlightKey = "";
+    }
+    const reqSeq = ++_sastPlusRequestSeq;
     _sastPlusInFlightKey = key;
     const reqPromise = (async () => {
       try {
         const data = await fetchSastPlusSuiteApi(
           key === "__active__" ? undefined : key
         );
-        if (_sastPlusInFlight !== reqPromise) {
+        if (reqSeq !== _sastPlusRequestSeq || _sastPlusInFlight !== reqPromise) {
           return;
         }
         const latestRaw = (get().projectPath || "").trim();
         const latestKey = isLikelyLocalProjectPath(latestRaw)
           ? latestRaw
           : "__active__";
-        if (projectPathOverride === undefined && latestKey !== key) {
+        if (resolvedOverride === undefined && latestKey !== key) {
           return;
         }
         set((state) => ({
@@ -3498,16 +3556,23 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     return reqPromise;
   },
 
-  fetchPastaState: async (projectPathOverride?: string | null) => {
-    const rawPath = (
-      projectPathOverride !== undefined && projectPathOverride !== null
-        ? projectPathOverride
-        : get().projectPath || ""
-    ).trim();
-    const key = isLikelyLocalProjectPath(rawPath) ? rawPath : "__active__";
-    if (_pastaInFlight && _pastaInFlightKey === key) {
+  fetchPastaState: async (
+    projectPathOverride?: PastaSastFetchOverride,
+    options?: { forceRefresh?: boolean }
+  ) => {
+    const { resolvedOverride, forceRefresh, key } = resolvePastaSastFetchArgs(
+      get().projectPath,
+      projectPathOverride,
+      options
+    );
+    if (!forceRefresh && _pastaInFlight && _pastaInFlightKey === key) {
       return _pastaInFlight;
     }
+    if (forceRefresh) {
+      _pastaInFlight = null;
+      _pastaInFlightKey = "";
+    }
+    const reqSeq = ++_pastaRequestSeq;
     set({ isLoadingPasta: true });
     _pastaInFlightKey = key;
     const reqPromise = (async () => {
@@ -3515,14 +3580,14 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         const data = await fetchPastaAssessment(
           key === "__active__" ? undefined : key
         );
-        if (_pastaInFlight !== reqPromise) {
+        if (reqSeq !== _pastaRequestSeq || _pastaInFlight !== reqPromise) {
           return data;
         }
         const latestRaw = (get().projectPath || "").trim();
         const latestKey = isLikelyLocalProjectPath(latestRaw)
           ? latestRaw
           : "__active__";
-        if (projectPathOverride === undefined && latestKey !== key) {
+        if (resolvedOverride === undefined && latestKey !== key) {
           set({ isLoadingPasta: false });
           return data;
         }
@@ -3541,7 +3606,10 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         return data;
       } catch (err) {
         console.error("Failed to fetch PASTA threat assessment:", err);
-        if (_pastaInFlight === reqPromise || _pastaInFlight === null) {
+        if (
+          reqSeq === _pastaRequestSeq &&
+          (_pastaInFlight === reqPromise || _pastaInFlight === null)
+        ) {
           set({ isLoadingPasta: false });
         }
         return null;
@@ -3557,6 +3625,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   },
 
   savePastaProfileState: async (payload: PastaProfileUpdatePayload) => {
+    invalidatePastaAndSastPlusInFlight();
     set({ isSavingPasta: true });
     try {
       const data = await updatePastaProfile({
@@ -3584,6 +3653,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   },
 
   savePastaGateOverride: async (payload: PastaGateOverridePayload) => {
+    invalidatePastaAndSastPlusInFlight();
     set({ isSavingPasta: true });
     try {
       const data = await overridePastaGate({
@@ -3966,8 +4036,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           await get().fetchFindings();
           if (get()._evEpoch !== epoch) return;
           void Promise.all([
-            get().fetchPastaState(),
-            get().fetchSastPlusSuite(),
+            get().fetchPastaState({ forceRefresh: true }),
+            get().fetchSastPlusSuite({ forceRefresh: true }),
           ]);
         }
       }
@@ -4001,8 +4071,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       await get().fetchFindings();
       if (get()._evEpoch !== epoch) return;
       void Promise.all([
-        get().fetchPastaState(),
-        get().fetchSastPlusSuite(),
+        get().fetchPastaState({ forceRefresh: true }),
+        get().fetchSastPlusSuite({ forceRefresh: true }),
       ]);
     } catch (err: any) {
       const msg = err?.detail || err?.message || "Failed to replay EV bundles.";
@@ -4050,8 +4120,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       await get().fetchFindings();
       if (get()._evEpoch !== epoch) return;
       void Promise.all([
-        get().fetchPastaState(),
-        get().fetchSastPlusSuite(),
+        get().fetchPastaState({ forceRefresh: true }),
+        get().fetchSastPlusSuite({ forceRefresh: true }),
       ]);
     } catch (err: any) {
       const msg =
@@ -4073,6 +4143,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     _cognitivePlaybooksInFlightKey = "";
     _exploitChainsInFlight = null;
     _exploitChainsInFlightKey = "";
+    invalidatePastaAndSastPlusInFlight();
     set((state) => ({
       isScanning: true,
       gitScanErrorBanner: null,
