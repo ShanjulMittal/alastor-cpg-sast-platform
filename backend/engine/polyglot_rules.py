@@ -134,7 +134,7 @@ POLYGLOT_RULE_CATALOG: List[Dict[str, Any]] = [
         "owasp_category": "A03:2021 - Injection",
         "cvss_score": 8.0,
         "severity": "HIGH",
-        "description": "Template explicitly disables contextual HTML auto-escaping (|safe, autoescape false, <%-, {{{, {!!\u200b, @Html.Raw, v-html) or evaluates dynamic template expressions.",
+        "description": "Template explicitly disables contextual HTML auto-escaping (|safe, autoescape false, <%-, {{{, {!!, @Html.Raw, v-html) or evaluates dynamic template expressions.",
         "remediation": "Use default contextual auto-escaping (`{{ var }}`, `<%= var %>`) or sanitize rich HTML strictly via DOMPurify/bleach before rendering.",
     },
     {
@@ -153,8 +153,15 @@ POLYGLOT_RULE_CATALOG: List[Dict[str, Any]] = [
 _CATALOG_BY_ID: Dict[str, Dict[str, Any]] = {r["id"]: r for r in POLYGLOT_RULE_CATALOG}
 
 
+_CHAR_LITERAL_RE = re.compile(r"'(?:[^'\\\n]|\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|.))'")
+
+
 def _strip_c_style_comments_preserve_lines(source: str) -> str:
-    """Replaces `//...` and `/*...*/` comments with spaces while preserving newlines (1-to-1 line numbers)."""
+    """
+    Replaces `//...` and `/*...*/` comments with spaces while preserving newlines (1-to-1 line numbers).
+    Handles double-quoted strings and single-quoted character literals cleanly without mistaking
+    Rust lifetimes (`'a`, `'static`) for unterminated single-quoted strings.
+    """
     out: List[str] = []
     i = 0
     n = len(source)
@@ -174,10 +181,22 @@ def _strip_c_style_comments_preserve_lines(source: str) -> str:
             i += 1
             continue
 
-        if ch in ('"', "'"):
-            in_str = ch
+        if ch == '"':
+            in_str = '"'
             out.append(ch)
             i += 1
+            continue
+
+        if ch == "'":
+            # Only consume as char literal when matching `'x'` / `'\n'` / `'\x41'` / `'\u{...}'`,
+            # never entering string mode on Rust lifetimes like `'static` or `'a`.
+            cm = _CHAR_LITERAL_RE.match(source, i)
+            if cm:
+                out.append(cm.group(0))
+                i = cm.end()
+            else:
+                out.append(ch)
+                i += 1
             continue
 
         if ch == "/" and i + 1 < n and source[i + 1] == "/":
@@ -507,12 +526,28 @@ def _check_rule_24_cpp_uaf_double_free(
         func_ranges = [(1, len(lines))]
 
     for start_ln, end_ln in func_ranges:
-        freed_vars: Dict[str, int] = {}
+        # Map var -> (freed_line_no, brace_depth_when_freed)
+        freed_vars: Dict[str, Tuple[int, int]] = {}
+        brace_depth = 0
+        func_base_depth: Optional[int] = None
+
         for ln in range(max(1, start_ln), min(len(lines), end_ln) + 1):
             line = lines[ln - 1]
             stripped = line.strip()
             if not stripped:
                 continue
+
+            # Track brace nesting depth relative to function body
+            open_braces = line.count("{")
+            close_braces = line.count("}")
+            if func_base_depth is None and open_braces > 0:
+                func_base_depth = brace_depth + 1
+            current_depth = brace_depth + (1 if (open_braces > 0 and stripped.startswith("{")) else 0)
+            if open_braces > 0 and not stripped.startswith("{"):
+                brace_depth += open_braces
+                current_depth = brace_depth
+            elif open_braces > 0:
+                brace_depth += open_braces
 
             # Check free(ptr) / delete ptr
             free_hits: List[str] = [m.group(1) for m in _RULE24_FREE_RE.finditer(line)]
@@ -520,54 +555,65 @@ def _check_rule_24_cpp_uaf_double_free(
 
             for var in free_hits:
                 if var in freed_vars:
+                    prev_ln, _ = freed_vars[var]
                     f = _build_finding(
                         "RULE-24-CPP-UAF-DOUBLE-FREE",
                         sf,
                         ln,
                         line,
                         f"Double-Free of Pointer `{var}`",
-                        f"Pointer `{var}` freed on line {freed_vars[var]} is freed again on line {ln} without reallocation",
+                        f"Pointer `{var}` freed on line {prev_ln} is freed again on line {ln} without reallocation",
                         **ctx,
                     )
                     if f:
                         findings.append(f)
                 else:
-                    freed_vars[var] = ln
+                    freed_vars[var] = (ln, current_depth)
 
-            if free_hits:
-                continue
+            if not free_hits:
+                # Check reassignment (e.g., `ptr = NULL;`, `ptr = malloc(...)`) -> clears freed state
+                reassigned_on_line: Set[str] = set()
+                for rm in _RULE24_REASSIGN_RE.finditer(line):
+                    lhs_var = rm.group(1)
+                    if lhs_var in freed_vars:
+                        rhs_part = line[rm.end():]
+                        if not re.search(rf"\b{re.escape(lhs_var)}\b", rhs_part):
+                            reassigned_on_line.add(lhs_var)
+                            freed_vars.pop(lhs_var, None)
 
-            # Check reassignment (e.g., `ptr = NULL;`, `ptr = malloc(...)`) -> clears freed state
-            reassigned_on_line: Set[str] = set()
-            for rm in _RULE24_REASSIGN_RE.finditer(line):
-                lhs_var = rm.group(1)
-                if lhs_var in freed_vars:
-                    # Ensure RHS doesn't dereference the same freed var before reassigning
-                    rhs_part = line[rm.end():]
-                    if not re.search(rf"\b{re.escape(lhs_var)}\b", rhs_part):
-                        reassigned_on_line.add(lhs_var)
-                        freed_vars.pop(lhs_var, None)
+                # Check use-after-free on remaining freed variables
+                for var in list(freed_vars.keys()):
+                    if var in reassigned_on_line:
+                        continue
+                    if re.search(rf"\b{re.escape(var)}\s*(?:==|!=)\s*(?:NULL|nullptr|0)\b", line):
+                        continue
+                    if re.search(rf"\b{re.escape(var)}\b", line):
+                        prev_ln, _ = freed_vars[var]
+                        f = _build_finding(
+                            "RULE-24-CPP-UAF-DOUBLE-FREE",
+                            sf,
+                            ln,
+                            line,
+                            f"Use-After-Free of Pointer `{var}`",
+                            f"Pointer `{var}` freed on line {prev_ln} is subsequently accessed on line {ln}",
+                            **ctx,
+                        )
+                        if f:
+                            findings.append(f)
+                        freed_vars.pop(var, None)
 
-            # Check use-after-free on remaining freed variables
-            for var in list(freed_vars.keys()):
-                if var in reassigned_on_line:
-                    continue
-                # Ignore pure NULL comparison `if (ptr == NULL)` / `if (!ptr)` without dereference
-                if re.search(rf"\b{re.escape(var)}\s*(?:==|!=)\s*(?:NULL|nullptr|0)\b", line):
-                    continue
-                if re.search(rf"\b{re.escape(var)}\b", line):
-                    f = _build_finding(
-                        "RULE-24-CPP-UAF-DOUBLE-FREE",
-                        sf,
-                        ln,
-                        line,
-                        f"Use-After-Free of Pointer `{var}`",
-                        f"Pointer `{var}` freed on line {freed_vars[var]} is subsequently accessed on line {ln}",
-                        **ctx,
-                    )
-                    if f:
-                        findings.append(f)
+            # Early-exit branch handling: `if (err) { free(ptr); return -1; }`
+            # Clear entries freed inside a nested block that terminates with return/exit/abort/goto
+            if (
+                func_base_depth is not None
+                and current_depth > func_base_depth
+                and re.search(r"\b(?:return|exit|_exit|abort|goto)\b", line)
+            ):
+                for var in [v for v, (_, f_depth) in freed_vars.items() if f_depth >= current_depth]:
                     freed_vars.pop(var, None)
+
+            if close_braces > 0:
+                brace_depth = max(0, brace_depth - close_braces)
     return findings
 
 
@@ -752,10 +798,14 @@ def _check_rule_27_polyglot_cmdi(sf: ScannedFile, clean_src: str, ctx: Dict[str,
 
         args = _extract_call_args_from_offset(clean_src, m.end() - 1) or []
 
-        # Rust chained `Command::new("sh").arg("-c").arg(input)`
+        # Rust chained `Command::new("sh").arg("-c").arg(input)` (supports single-line & multi-line chains!)
         if "Command::new" in m.group(0):
-            tail = line_txt[line_txt.find("Command::new"):]
-            arg_calls = re.findall(r"\.arg(?:s)?\s*\(([^)]+)\)", tail)
+            semi_idx = clean_src.find(";", m.start())
+            end_window = min(len(clean_src), semi_idx + 1 if semi_idx != -1 else m.start() + 500)
+            stmt_slice = clean_src[m.start():end_window]
+            if _RULE27_SAN_RE.search(stmt_slice):
+                continue
+            arg_calls = re.findall(r"\.arg(?:s)?\s*\(([^)]+)\)", stmt_slice)
             all_parts = list(args) + [a.strip() for a in arg_calls]
             if all_parts and all(_is_string_literal_arg(p) for p in all_parts):
                 continue
@@ -786,7 +836,7 @@ def _check_rule_27_polyglot_cmdi(sf: ScannedFile, clean_src: str, ctx: Dict[str,
 _RULE28_PATTERNS: Tuple[Tuple[Set[str], re.Pattern[str], str], ...] = (
     ({"java", "kotlin", "scala"}, re.compile(r"\.readObject\s*\("), "Java/JVM `ObjectInputStream.readObject()`"),
     ({"java", "kotlin", "scala"}, re.compile(r"\bnew\s+XMLDecoder\s*\("), "Java `XMLDecoder` deserialization"),
-    ({"csharp"}, re.compile(r"\bBinaryFormatter\b|\.(?:Deserialize)\s*\("), ".NET `BinaryFormatter.Deserialize()`"),
+    ({"csharp"}, re.compile(r"\.Deserialize\s*\("), ".NET `BinaryFormatter.Deserialize()`"),
     ({"csharp"}, re.compile(r"\bTypeNameHandling\.All\b"), "Json.NET `TypeNameHandling.All`"),
     ({"php"}, re.compile(r"\bunserialize\s*\("), "PHP `unserialize()`"),
     ({"ruby"}, re.compile(r"\bMarshal\.(?:load|restore)\s*\(|\bYAML\.load\s*\("), "Ruby unsafe `Marshal.load` / `YAML.load`"),
@@ -805,12 +855,13 @@ def _check_rule_28_polyglot_deser(sf: ScannedFile, clean_src: str, ctx: Dict[str
             line_no = clean_src.count("\n", 0, m.start()) + 1
             line_txt = lines[line_no - 1] if line_no <= len(lines) else m.group(0)
 
-            # C# `.Deserialize(` only flags if unsafe formatter is present in file
+            # C# `.Deserialize(` only flags if an unsafe formatter type is present in the file
             if sf.language == "csharp" and ".Deserialize" in m.group(0):
-                if not re.search(r"\b(?:BinaryFormatter|SoapFormatter|NetDataContractSerializer|LosFormatter)\b", clean_src):
+                if not re.search(
+                    r"\b(?:BinaryFormatter|SoapFormatter|NetDataContractSerializer|LosFormatter|ObjectStateFormatter)\b",
+                    clean_src,
+                ):
                     continue
-            if sf.language == "csharp" and m.group(0) == "BinaryFormatter" and ".Deserialize" not in clean_src:
-                continue
 
             # Java `.readObject(` only flags if ObjectInputStream is in file
             if sf.language in ("java", "kotlin", "scala") and ".readObject" in m.group(0):

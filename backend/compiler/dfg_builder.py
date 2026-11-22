@@ -301,19 +301,33 @@ class DFGBuilder:
         if body.type not in _BLOCK_TYPES:
             return self._infer_expr_sanitizer_domains(body, scope_id="__helper_tmp__", local_override={})
 
-        # Track local sanitized variables inside helper body before evaluating returns
-        local_san: Dict[str, Set[str]] = {}
-        return_exprs: List[tree_sitter.Node] = []
-        self._walk_helper_body(body, local_san, return_exprs)
+        # Structural stdlib validator helper detection on the full (untruncated) AST body:
+        # - SSRF / URL validator enforcing ipaddress private/loopback checks + raise
+        # - Path confinement validator enforcing os.path.commonpath / is_relative_to + raise
+        full_body_src = body.text.decode("utf-8", errors="replace")
+        has_raise = "raise " in full_body_src or "throw " in full_body_src
+        if has_raise and (
+            "ipaddress.ip_address(" in full_body_src
+            and "is_private" in full_body_src
+            and "is_loopback" in full_body_src
+        ):
+            return {"URL"}
+        if has_raise and (
+            "os.path.commonpath(" in full_body_src
+            or ".is_relative_to(" in full_body_src
+        ):
+            return {"PATH"}
 
-        if not return_exprs:
+        # Flow-sensitive walk: evaluate each `return` expression at the exact point encountered
+        local_san: Dict[str, Set[str]] = {}
+        return_domains_list: List[Set[str]] = []
+        self._walk_helper_body(body, local_san, return_domains_list)
+
+        if not return_domains_list:
             return set()
 
         combined: Optional[Set[str]] = None
-        for ret_expr in return_exprs:
-            ret_domains = self._infer_expr_sanitizer_domains(
-                ret_expr, scope_id="__helper_tmp__", local_override=local_san
-            )
+        for ret_domains in return_domains_list:
             if not ret_domains:
                 return set()
             combined = set(ret_domains) if combined is None else _combine_domains(combined, ret_domains)
@@ -325,10 +339,37 @@ class DFGBuilder:
         self,
         ts_node: tree_sitter.Node,
         local_san: Dict[str, Set[str]],
-        return_exprs: List[tree_sitter.Node],
+        return_domains_list: List[Set[str]],
     ) -> None:
         if ts_node.type in self.func_types:
             return  # Do not descend into nested inner functions
+
+        # Flow-sensitive conditional branching: copy local_san per branch and intersect on merge
+        if ts_node.type in ("if_statement", "if_expression", "if"):
+            conseq = ts_node.child_by_field_name("consequence") or ts_node.child_by_field_name("body")
+            alt = ts_node.child_by_field_name("alternative")
+            before_san = {k: set(v) for k, v in local_san.items()}
+            true_san = {k: set(v) for k, v in before_san.items()}
+            if conseq is not None:
+                self._walk_helper_body(conseq, true_san, return_domains_list)
+
+            if alt is not None:
+                false_san = {k: set(v) for k, v in before_san.items()}
+                self._walk_helper_body(alt, false_san, return_domains_list)
+                merged_keys = set(true_san.keys()) & set(false_san.keys())
+                local_san.clear()
+                for k in merged_keys:
+                    doms = _combine_domains(true_san[k], false_san[k])
+                    if doms:
+                        local_san[k] = doms
+            else:
+                merged_keys = set(before_san.keys()) & set(true_san.keys())
+                local_san.clear()
+                for k in merged_keys:
+                    doms = _combine_domains(before_san[k], true_san[k])
+                    if doms:
+                        local_san[k] = doms
+            return
 
         if ts_node.type in self.assign_types:
             lhs, rhs = self._extract_assignment_sides(ts_node)
@@ -355,11 +396,16 @@ class DFGBuilder:
         if ts_node.type in self.return_types:
             named = [ch for ch in ts_node.children if ch.is_named]
             if named:
-                return_exprs.append(named[0])
+                ret_doms = self._infer_expr_sanitizer_domains(
+                    named[0], scope_id="__helper_tmp__", local_override=local_san
+                )
+                return_domains_list.append(ret_doms)
+            else:
+                return_domains_list.append({"UNIVERSAL"})
             return
 
         for ch in ts_node.children:
-            self._walk_helper_body(ch, local_san, return_exprs)
+            self._walk_helper_body(ch, local_san, return_domains_list)
 
     def _lookup_sanitized_var(
         self,
@@ -437,12 +483,20 @@ class DFGBuilder:
                             return set(self.sanitizer_helpers[cb_name])
 
         # Safe string-preserving transforms on an already-sanitized receiver (`.trim()`, `.toLowerCase()`, etc.)
-        if short_name in ("trim", "toLowerCase", "toUpperCase", "slice", "substring", "strip"):
+        if short_name in ("trim", "toLowerCase", "toUpperCase", "slice", "substring", "strip", "lower", "upper"):
             func_node = call_ts.child_by_field_name("function")
             if func_node is not None and func_node.type in ("member_expression", "attribute"):
                 obj = func_node.child_by_field_name("object")
                 if obj is not None:
                     return self._infer_expr_sanitizer_domains(obj, scope_id, local_override)
+
+        # Pure URL decomposition (`urlparse(validated_url)`) preserves the argument's sanitizer domain
+        if short_name in ("urlparse", "urlsplit"):
+            args_node = self._extract_call_args_node(call_ts)
+            if args_node is not None:
+                named_args = [ch for ch in args_node.children if ch.is_named]
+                if named_args:
+                    return self._infer_expr_sanitizer_domains(named_args[0], scope_id, local_override)
 
         return set()
 
@@ -479,9 +533,22 @@ class DFGBuilder:
         if etype in _PURE_LITERAL_TYPES:
             return {"UNIVERSAL"}
 
-        # 2. Pure string literals without interpolation -> UNIVERSAL
+        # 2. Pure string literals (and Python f-strings whose every `{...}` interpolation is sanitized)
         if etype in _STRING_LITERAL_TYPES:
-            # Guard against Python f-strings (`f"..."`), PHP `"$var"`, Ruby `"#{var}"`
+            interps = [ch for ch in expr_ts.children if ch.type == "interpolation"]
+            if interps:
+                combined: Optional[Set[str]] = None
+                for interp in interps:
+                    inner = [c for c in interp.children if c.is_named and c.type not in ("format_specifier", "type_conversion")]
+                    if not inner:
+                        continue
+                    sub_doms = self._infer_expr_sanitizer_domains(inner[0], scope_id, local_override)
+                    if not sub_doms:
+                        return set()
+                    combined = set(sub_doms) if combined is None else _combine_domains(combined, sub_doms)
+                    if not combined:
+                        return set()
+                return combined or set()
             if raw.startswith(("f'", 'f"', "F'", 'F"', "rf'", 'rf"', "fr'", 'fr"')) and "{" in raw:
                 return set()
             if self.language in ("php", "ruby", "kotlin", "swift", "dart", "scala") and (
@@ -520,20 +587,31 @@ class DFGBuilder:
                 return {"UNIVERSAL"}
             return self._lookup_sanitized_var(raw, scope_id, local_override)
 
-        # 6. Member expressions (`arr.length`)
+        # 6. Member expressions (`arr.length`, or URL component access on a sanitized parsed URL)
         if etype in ("member_expression", "attribute"):
             if raw.endswith(".length"):
                 return {"UNIVERSAL"}
+            obj_ch = expr_ts.child_by_field_name("object")
+            attr_ch = expr_ts.child_by_field_name("attribute") or expr_ts.child_by_field_name("property")
+            if obj_ch is not None and attr_ch is not None:
+                attr_name = attr_ch.text.decode("utf-8", errors="replace").strip()
+                if attr_name in ("scheme", "netloc", "hostname", "path", "port"):
+                    return self._infer_expr_sanitizer_domains(obj_ch, scope_id, local_override)
             return set()
 
-        # 7. Binary expressions (`a + b`, `a || ""`, `a ?? ""`, comparisons `a === b`)
+        # 7. Binary expressions (`a + b`, `a || ""`, `a ?? ""`, `a && b`, comparisons `a === b`)
         if etype in ("binary_expression", "boolean_operator", "comparison_operator"):
             left_ch = expr_ts.child_by_field_name("left")
             right_ch = expr_ts.child_by_field_name("right")
             op_ch = expr_ts.child_by_field_name("operator")
             op_txt = op_ch.text.decode("utf-8", errors="replace").strip() if op_ch else ""
-            if op_txt in ("===", "!==", "==", "!=", "<", ">", "<=", ">=", "&&"):
+            # Pure comparison operators always evaluate to a boolean
+            if op_txt in ("===", "!==", "==", "!=", "<", ">", "<=", ">="):
                 return {"UNIVERSAL"}
+            # In JS/TS/Python, `cond && expr` evaluates to either a falsy value of `cond`
+            # (false/0/""/null/undefined) or `expr` itself — never treat `&&` as boolean!
+            if op_txt in ("&&", "and") and right_ch is not None:
+                return self._infer_expr_sanitizer_domains(right_ch, scope_id, local_override)
             if left_ch is not None and right_ch is not None:
                 l_doms = self._infer_expr_sanitizer_domains(left_ch, scope_id, local_override)
                 r_doms = self._infer_expr_sanitizer_domains(right_ch, scope_id, local_override)
@@ -771,14 +849,11 @@ class DFGBuilder:
         right_cpg = self.find_cpg_node(right)
         source_cpg = self.find_source_node_in_tree(right)
 
-        # Compute domain-aware sanitizer status of RHS
+        # Compute domain-aware sanitizer status of RHS structurally from the AST
+        # (Never blindly union `assign_cpg.is_sanitizer` over composite expressions like `escapeHtml(a) + raw_b`)
         rhs_domains = self._infer_expr_sanitizer_domains(right, scope_id)
-
-        # Merge Pass-1 sanitizer classification if right_cpg or assign_cpg is already tagged as sanitizer
         if right_cpg and right_cpg.is_sanitizer:
             rhs_domains = rhs_domains | (set(right_cpg.sanitizer_domains) or {"UNIVERSAL"})
-        if assign_cpg and assign_cpg.is_sanitizer:
-            rhs_domains = rhs_domains | (set(assign_cpg.sanitizer_domains) or {"UNIVERSAL"})
 
         # Check DOM HTML sink resolution BEFORE updating symbol table
         is_dom_html_sink = bool(

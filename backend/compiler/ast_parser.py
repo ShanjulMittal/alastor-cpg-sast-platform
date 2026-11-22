@@ -394,6 +394,89 @@ def _is_balanced_single_call(expr: str) -> bool:
     return depth == 0
 
 
+def _has_top_level_comparison(expr: str) -> bool:
+    """
+    Returns True iff `expr` contains a comparison operator (`===`, `!==`, `==`, `!=`, `<=`, `>=`, `<`, `>`)
+    at paren/bracket/brace depth 0 outside quotes, explicitly excluding JS arrow functions (`=>`).
+    """
+    depth_paren = 0
+    depth_bracket = 0
+    depth_brace = 0
+    in_quote: Optional[str] = None
+    escape_next = False
+    i = 0
+    n = len(expr)
+
+    while i < n:
+        ch = expr[i]
+        if escape_next:
+            escape_next = False
+            i += 1
+            continue
+        if in_quote:
+            if ch == "\\":
+                escape_next = True
+            elif ch == in_quote:
+                in_quote = None
+            i += 1
+            continue
+        if ch in ("'", '"', "`"):
+            in_quote = ch
+        elif ch == "(":
+            depth_paren += 1
+        elif ch == ")":
+            depth_paren = max(0, depth_paren - 1)
+        elif ch == "[":
+            depth_bracket += 1
+        elif ch == "]":
+            depth_bracket = max(0, depth_bracket - 1)
+        elif ch == "{":
+            depth_brace += 1
+        elif ch == "}":
+            depth_brace = max(0, depth_brace - 1)
+        elif depth_paren == 0 and depth_bracket == 0 and depth_brace == 0:
+            if expr.startswith(("===", "!=="), i):
+                return True
+            if expr.startswith("=>", i):
+                i += 2
+                continue
+            if expr.startswith(("==", "!=", "<=", ">="), i):
+                return True
+            if ch in ("<", ">"):
+                # Exclude `=>` and bitwise shifts `<<`, `>>`
+                if ch == ">" and i > 0 and expr[i - 1] == "=":
+                    i += 1
+                    continue
+                if i + 1 < n and expr[i + 1] == ch:
+                    i += 2
+                    continue
+                return True
+        i += 1
+    return False
+
+
+def _extract_callee_head(expr: str) -> str:
+    """Extracts the callee expression before the first top-level `(` (e.g. `os.system(x)` -> `os.system`)."""
+    e = (expr or "").strip()
+    in_quote: Optional[str] = None
+    escape_next = False
+    for i, ch in enumerate(e):
+        if escape_next:
+            escape_next = False
+            continue
+        if in_quote:
+            if ch == "\\":
+                escape_next = True
+            elif ch == in_quote:
+                in_quote = None
+            continue
+        if ch in ("'", '"', "`"):
+            in_quote = ch
+        elif ch == "(":
+            return e[:i].strip()
+    return e
+
+
 def _is_structurally_safe_html_expr(expr: str) -> bool:
     """
     Purely structural (non-app-specific) predicate determining whether an interpolated JS/TS
@@ -458,10 +541,10 @@ def _is_structurally_safe_html_expr(expr: str) -> bool:
     if any(e.startswith(prefix) for prefix in _HTML_SAFE_CALL_PREFIXES) and _is_balanced_single_call(e):
         return True
 
-    # 6. Pure comparison returning boolean (`a === b`, `n > 1`, `x !== 0`)
-    if any(cmp_op in e for cmp_op in ("===", "!==", ">=", "<=", "==", "!=", ">", "<")):
-        if not any(ch in e for ch in ("?", "`")):
-            return True
+    # 6. Pure top-level comparison returning boolean (`a === b`, `n > 1`, `x !== 0`)
+    # Strictly outside quotes/parens and excluding arrow functions (`=>`).
+    if _has_top_level_comparison(e) and not any(ch in e for ch in ("?", "`")):
+        return True
 
     # 7. Nested template literal whose every `${...}` is structurally safe (and no unsafe href=)
     if e.startswith("`") and e.endswith("`") and "${" in e:
@@ -540,14 +623,9 @@ def _analyze_html_assignment(raw_text: str) -> Tuple[bool, Optional[str]]:
     if _is_structurally_safe_html_expr(rhs):
         return False, None
 
-    # Rule 3b: `.map(... => `...`).join(...)` where every template interpolation is structurally safe
-    if "`" in rhs and "${" in rhs and ".map(" in rhs:
-        interps = _extract_template_interpolations(rhs)
-        if interps and all(_is_structurally_safe_html_expr(expr) for expr in interps):
-            return False, None
-
-    # Rule 4: All other dynamic assignments (including variable RHS like `el.innerHTML = safeCard`)
-    # are initially tagged `is_sink=True, sink_domain="HTML"` and cleared in Pass 3 if proven sanitized.
+    # Rule 4: All other dynamic assignments (including `.map().join()`, concatenations, variable RHS,
+    # and helper calls) are initially tagged `is_sink=True, sink_domain="HTML"` and evaluated
+    # structurally via AST in Pass 3 (DFGBuilder).
     return True, "HTML"
 
 
@@ -707,29 +785,49 @@ def classify_taint_with_domains(
             break
 
     # 3. Sanitizers & sanitizer_domains
-    # Never mark a flagged unsafe HTML/URL DOM assignment or any expression with unsafe URI
-    # attribute interpolation (`href="${esc(...)}"`) as a sanitizer!
-    # For variable assignments containing JS/TS template interpolations (`${...}`), defer
-    # sanitization classification to Pass 3 (DFGBuilder) so partial escaping cannot mask
-    # unescaped sibling interpolations or unsafe href attributes.
+    # Soundness invariants:
+    # - NEVER clear an already-flagged outer sink (`is_sink=True`) because an argument contains an
+    #   inline sanitizer (e.g., `os.system(html.escape(raw))` must stay a SHELL sink!).
+    # - NEVER mark a node containing unsafe URI attribute interpolation (`href="${esc(...)}"`) as a sanitizer.
+    # - NEVER classify `assign_types` nodes as sanitizers via raw substring matching in Pass 1
+    #   (e.g., `const x = escapeHtml(a) + raw_b`); Pass 3 (DFGBuilder) propagates RHS domains structurally.
+    # - On call nodes, match sanitizer patterns strictly against the callee head (not argument substrings).
     is_unsafe_uri_expr = has_unsafe_uri_interpolation(clean_raw)
-    is_template_assignment = (node_type in assign_types) and ("${" in clean_raw)
-    if not (is_html_dom_assign and is_sink) and not is_unsafe_uri_expr and not is_template_assignment:
+    if not is_sink and not is_unsafe_uri_expr and node_type not in assign_types:
+        callee_head = _extract_callee_head(clean_raw) if node_type in call_or_member_types else clean_code
         for san, domains in sanitizer_domain_map.items():
-            if _matches_pattern(san, clean_code, clean_raw):
-                # Avoid falsely marking a whole function/block as sanitizer just because it contains a sanitizer
-                if node_type in call_or_member_types or node_type in assign_types or node_type in (
-                    "identifier", "simple_identifier", "attribute", "template_expression",
-                ):
-                    is_sanitizer = True
-                    for d in domains:
-                        if d not in sanitizer_domains:
-                            sanitizer_domains.append(d)
-                    break
+            if node_type in call_or_member_types:
+                san_clean = san.rstrip("(")
+                matched_callee = (
+                    callee_head == san_clean
+                    or callee_head.endswith(f".{san_clean}")
+                    or callee_head.endswith(f"::{san_clean}")
+                    or (san.endswith("(") and callee_head == san_clean)
+                )
+            else:
+                matched_callee = (
+                    node_type in ("identifier", "simple_identifier", "attribute", "template_expression")
+                    and _matches_pattern(san, clean_code, clean_raw)
+                )
+            if matched_callee:
+                is_sanitizer = True
+                for d in domains:
+                    if d not in sanitizer_domains:
+                        sanitizer_domains.append(d)
+                break
 
-        if not is_sanitizer and (node_type in call_or_member_types or node_type in assign_types):
+        if not is_sanitizer and node_type in call_or_member_types:
+            callee_with_paren = f"{callee_head}("
             for inline_san, domains in INLINE_SANITIZER_DOMAIN_MAP:
-                if inline_san in clean_raw:
+                if inline_san.startswith(('.replace(', 'filter=')):
+                    matched_inline = inline_san in clean_raw
+                else:
+                    matched_inline = (
+                        callee_with_paren == inline_san
+                        or callee_with_paren.endswith(f".{inline_san}")
+                        or callee_head.startswith(inline_san.rstrip("("))
+                    )
+                if matched_inline:
                     is_sanitizer = True
                     for d in domains:
                         if d not in sanitizer_domains:

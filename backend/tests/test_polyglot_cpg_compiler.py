@@ -1316,3 +1316,210 @@ contract SafeAuth {
         assert enriched[0].plain_english_summary
         assert enriched[0].best_fix_location is not None
 
+
+class TestTask2ReviewHardening:
+    """Regression suite for all Task 2 Review Critical, Important, and Minor soundness fixes."""
+
+    def test_arrow_function_and_html_angle_brackets_do_not_bypass_xss(self):
+        js_code = b"""
+function render(elArrow, elTagConcat, elMapPlusRaw, elMapSafe, items, userInput, userBio) {
+  elArrow.innerHTML = items.map(x => x.bio).join("");
+  elTagConcat.innerHTML = renderTag("<b>" + userInput);
+  elMapPlusRaw.innerHTML = items.map(x => `<li>${esc(x)}</li>`).join("") + userBio;
+  elMapSafe.innerHTML = items.map(x => `<li>${esc(x)}</li>`).join("");
+}
+"""
+        sf = _make_scanned_file("ui/bypass1.js", js_code, "javascript")
+        nodes, _ = _compile_four_passes([sf])
+        sinks = {
+            n.name: n for n in nodes
+            if n.label == "Assignment" and n.name.endswith(".innerHTML")
+        }
+        assert sinks["elArrow.innerHTML"].is_sink is True
+        assert sinks["elTagConcat.innerHTML"].is_sink is True
+        assert sinks["elMapPlusRaw.innerHTML"].is_sink is True
+        assert sinks["elMapSafe.innerHTML"].is_sink is False
+
+    def test_partial_escaping_concat_assignment_does_not_clear_html_sink(self):
+        js_code = b"""
+function renderPartial(el, a, raw_b) {
+  const x = escapeHtml(a) + raw_b;
+  el.innerHTML = x;
+}
+"""
+        sf = _make_scanned_file("ui/partial.js", js_code, "javascript")
+        nodes, _ = _compile_four_passes([sf])
+        sinks = [n for n in nodes if n.label == "Assignment" and n.name == "el.innerHTML"]
+        assert len(sinks) == 1
+        assert sinks[0].is_sink is True
+
+    def test_cross_domain_inline_sanitizer_arg_never_clears_outer_sink(self):
+        py_code = b"""
+import html, os
+
+def run(request):
+    raw = request.args["q"]
+    os.system(html.escape(raw))
+"""
+        sf = _make_scanned_file("api/cross_domain.py", py_code, "python")
+        nodes, _ = _compile_four_passes([sf])
+        os_calls = [n for n in nodes if n.label == "Call" and n.name == "os.system"]
+        assert len(os_calls) == 1
+        assert os_calls[0].is_sink is True
+        assert os_calls[0].sink_domain == "SHELL"
+        assert os_calls[0].is_sanitizer is False
+
+        esc_calls = [n for n in nodes if n.label == "Call" and n.name == "html.escape"]
+        assert len(esc_calls) == 1
+        assert esc_calls[0].is_sanitizer is True
+        assert esc_calls[0].sanitizer_domains == ["HTML"]
+
+    def test_logical_and_with_unsanitized_rhs_remains_sink(self):
+        js_code = b"""
+function renderCond(elBad, elGood, isAdmin, user) {
+  const bad = isAdmin && user.bio;
+  elBad.innerHTML = bad;
+  const good = isAdmin && esc(user.name);
+  elGood.innerHTML = good;
+}
+"""
+        sf = _make_scanned_file("ui/logical_and.js", js_code, "javascript")
+        nodes, _ = _compile_four_passes([sf])
+        sinks = {
+            n.name: n for n in nodes
+            if n.label == "Assignment" and n.name.endswith(".innerHTML")
+        }
+        assert sinks["elBad.innerHTML"].is_sink is True
+        assert sinks["elGood.innerHTML"].is_sink is False
+
+    def test_flow_sensitive_helper_early_return_unsanitized_not_registered(self):
+        js_code = b"""
+function h(u, c) {
+  let out = u.bio;
+  if (c) return out;
+  out = esc(u.name);
+  return out;
+}
+function render(el, u, c) {
+  el.innerHTML = h(u, c);
+}
+"""
+        sf = _make_scanned_file("ui/helper_flow.js", js_code, "javascript")
+        nodes, _ = _compile_four_passes([sf])
+        sinks = [n for n in nodes if n.label == "Assignment" and n.name == "el.innerHTML"]
+        assert len(sinks) == 1
+        assert sinks[0].is_sink is True
+
+    def test_multiline_rust_command_new_cmdi_detected_and_safe_ignored(self):
+        from engine.polyglot_rules import run_polyglot_rules
+
+        vuln = """
+use std::process::Command;
+fn run_bad(user_cmd: &str) {
+    Command::new("sh")
+        .arg("-c")
+        .arg(user_cmd)
+        .status()
+        .unwrap();
+}
+"""
+        safe = """
+use std::process::Command;
+fn run_good() {
+    Command::new("echo")
+        .arg("hello")
+        .status()
+        .unwrap();
+}
+"""
+        sf_v = _make_scanned_file("src/cmd_bad.rs", vuln.encode("utf-8"), "rust")
+        nv, ev = _compile_four_passes([sf_v])
+        f_v = run_polyglot_rules([sf_v], nv, ev)
+        assert any(f.rule_id == "RULE-27-POLYGLOT-CMDI" for f in f_v)
+
+        sf_s = _make_scanned_file("src/cmd_good.rs", safe.encode("utf-8"), "rust")
+        ns, es = _compile_four_passes([sf_s])
+        f_s = run_polyglot_rules([sf_s], ns, es)
+        assert not any(f.rule_id == "RULE-27-POLYGLOT-CMDI" for f in f_s)
+
+    def test_multiline_csharp_binaryformatter_emits_single_finding(self):
+        from engine.polyglot_rules import run_polyglot_rules
+
+        cs_code = """
+class Deser {
+    object Load(Stream stream) {
+        BinaryFormatter bf = new BinaryFormatter();
+        return bf.Deserialize(stream);
+    }
+}
+"""
+        sf = _make_scanned_file("Deser.cs", cs_code.encode("utf-8"), "csharp")
+        nodes, edges = _compile_four_passes([sf])
+        hits = [
+            f for f in run_polyglot_rules([sf], nodes, edges)
+            if f.rule_id == "RULE-28-POLYGLOT-DESER"
+        ]
+        assert len(hits) == 1
+        assert hits[0].best_fix_location is not None
+        assert hits[0].best_fix_location.line == 5
+
+    def test_rust_lifetimes_do_not_break_comment_stripping(self):
+        from engine.polyglot_rules import run_polyglot_rules
+
+        safe_with_odd_lifetime = """
+const LABEL: &'static str = "safe";
+fn clean() {
+    // unsafe { *raw_ptr }
+    /* unsafe { std::mem::transmute::<u32, f32>(1) } */
+    println!("{}", LABEL);
+}
+"""
+        vuln_after_odd_lifetime = """
+const LABEL: &'static str = "demo";
+pub fn bad(p: *const u8) -> u8 {
+    unsafe { *p }
+}
+"""
+        sf_s = _make_scanned_file("src/lt_ok.rs", safe_with_odd_lifetime.encode("utf-8"), "rust")
+        ns, es = _compile_four_passes([sf_s])
+        assert not any(
+            f.rule_id == "RULE-25-RUST-UNSAFE-FFI"
+            for f in run_polyglot_rules([sf_s], ns, es)
+        )
+
+        sf_v = _make_scanned_file("src/lt_bad.rs", vuln_after_odd_lifetime.encode("utf-8"), "rust")
+        nv, ev = _compile_four_passes([sf_v])
+        assert any(
+            f.rule_id == "RULE-25-RUST-UNSAFE-FFI"
+            for f in run_polyglot_rules([sf_v], nv, ev)
+        )
+
+    def test_minor_fixes_zero_width_space_and_c_early_return_free(self):
+        from engine.polyglot_rules import POLYGLOT_RULE_CATALOG, run_polyglot_rules
+
+        for r in POLYGLOT_RULE_CATALOG:
+            assert "\u200b" not in r["description"]
+            assert "\u200b" not in r["remediation"]
+
+        c_safe_branch = """
+#include <stdlib.h>
+#include <stdio.h>
+int process(int err) {
+    char *ptr = (char *)malloc(64);
+    if (err) {
+        free(ptr);
+        return -1;
+    }
+    printf("%s", ptr);
+    free(ptr);
+    return 0;
+}
+"""
+        sf = _make_scanned_file("src/branch_ok.c", c_safe_branch.encode("utf-8"), "c")
+        nodes, edges = _compile_four_passes([sf])
+        assert not any(
+            f.rule_id == "RULE-24-CPP-UAF-DOUBLE-FREE"
+            for f in run_polyglot_rules([sf], nodes, edges)
+        )
+
+
