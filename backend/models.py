@@ -77,6 +77,7 @@ _CredentialValidationStatus = Literal[
 SecretValidationStatus = _CredentialValidationStatus
 _FindingLocationOrigin = Literal["WORKING_TREE", "GIT_HISTORY"]
 _DEFAULT_ORIGIN: _FindingLocationOrigin = "WORKING_TREE"
+EvStatusType = Literal["RUNTIME_EXPLOIT_CONFIRMED", "FIXED_VERIFIED", "NOT_REPRODUCED", "DRY_RUN_PLANNED"]
 
 
 class Finding(BaseModel):
@@ -164,6 +165,9 @@ class Finding(BaseModel):
     secret_source: Optional[_FindingLocationOrigin] = _DEFAULT_ORIGIN
     secret_commit_sha: Optional[str] = None
     secret_commit_author: Optional[str] = None
+    # Pillar 3 Live Exploit Verification (EV) & Post-Fix Replay Status
+    ev_status: Optional[EvStatusType] = None
+    ev_evidence_summary: Optional[str] = None
 
 
 
@@ -1823,6 +1827,161 @@ class PatchPanelValidateResponse(BaseModel):
 
 
 SastPlusSuiteResponse.model_rebuild()
+
+
+# ---------------------------------------------------------------------------
+# 16. Pillar 3 Live Exploit Verification (EV) & Post-Fix ev-replay Models
+# ---------------------------------------------------------------------------
+EvProbeFamily = Literal[
+    "EV-IDOR-BOLA",
+    "EV-SQLI-ERROR-DIFF",
+    "EV-XSS-REFLECTED-CANARY",
+    "EV-CORS-CREDENTIAL-REFLECT",
+    "EV-OPEN-REDIRECT",
+    "EV-PATH-TRAVERSAL-HEADERS",
+]
+
+
+class EvTargetPolicy(BaseModel):
+    target_url: str
+    allow_private_staging_host: bool = False
+    authorized_staging_hosts: List[str] = Field(default_factory=list)
+    safe_mode: bool = True
+    timeout_seconds: float = Field(default=6.0, ge=0.5, le=30.0)
+    max_probes: int = Field(default=40, ge=1, le=200)
+
+
+class EvPlannedProbe(BaseModel):
+    probe_id: str
+    probe_family: EvProbeFamily
+    method: str
+    path: str
+    target_url: str
+    source: Literal["CPG_AUTO", "OPENAPI", "POSTMAN", "MANUAL"]
+    finding_id: Optional[str] = None
+    cwe_id: Optional[str] = None
+    description: str
+    safe_mode_allowed: bool = True
+
+
+class EvRunRequest(BaseModel):
+    project_path: str
+    target_url: str
+    armed: bool = False
+    safe_mode: bool = True
+    allow_private_staging_host: bool = False
+    authorized_staging_hosts: List[str] = Field(default_factory=list)
+    timeout_seconds: float = Field(default=6.0, ge=0.5, le=30.0)
+    max_probes: int = Field(default=40, ge=1, le=200)
+    collection_json: Optional[str] = None
+    user_a_auth_header: Optional[str] = None
+    user_b_auth_header: Optional[str] = None
+    user_b_resource_id: Optional[str] = None
+    extra_headers: Dict[str, str] = Field(default_factory=dict)
+    probe_families: Optional[List[str]] = None
+
+
+class EvPlanResponse(BaseModel):
+    project_path: str
+    target_url: str
+    target_policy_valid: bool
+    target_policy_message: str
+    discovered_routes_count: int
+    sources_used: List[str] = Field(default_factory=list)
+    planned_probes: List[EvPlannedProbe] = Field(default_factory=list)
+    mode: Literal["DRY_RUN_PLAN"] = "DRY_RUN_PLAN"
+
+
+class EvProbeResultItem(BaseModel):
+    probe_id: str
+    probe_family: str
+    method: str
+    url: str
+    status: EvStatusType
+    http_status: Optional[int] = None
+    latency_ms: float = 0.0
+    finding_id: Optional[str] = None
+    cwe_id: Optional[str] = None
+    evidence_summary: str
+    response_excerpt: str = ""
+    masked_request_headers: Dict[str, str] = Field(default_factory=dict)
+    replay_id: Optional[str] = None
+    curl_poc: Optional[str] = None
+    pytest_poc: Optional[str] = None
+
+
+class EvReplayBundleItem(BaseModel):
+    replay_id: str
+    project_path: str
+    created_at: str
+    last_replayed_at: Optional[str] = None
+    probe_family: str
+    method: str
+    path: str
+    target_url: str
+    query_params: Dict[str, str] = Field(default_factory=dict)
+    masked_headers: Dict[str, str] = Field(default_factory=dict)
+    body: Optional[str] = None
+    finding_id: Optional[str] = None
+    cwe_id: Optional[str] = None
+    status: EvStatusType = "RUNTIME_EXPLOIT_CONFIRMED"
+    evidence_summary: str
+    response_excerpt: str = ""
+    curl_poc: str = ""
+    pytest_poc: str = ""
+    expected_indicator: Optional[str] = None
+
+
+class EvRunResponse(BaseModel):
+    project_path: str
+    target_url: str
+    armed: bool
+    safe_mode: bool
+    mode: Literal["LIVE_EXECUTION", "DRY_RUN_PLAN"]
+    total_probes: int
+    confirmed_count: int
+    not_reproduced_count: int
+    planned_count: int = 0
+    promoted_finding_ids: List[str] = Field(default_factory=list)
+    results: List[EvProbeResultItem] = Field(default_factory=list)
+    persisted_replays: List[EvReplayBundleItem] = Field(default_factory=list)
+
+
+class EvReplayRequest(BaseModel):
+    project_path: str
+    target_url: Optional[str] = None
+    replay_ids: Optional[List[str]] = None
+    allow_private_staging_host: bool = False
+    authorized_staging_hosts: List[str] = Field(default_factory=list)
+    timeout_seconds: float = Field(default=6.0, ge=0.5, le=30.0)
+    user_a_auth_header: Optional[str] = None
+    user_b_auth_header: Optional[str] = None
+
+
+class EvReplayResultItem(BaseModel):
+    replay_id: str
+    probe_family: str
+    finding_id: Optional[str] = None
+    previous_status: EvStatusType
+    new_status: Literal["FIXED_VERIFIED", "STILL_VULNERABLE", "ERROR"]
+    http_status: Optional[int] = None
+    evidence_summary: str
+    response_excerpt: str = ""
+
+
+class EvReplayResponse(BaseModel):
+    project_path: str
+    replayed_count: int
+    fixed_verified_count: int
+    still_vulnerable_count: int
+    error_count: int = 0
+    results: List[EvReplayResultItem] = Field(default_factory=list)
+
+
+class EvReplayListResponse(BaseModel):
+    project_path: str
+    total: int
+    replays: List[EvReplayBundleItem] = Field(default_factory=list)
 
 
 
