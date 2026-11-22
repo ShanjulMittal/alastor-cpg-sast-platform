@@ -94,6 +94,7 @@ function getNodeDimensions(node: Node): { w: number; h: number } {
   if (lbl === "AppElement") return { w: 192, h: 36 };
   if (lbl === "AppDirectory") return { w: node.data?.isSpiderMode ? 208 : 256, h: 112 };
   if (lbl === "AppFile") return { w: node.data?.isSpiderMode ? 224 : 256, h: 132 };
+  if (lbl === "CommunityCluster") return { w: 276, h: 124 };
   return { w: NODE_WIDTH, h: NODE_HEIGHT };
 }
 
@@ -589,7 +590,13 @@ function edgeMatchesLayerFilter(
   if (et.startsWith("CFG_")) {
     return layers.cfg;
   }
-  if (et === "CALLS" || et === "IMPORTS" || et === "CONFIGURES") {
+  if (
+    et === "CALLS" ||
+    et === "IMPORTS" ||
+    et === "CONFIGURES" ||
+    et === "POLYGLOT_BRIDGE" ||
+    et === "COMMUNITY_LINK"
+  ) {
     return layers.calls;
   }
   return layers.ast;
@@ -600,6 +607,7 @@ export function ReactFlowGraphPane() {
   const selectedFinding = useAuditStore((s) => s.selectedFinding);
   const findings = useAuditStore((s) => s.findings);
   const appTree = useAuditStore((s) => s.appTree);
+  const communitiesCount = useAuditStore((s) => s.communitiesCount);
   const activeFilepath = useAuditStore((s) => s.activeFilepath);
   const selectedGraphNodeId = useAuditStore((s) => s.selectedGraphNodeId);
   const graphViewMode = useAuditStore((s) => s.graphViewMode);
@@ -1510,6 +1518,7 @@ export function ReactFlowGraphPane() {
             Boolean(activeFilepath) &&
             graphViewMode !== "APP_TREE" &&
             graphViewMode !== "ENTRYPOINT_GRAPH" &&
+            graphViewMode !== "COMMUNITY_MAP" &&
             !(graphViewMode === "CALL_GRAPH" && callGraphScope === "WHOLE_APP");
           const data = await fetchGraphData({
             view_mode: graphViewMode,
@@ -1564,37 +1573,75 @@ export function ReactFlowGraphPane() {
       const flowEdges: Edge[] = clampedRawEdges.map((e, idx) => {
         const stepIdx =
           graphViewMode === "FINDING_PATH" ? e.step_index ?? idx + 1 : undefined;
+        const isPolyglotBridge =
+          e.type === "POLYGLOT_BRIDGE" || Boolean(e.is_polyglot_bridge);
+        const isCommunityLink = e.type === "COMMUNITY_LINK";
+        const resolvedFlowText =
+          e.label ||
+          e.flow_label ||
+          (isPolyglotBridge
+            ? e.edge_count
+              ? `${e.edge_count}× BRIDGE (Polyglot)`
+              : "POLYGLOT BRIDGE"
+            : isCommunityLink
+            ? e.edge_count
+              ? `${e.edge_count}× LINK`
+              : "COMMUNITY LINK"
+            : undefined);
         const meta = resolveDirectionalEdgeMeta(e.type, {
           isSevered: applySeveredStyle,
           varName: e.var_name,
-          flowLabel: e.flow_label,
+          flowLabel: resolvedFlowText,
           stepIndex: stepIdx,
           isSinkTarget: sinkNodeIdSet.has(String(e.target)),
         });
+
+        const strokeColor = isPolyglotBridge
+          ? "#4338ca"
+          : isCommunityLink
+          ? "#0369a1"
+          : meta.strokeColor;
+        const badgeTone = isPolyglotBridge
+          ? "AMBER"
+          : isCommunityLink
+          ? "SKY"
+          : meta.badgeTone;
+        const isAnimatedPulse = isPolyglotBridge
+          ? true
+          : isCommunityLink
+          ? false
+          : meta.isAnimatedPulse;
 
         return {
           id: String(e.id || `cpg-edge-${idx}`),
           source: String(e.source),
           target: String(e.target),
           type: "directionalFlow",
+          style: isPolyglotBridge ? { strokeWidth: 2.8 } : undefined,
           markerEnd: {
             type: MarkerType.ArrowClosed,
-            color: meta.strokeColor,
+            color: strokeColor,
             width: 18,
             height: 18,
           },
           data: {
             edgeType: e.type,
-            flowLabel: meta.flowLabel,
+            flowLabel: resolvedFlowText || meta.flowLabel,
             stepIndex: stepIdx,
             varName: e.var_name ?? null,
-            pathShape: e.type === "CFG_LOOP_BACK" ? "bezier" : "smoothstep",
+            pathShape:
+              e.type === "CFG_LOOP_BACK" || isPolyglotBridge
+                ? "bezier"
+                : "smoothstep",
             isSevered: applySeveredStyle,
             isDenseGraph: isDenseCpg,
-            isAnimatedPulse: meta.isAnimatedPulse,
-            alwaysShowFullPill: graphViewMode === "FINDING_PATH",
-            strokeColor: meta.strokeColor,
-            badgeTone: meta.badgeTone,
+            isAnimatedPulse,
+            alwaysShowFullPill:
+              graphViewMode === "FINDING_PATH" ||
+              graphViewMode === "COMMUNITY_MAP" ||
+              isPolyglotBridge,
+            strokeColor,
+            badgeTone,
           } satisfies DirectionalFlowEdgeData,
         };
       });
@@ -1625,6 +1672,7 @@ export function ReactFlowGraphPane() {
     graphViewMode,
     activeFilepath,
     appTree,
+    communitiesCount,
     allCrossFileEdges,
     showCrossFileFlows,
     findings,
@@ -1645,8 +1693,11 @@ export function ReactFlowGraphPane() {
     setEdges,
   ]);
 
-  // Filter edges by active Edge Layers (except FINDING_PATH keeps full path intact unless dfg toggled)
+  // Filter edges by active Edge Layers (except FINDING_PATH / COMMUNITY_MAP keeps bridges intact)
   const layerFilteredEdges = useMemo(() => {
+    if (graphViewMode === "COMMUNITY_MAP") {
+      return edges;
+    }
     if (graphViewMode === "APP_TREE") {
       return edges.filter((e) => {
         const et = String(e.data?.edgeType || "").toUpperCase();
@@ -1935,6 +1986,16 @@ export function ReactFlowGraphPane() {
       return `Attack Flow (${fNodes.length} steps): Input/context enters at ${srcLoc}, passes through BFL fix chokepoint ${bflLoc}, and reaches ${sinkName}${cweTag}.`;
     }
 
+    if (graphViewMode === "COMMUNITY_MAP") {
+      const bridgeCount = displayEdges.filter(
+        (e) => e.data?.edgeType === "POLYGLOT_BRIDGE"
+      ).length;
+      if (nodes.length === 0) {
+        return "Leiden Community Map: Run a scan to generate architectural code communities & cross-language polyglot bridges.";
+      }
+      return `Leiden Community Map: ${nodes.length} architectural communities linked by ${displayEdges.length} cross-community edges (${bridgeCount} polyglot ${bridgeCount === 1 ? "bridge" : "bridges"}). Click any community card to open its representative file in Monaco.`;
+    }
+
     if (graphViewMode === "APP_TREE") {
       const totalFiles = appTree?.total_files ?? nodes.length;
       const totalDirs = appTree?.total_directories ?? 1;
@@ -1983,7 +2044,7 @@ export function ReactFlowGraphPane() {
     lastAppliedPatch,
     appTree,
     nodes,
-    displayEdges.length,
+    displayEdges,
     allCrossFileEdges.length,
     callGraphScope,
     activeFilepath,
@@ -2164,6 +2225,11 @@ export function ReactFlowGraphPane() {
                   mode: "APP_TREE",
                   label: "360° App Map",
                   tip: "Interactive 360° spider & mind-map architecture with cross-file flows",
+                },
+                {
+                  mode: "COMMUNITY_MAP",
+                  label: "Community Map",
+                  tip: "Leiden architectural code communities & cross-language polyglot bridges",
                 },
                 {
                   mode: "CALL_GRAPH",
@@ -2797,6 +2863,16 @@ export function ReactFlowGraphPane() {
                   eliminated all source-to-sink attack paths.
                 </p>
               </>
+            ) : graphViewMode === "COMMUNITY_MAP" ? (
+              <div className="rounded-xl border border-indigo-200 bg-white/95 px-6 py-5 shadow-sm max-w-md text-center">
+                <Layers className="w-9 h-9 mx-auto mb-2.5 text-indigo-700" />
+                <p className="text-sm font-extrabold text-slate-900">
+                  No Leiden communities generated yet
+                </p>
+                <p className="text-xs text-slate-700 mt-1 leading-relaxed">
+                  Run a scan to generate Leiden architectural communities &amp; polyglot bridges
+                </p>
+              </div>
             ) : (
               <>
                 <Layers className="w-10 h-10 mb-3 text-slate-400" />
@@ -3373,6 +3449,13 @@ export function ReactFlowGraphPane() {
           {showMiniMap && (
             <MiniMap
               nodeColor={(n) => {
+                if (n.data?.label === "CommunityCluster") {
+                  const tier = String(n.data?.risk_tier || "LOW").toUpperCase();
+                  if (tier === "CRITICAL") return "#be123c";
+                  if (tier === "HIGH") return "#b45309";
+                  if (tier === "MEDIUM") return "#0369a1";
+                  return "#047857";
+                }
                 if (n.data?.label === "SpiderHub") return "#0e7490";
                 if (n.data?.label === "AppDirectory") return "#0284c7";
                 if (n.data?.label === "AppElement") return "#d97706";

@@ -97,6 +97,12 @@ export function StudioCommandHeader() {
   const fetchPlatformSettings = useAuditStore((s) => s.fetchPlatformSettings);
   const userAccountsState = useAuditStore((s) => s.userAccountsState);
   const fetchUserAccounts = useAuditStore((s) => s.fetchUserAccounts);
+  const graphEngineMode = useAuditStore((s) => s.graphEngineMode);
+  const languageCapabilities = useAuditStore((s) => s.languageCapabilities);
+  const fetchBackendHealth = useAuditStore((s) => s.fetchBackendHealth);
+  const fetchLanguageCapabilities = useAuditStore(
+    (s) => s.fetchLanguageCapabilities
+  );
   const setSettingsModalOpen = useAuditStore((s) => s.setSettingsModalOpen);
   const setShowPortalGate = useAuditStore((s) => s.setShowPortalGate);
   const setQuickCommandOpen = useAuditStore((s) => s.setQuickCommandOpen);
@@ -142,6 +148,15 @@ export function StudioCommandHeader() {
   const [snippetContent, setSnippetContent] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const fileUploadInputRef = useRef<HTMLInputElement | null>(null);
+
+  const hasBootstrappedEngineRef = useRef(false);
+
+  useEffect(() => {
+    if (hasBootstrappedEngineRef.current) return;
+    hasBootstrappedEngineRef.current = true;
+    void fetchBackendHealth();
+    void fetchLanguageCapabilities();
+  }, [fetchBackendHealth, fetchLanguageCapabilities]);
 
   useEffect(() => {
     if (!platformSettings) fetchPlatformSettings();
@@ -496,6 +511,13 @@ export function StudioCommandHeader() {
       f.name.toLowerCase().includes(fsFilter.toLowerCase())
   );
 
+  const parserReadinessSummary = useMemo(() => {
+    if (!languageCapabilities || languageCapabilities.total_languages <= 0) {
+      return "Polyglot Tree-sitter CPG engine";
+    }
+    return `${languageCapabilities.ready_parsers}/${languageCapabilities.total_languages} Tree-sitter CPG parsers ready`;
+  }, [languageCapabilities]);
+
   const workflowStages: Array<{
     id: PrimaryWorkflowStage;
     label: string;
@@ -642,8 +664,36 @@ export function StudioCommandHeader() {
           })}
         </nav>
 
-        {/* RIGHT CLUSTER: Scan Progress / Quick Scan + Δ Track + ⌘K + Settings + Theme + ✨ Frontier AI Copilot */}
+        {/* RIGHT CLUSTER: Graph Engine Mode Pill + Scan Progress / Quick Scan + Δ Track + ⌘K + Settings + Theme + ✨ Frontier AI Copilot */}
         <div className="flex items-center gap-1.5 shrink-0">
+          {/* Live Graph Engine Mode Daylight Pill */}
+          {graphEngineMode === "NEO4J_APOC" && (
+            <div
+              role="status"
+              title={`Graph Engine: Neo4j + APOC • ${parserReadinessSummary}`}
+              className="hidden lg:inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full bg-emerald-50 text-emerald-900 border border-emerald-300 text-[10.5px] font-mono font-bold whitespace-nowrap shrink-0"
+            >
+              <span
+                aria-hidden="true"
+                className="w-2 h-2 rounded-full bg-emerald-600 shrink-0"
+              />
+              <span>Neo4j + APOC</span>
+            </div>
+          )}
+          {graphEngineMode === "EMBEDDED_SQLITE" && (
+            <div
+              role="status"
+              title={`Automatic zero-Docker SQLite WAL CPG mode (local embedded persistence, no Docker required) • ${parserReadinessSummary}`}
+              className="hidden lg:inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full bg-sky-50 text-sky-950 border border-sky-300 text-[10.5px] font-mono font-bold whitespace-nowrap shrink-0"
+            >
+              <span
+                aria-hidden="true"
+                className="w-2 h-2 rounded-full bg-sky-600 shrink-0"
+              />
+              <span>Embedded SQLite CPG • Zero-Docker</span>
+            </div>
+          )}
+
           {/* Active 7-Pass Scan Progress Pill OR Compact Scan Trigger */}
           {showProgress ? (
             <div

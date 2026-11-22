@@ -45,7 +45,45 @@ const LABEL_COLORS: Record<string, string> = {
   AppDirectory: "bg-cyan-50 text-cyan-900 border-cyan-300",
   AppFile: "bg-emerald-50 text-emerald-900 border-emerald-300",
   AppElement: "bg-amber-50 text-amber-900 border-amber-300",
+  CommunityCluster: "bg-violet-50 text-violet-950 border-violet-300",
 };
+
+function getCommunityRiskStyle(riskTier?: string) {
+  switch ((riskTier || "LOW").toUpperCase()) {
+    case "CRITICAL":
+      return {
+        card: "bg-rose-50 border-rose-300 text-rose-950 hover:border-rose-500",
+        selectedRing: "border-rose-700 ring-2 ring-rose-500/35 shadow-md",
+        tierBadge: "bg-rose-700 text-white border-rose-800",
+        statPill: "bg-white/90 text-rose-950 border-rose-200",
+        handleDot: "!bg-rose-600",
+      };
+    case "HIGH":
+      return {
+        card: "bg-amber-50 border-amber-300 text-amber-950 hover:border-amber-500",
+        selectedRing: "border-amber-700 ring-2 ring-amber-500/35 shadow-md",
+        tierBadge: "bg-amber-700 text-white border-amber-800",
+        statPill: "bg-white/90 text-amber-950 border-amber-200",
+        handleDot: "!bg-amber-600",
+      };
+    case "MEDIUM":
+      return {
+        card: "bg-sky-50 border-sky-300 text-sky-950 hover:border-sky-500",
+        selectedRing: "border-sky-700 ring-2 ring-sky-500/35 shadow-md",
+        tierBadge: "bg-sky-700 text-white border-sky-800",
+        statPill: "bg-white/90 text-sky-950 border-sky-200",
+        handleDot: "!bg-sky-600",
+      };
+    default:
+      return {
+        card: "bg-emerald-50 border-emerald-300 text-emerald-950 hover:border-emerald-500",
+        selectedRing: "border-emerald-700 ring-2 ring-emerald-500/35 shadow-md",
+        tierBadge: "bg-emerald-700 text-white border-emerald-800",
+        statPill: "bg-white/90 text-emerald-950 border-emerald-200",
+        handleDot: "!bg-emerald-600",
+      };
+  }
+}
 
 function getCategoryStyle(category?: string) {
   switch (category) {
@@ -465,6 +503,112 @@ export const CustomGraphNode = memo(({ data, id }: NodeProps<any>) => {
               <Crosshair className="w-2.5 h-2.5" />
               <span>{data.isExpandedElements ? "Hide Refs" : "Show Refs"}</span>
             </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // 4b. LEIDEN ARCHITECTURAL COMMUNITY CLUSTER NODE
+  if (nodeLabel === "CommunityCluster") {
+    const riskTier = String(data.risk_tier || "LOW").toUpperCase();
+    const riskStyle = getCommunityRiskStyle(riskTier);
+    const repFilepath: string =
+      data.filepath ||
+      (Array.isArray(data.filepaths) && data.filepaths.length > 0
+        ? data.filepaths[0]
+        : "");
+    const primaryLang = String(data.language || "polyglot").toUpperCase();
+    const fileCount = Number(data.file_count ?? 0);
+    const findingCount = Number(data.finding_count ?? 0);
+    const sinkCount = Number(data.sink_count ?? 0);
+    const langsList: string[] = Array.isArray(data.languages)
+      ? data.languages
+      : [];
+
+    return (
+      <div
+        onClick={() => {
+          if (repFilepath) {
+            selectGraphNode({
+              ...data,
+              id: data.id || id,
+              filepath: repFilepath,
+              start_line: 1,
+              end_line: 1,
+            });
+          } else {
+            selectGraphNode(data);
+          }
+          data.onSelectInspect?.(data);
+          data.onNodeCardClick?.(data);
+        }}
+        title={
+          repFilepath
+            ? `${data.name} (${langsList.join(", ") || primaryLang}) — Click to open ${repFilepath}:L1 in Monaco`
+            : `${data.name} (${langsList.join(", ") || primaryLang})`
+        }
+        className={`relative w-[276px] min-h-[124px] rounded-xl border-[1.5px] p-2.5 shadow-[0_4px_14px_rgba(15,23,42,0.08)] transition-all duration-200 cursor-pointer text-left flex flex-col justify-between ${
+          isDimmed ? "opacity-25" : "opacity-100"
+        } ${riskStyle.card} ${isSelected ? riskStyle.selectedRing : ""} ${blastOverrideCls}`}
+      >
+        <PerimeterHandles dotClass={riskStyle.handleDot} />
+
+        {/* Header: Risk Tier Badge + Primary Language Badge + Optional Blast Chip */}
+        <div className="flex items-center justify-between gap-1.5 mb-1">
+          <div className="flex items-center gap-1 min-w-0">
+            <span
+              className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-extrabold tracking-wider border shrink-0 ${riskStyle.tierBadge}`}
+            >
+              {riskTier}
+            </span>
+            <span className="px-1.5 py-0.5 rounded bg-white text-slate-900 border border-slate-300 text-[9px] font-mono font-bold truncate">
+              {primaryLang}
+            </span>
+            {langsList.length > 1 && (
+              <span className="px-1 py-0.5 rounded bg-indigo-50 text-indigo-950 border border-indigo-200 text-[8.5px] font-mono font-extrabold shrink-0">
+                +{langsList.length - 1}
+              </span>
+            )}
+          </div>
+          <BlastRoleChip blastRole={blastRole} />
+        </div>
+
+        {/* Community Title */}
+        <div className="text-xs font-mono font-extrabold truncate leading-snug mb-1.5">
+          {data.name || "Code Community"}
+        </div>
+
+        {/* Metrics Strip: Files • Findings • Sinks */}
+        <div className="grid grid-cols-3 gap-1 text-[10px] font-mono mb-1.5">
+          <div
+            className={`px-1.5 py-0.5 rounded border text-center font-bold truncate ${riskStyle.statPill}`}
+          >
+            {fileCount} {fileCount === 1 ? "file" : "files"}
+          </div>
+          <div
+            className={`px-1.5 py-0.5 rounded border text-center font-bold truncate ${
+              findingCount > 0
+                ? "bg-rose-100 text-rose-950 border-rose-300"
+                : riskStyle.statPill
+            }`}
+          >
+            {findingCount} {findingCount === 1 ? "finding" : "findings"}
+          </div>
+          <div
+            className={`px-1.5 py-0.5 rounded border text-center font-bold truncate ${riskStyle.statPill}`}
+          >
+            {sinkCount} {sinkCount === 1 ? "sink" : "sinks"}
+          </div>
+        </div>
+
+        {/* Footer: Representative Filepath */}
+        <div className="pt-1 border-t border-slate-900/10 text-[9.5px] font-mono flex items-center justify-between gap-1.5">
+          <span className="truncate opacity-85" title={repFilepath}>
+            {repFilepath || "No representative file"}
+          </span>
+          {repFilepath && (
+            <span className="font-extrabold shrink-0">L1 ↗</span>
           )}
         </div>
       </div>

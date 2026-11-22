@@ -8,9 +8,12 @@ import {
   AiPublicConfig,
   AiValidateFindingsResponse,
   ApiOperationsReportResponse,
+  BackendHealthResponse,
   BatchRemediateResponse,
+  CommunityMapResponse,
   GraphDataResponse,
   GraphViewMode,
+  LanguageCapabilitiesResponse,
   PastaAssessmentResponse,
   PastaGateOverridePayload,
   PastaProfileUpdatePayload,
@@ -129,6 +132,18 @@ export async function fetchGraphData(params?: {
     qs.set("filepath", params.filepath);
   }
   return apiFetchJson<GraphDataResponse>(`/api/graph?${qs.toString()}`);
+}
+
+export async function fetchBackendHealth(): Promise<BackendHealthResponse> {
+  return apiFetchJson<BackendHealthResponse>("/api/health");
+}
+
+export async function fetchCommunityMap(): Promise<CommunityMapResponse> {
+  return apiFetchJson<CommunityMapResponse>("/api/graph/communities");
+}
+
+export async function fetchLanguageCapabilities(): Promise<LanguageCapabilitiesResponse> {
+  return apiFetchJson<LanguageCapabilitiesResponse>("/api/languages/capabilities");
 }
 
 export async function fetchAiConfig(): Promise<AiPublicConfig> {

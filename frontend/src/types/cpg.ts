@@ -3,6 +3,7 @@ export type NodeLabel =
   | "AppFile"
   | "AppDirectory"
   | "AppElement"
+  | "CommunityCluster"
   | "Directory"
   | "Module"
   | "Class"
@@ -31,7 +32,73 @@ export type EdgeType =
   | "IMPORTS"
   | "CONTAINS"
   | "DECLARES"
-  | "CONFIGURES";
+  | "CONFIGURES"
+  | "POLYGLOT_BRIDGE"
+  | "COMMUNITY_LINK";
+
+export type GraphEngineMode = "NEO4J_APOC" | "EMBEDDED_SQLITE";
+
+export interface ScanScopeTelemetry {
+  total_discovered: number;
+  symlinks_dropped: number;
+  gitignore_excluded: number;
+  build_dirs_excluded: number;
+  generated_excluded: number;
+  tests_excluded?: number;
+  languages_breakdown: Record<string, number>;
+}
+
+export interface GraphCommunityItem {
+  id: string;
+  label: string;
+  primary_language: string;
+  languages: string[];
+  filepaths: string[];
+  file_count: number;
+  entrypoint_count: number;
+  sink_count: number;
+  finding_count: number;
+  risk_tier: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+}
+
+export interface CommunityBridgeEdge {
+  id: string;
+  source_community_id: string;
+  target_community_id: string;
+  edge_count: number;
+  edge_types: string[];
+  is_polyglot_bridge: boolean;
+  sample_files: string[];
+}
+
+export interface CommunityMapResponse {
+  graph_engine_mode: GraphEngineMode;
+  total_communities: number;
+  polyglot_bridges_count: number;
+  communities: GraphCommunityItem[];
+  cross_community_edges: CommunityBridgeEdge[];
+}
+
+export interface LanguageCapabilityItem {
+  language: string;
+  display_name: string;
+  extensions: string[];
+  parser_available: boolean;
+  rule_pack_count: number;
+  supports_taint: boolean;
+}
+
+export interface LanguageCapabilitiesResponse {
+  total_languages: number;
+  ready_parsers: number;
+  languages: LanguageCapabilityItem[];
+}
+
+export interface BackendHealthResponse {
+  status: string;
+  neo4j: string;
+  graph_engine_mode?: GraphEngineMode;
+}
 
 export interface CPGNode {
   id: string;
@@ -53,6 +120,15 @@ export interface CPGNode {
   category?: string;
   purpose?: string;
   language?: string;
+  sanitizer_domains?: string[];
+  sink_domain?: string | null;
+  risk_tier?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  file_count?: number;
+  finding_count?: number;
+  entrypoint_count?: number;
+  sink_count?: number;
+  filepaths?: string[];
+  languages?: string[];
 }
 
 export interface CPGEdge {
@@ -73,11 +149,20 @@ export interface GraphEdgeItem {
   var_name?: string | null;
   flow_label?: string;
   step_index?: number;
+  is_polyglot_bridge?: boolean;
+  edge_count?: number;
+  label?: string;
 }
 
 export interface GraphDataResponse {
+  view_mode?: string;
   nodes: CPGNode[];
   edges: GraphEdgeItem[];
+  summary?: {
+    total_communities?: number;
+    polyglot_bridges_count?: number;
+    graph_engine_mode?: GraphEngineMode;
+  };
 }
 
 export interface BestFixLocation {
@@ -273,6 +358,10 @@ export interface ScanResponse {
   branch?: string | null;
   is_private_repo?: boolean | null;
   display_name?: string | null;
+  graph_engine_mode?: GraphEngineMode | null;
+  languages_detected?: Record<string, number>;
+  scope_telemetry?: ScanScopeTelemetry | null;
+  communities_count?: number;
 }
 
 export interface GitHubRepoVerifyResponse {
@@ -315,6 +404,10 @@ export interface MetricsResponse {
   total_app_files?: number;
   categories?: Record<string, number>;
   tech_stack?: string[];
+  graph_engine_mode?: GraphEngineMode | null;
+  languages_detected?: Record<string, number>;
+  scope_telemetry?: ScanScopeTelemetry | null;
+  communities_count?: number;
 }
 
 export type GraphViewMode =
@@ -324,7 +417,8 @@ export type GraphViewMode =
   | "ENTRYPOINT_GRAPH"
   | "DFG_ONLY"
   | "CFG_ONLY"
-  | "APP_TREE";
+  | "APP_TREE"
+  | "COMMUNITY_MAP";
 
 export type PrimaryWorkflowStage =
   | "SCAN_REPOS"

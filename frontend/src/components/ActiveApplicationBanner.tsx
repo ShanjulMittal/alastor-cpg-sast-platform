@@ -16,7 +16,49 @@ import {
   Code2,
   Network,
   Sparkles,
+  Layers,
+  ShieldAlert,
 } from "lucide-react";
+
+const LANGUAGE_DISPLAY_NAMES: Record<string, string> = {
+  python: "Python",
+  javascript: "JavaScript",
+  typescript: "TypeScript",
+  tsx: "TSX",
+  jsx: "JSX",
+  go: "Go",
+  rust: "Rust",
+  java: "Java",
+  kotlin: "Kotlin",
+  csharp: "C#",
+  c: "C",
+  cpp: "C++",
+  ruby: "Ruby",
+  php: "PHP",
+  swift: "Swift",
+  scala: "Scala",
+  solidity: "Solidity",
+  sql: "SQL",
+  bash: "Shell",
+  shell: "Shell",
+  dockerfile: "Docker",
+  hcl: "HCL",
+  terraform: "Terraform",
+  yaml: "YAML",
+  html_template: "Templates",
+  templates: "Templates",
+  jinja: "Templates",
+};
+
+function formatLanguageDisplayName(langKey: string): string {
+  const norm = langKey.trim().toLowerCase();
+  if (LANGUAGE_DISPLAY_NAMES[norm]) {
+    return LANGUAGE_DISPLAY_NAMES[norm];
+  }
+  return langKey
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
 
 export function ActiveApplicationBanner() {
   const projectPath = useAuditStore((s) => s.projectPath);
@@ -46,6 +88,14 @@ export function ActiveApplicationBanner() {
     (s) => s.setTrackChangesPanelOpen
   );
   const uiDensityMode = useAuditStore((s) => s.uiDensityMode);
+  const languagesDetected = useAuditStore((s) => s.languagesDetected);
+  const scopeTelemetry = useAuditStore((s) => s.scopeTelemetry);
+  const communitiesCount = useAuditStore((s) => s.communitiesCount);
+  const communityMap = useAuditStore((s) => s.communityMap);
+  const graphViewMode = useAuditStore((s) => s.graphViewMode);
+  const setGraphViewMode = useAuditStore((s) => s.setGraphViewMode);
+  const primaryStage = useAuditStore((s) => s.primaryStage);
+  const setPrimaryStage = useAuditStore((s) => s.setPrimaryStage);
 
   const [copiedPath, setCopiedPath] = useState(false);
 
@@ -112,6 +162,36 @@ export function ActiveApplicationBanner() {
   const handleProjectDropdownChange = async (projectId: string) => {
     if (!projectId) return;
     await activateProject(projectId, false);
+  };
+
+  const sortedLanguages = useMemo(() => {
+    const sourceMap =
+      languagesDetected && Object.keys(languagesDetected).length > 0
+        ? languagesDetected
+        : scopeTelemetry?.languages_breakdown || {};
+    return Object.entries(sourceMap)
+      .filter(([, count]) => typeof count === "number" && count > 0)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }, [languagesDetected, scopeTelemetry]);
+
+  const topLanguages = sortedLanguages.slice(0, 8);
+  const overflowLanguages = sortedLanguages.slice(8);
+  const effectiveCommunitiesCount =
+    communitiesCount || communityMap?.total_communities || 0;
+  const polyglotBridgesCount = communityMap?.polyglot_bridges_count || 0;
+  const showTelemetrySubStrip =
+    sortedLanguages.length > 0 ||
+    Boolean(scopeTelemetry) ||
+    effectiveCommunitiesCount > 0;
+
+  const handleOpenCommunityMap = () => {
+    if (primaryStage !== "TRIAGE_FIX") {
+      setPrimaryStage("TRIAGE_FIX");
+    }
+    if (ideLayoutMode === "CODE_FOCUS") {
+      setIdeLayoutMode("SPLIT_BOTH");
+    }
+    setGraphViewMode("COMMUNITY_MAP");
   };
 
   return (
@@ -337,6 +417,105 @@ export function ActiveApplicationBanner() {
           </button>
         </div>
       </div>
+
+      {/* Polyglot Coverage, Leiden Communities & Hostile-Walker Telemetry Sub-Strip */}
+      {showTelemetrySubStrip && (
+        <div
+          aria-label="Polyglot Coverage and Scan Scope Telemetry"
+          className="px-3 py-1 bg-[#f8fafc] border-t border-slate-200 flex items-center justify-between gap-2 flex-wrap text-[10.5px]"
+        >
+          {/* Left: Polyglot Language Badges + Clickable Leiden Communities Pill */}
+          <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+            {topLanguages.map(([lang, count]) => (
+              <span
+                key={lang}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-950 border border-indigo-200 font-mono text-[10px] font-semibold"
+                title={`${formatLanguageDisplayName(lang)}: ${count} scanned source ${count === 1 ? "file" : "files"}`}
+              >
+                <span>{formatLanguageDisplayName(lang)}</span>
+                <span className="font-extrabold text-indigo-900">{count}</span>
+              </span>
+            ))}
+
+            {overflowLanguages.length > 0 && (
+              <span
+                title={overflowLanguages
+                  .map(([l, c]) => `${formatLanguageDisplayName(l)}: ${c}`)
+                  .join(" • ")}
+                className="inline-flex items-center px-2 py-0.5 rounded-full bg-slate-100 text-slate-800 border border-slate-300 font-mono text-[10px] font-bold"
+              >
+                +{overflowLanguages.length} more
+              </span>
+            )}
+
+            {effectiveCommunitiesCount > 0 && (
+              <button
+                type="button"
+                onClick={handleOpenCommunityMap}
+                title="Switch graph canvas to Leiden Architectural Community Map & Polyglot Bridges"
+                className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border font-mono text-[10px] font-bold transition-colors ${
+                  graphViewMode === "COMMUNITY_MAP"
+                    ? "bg-violet-700 text-white border-violet-800 shadow-sm"
+                    : "bg-violet-50 hover:bg-violet-100 text-violet-950 border-violet-200"
+                }`}
+              >
+                <Layers className="w-3 h-3 shrink-0" />
+                <span>
+                  {effectiveCommunitiesCount}{" "}
+                  {effectiveCommunitiesCount === 1 ? "Community" : "Communities"}
+                </span>
+                {polyglotBridgesCount > 0 && (
+                  <span
+                    className={`px-1.5 py-0.1 rounded-full text-[9.5px] font-extrabold border ${
+                      graphViewMode === "COMMUNITY_MAP"
+                        ? "bg-white text-violet-950 border-violet-300"
+                        : "bg-amber-50 text-amber-950 border-amber-300"
+                    }`}
+                  >
+                    {polyglotBridgesCount} Polyglot{" "}
+                    {polyglotBridgesCount === 1 ? "Bridge" : "Bridges"}
+                  </span>
+                )}
+              </button>
+            )}
+          </div>
+
+          {/* Right: Hostile-Walker Confinement Telemetry */}
+          {scopeTelemetry && (
+            <div className="flex items-center gap-1.5 flex-wrap font-mono text-[10px]">
+              <span
+                className="px-1.5 py-0.5 rounded bg-white text-slate-700 border border-slate-200 font-semibold"
+                title="Files excluded by active .gitignore patterns"
+              >
+                .gitignore skipped: {scopeTelemetry.gitignore_excluded}
+              </span>
+              <span
+                className="px-1.5 py-0.5 rounded bg-white text-slate-700 border border-slate-200 font-semibold"
+                title="Build/vendor directories excluded by walker confinement"
+              >
+                build dirs: {scopeTelemetry.build_dirs_excluded}
+              </span>
+              <span
+                className="px-1.5 py-0.5 rounded bg-white text-slate-700 border border-slate-200 font-semibold"
+                title="Auto-generated or minified artifacts skipped"
+              >
+                generated: {scopeTelemetry.generated_excluded}
+              </span>
+              {scopeTelemetry.symlinks_dropped > 0 && (
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-950 border border-amber-300 font-extrabold"
+                  title="Symlinks resolving outside the scan root were blocked by hostile-walker confinement"
+                >
+                  <ShieldAlert className="w-3 h-3 text-amber-800 shrink-0" />
+                  <span>
+                    Escaping symlinks dropped: {scopeTelemetry.symlinks_dropped}
+                  </span>
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

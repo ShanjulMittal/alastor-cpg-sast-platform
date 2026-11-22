@@ -56,10 +56,18 @@ import {
   PastaAssessmentResponse,
   PastaProfileUpdatePayload,
   PastaGateOverridePayload,
+  GraphEngineMode,
+  ScanScopeTelemetry,
+  CommunityMapResponse,
+  LanguageCapabilitiesResponse,
+  BackendHealthResponse,
 } from "@/types/cpg";
 import {
   BACKEND_URL,
   fetchGraphData,
+  fetchBackendHealth as fetchBackendHealthApi,
+  fetchCommunityMap as fetchCommunityMapApi,
+  fetchLanguageCapabilities as fetchLanguageCapabilitiesApi,
   fetchAiConfig,
   updateAiConfig,
   testAiConnection,
@@ -270,6 +278,14 @@ interface AuditState {
   isSavingPasta: boolean;
   exportingSarFormat: "docx" | "pdf" | null;
 
+  // Pillar 1: Live Graph Engine Mode, Polyglot Coverage, Scope Telemetry & Leiden Communities
+  graphEngineMode: GraphEngineMode | null;
+  scopeTelemetry: ScanScopeTelemetry | null;
+  languagesDetected: Record<string, number>;
+  communitiesCount: number;
+  communityMap: CommunityMapResponse | null;
+  languageCapabilities: LanguageCapabilitiesResponse | null;
+
   // UI Simplicity, Layout & Command Palette State
   uiDensityMode: "SIMPLE_CLEAN" | "PRO_DETAILED";
   ideLayoutMode: "SPLIT_BOTH" | "CODE_FOCUS" | "GRAPH_FOCUS";
@@ -361,6 +377,9 @@ interface AuditState {
   selectCodeLine: (filepath: string, line: number) => Promise<void>;
   fetchFindings: () => Promise<void>;
   fetchMetrics: () => Promise<void>;
+  fetchBackendHealth: () => Promise<BackendHealthResponse | null>;
+  fetchCommunityMap: () => Promise<CommunityMapResponse | null>;
+  fetchLanguageCapabilities: () => Promise<LanguageCapabilitiesResponse | null>;
   fetchAppTree: () => Promise<void>;
   fetchAdvisories: (autoInit?: boolean) => Promise<void>;
   fetchProjects: () => Promise<void>;
@@ -612,6 +631,13 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   isLoadingPasta: false,
   isSavingPasta: false,
   exportingSarFormat: null,
+
+  graphEngineMode: null,
+  scopeTelemetry: null,
+  languagesDetected: {},
+  communitiesCount: 0,
+  communityMap: null,
+  languageCapabilities: null,
 
   uiDensityMode: "SIMPLE_CLEAN",
   ideLayoutMode: "SPLIT_BOTH",
@@ -2221,10 +2247,77 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       const res = await fetch(`${BACKEND_URL}/api/metrics`);
       if (res.ok) {
         const data: MetricsResponse = await res.json();
-        set({ metrics: data });
+        const detectedLangs =
+          data.languages_detected && Object.keys(data.languages_detected).length > 0
+            ? data.languages_detected
+            : data.scope_telemetry?.languages_breakdown &&
+              Object.keys(data.scope_telemetry.languages_breakdown).length > 0
+            ? data.scope_telemetry.languages_breakdown
+            : null;
+        set((state) => ({
+          metrics: data,
+          ...(data.graph_engine_mode
+            ? { graphEngineMode: data.graph_engine_mode }
+            : {}),
+          ...(detectedLangs ? { languagesDetected: detectedLangs } : {}),
+          ...(data.scope_telemetry !== undefined
+            ? { scopeTelemetry: data.scope_telemetry ?? state.scopeTelemetry }
+            : {}),
+          ...(typeof data.communities_count === "number"
+            ? { communitiesCount: data.communities_count }
+            : {}),
+        }));
+        if (
+          typeof data.communities_count === "number" &&
+          data.communities_count > 0 &&
+          !get().communityMap
+        ) {
+          void get().fetchCommunityMap();
+        }
       }
     } catch (err) {
       console.error("Failed to fetch metrics:", err);
+    }
+  },
+
+  fetchBackendHealth: async () => {
+    try {
+      const data = await fetchBackendHealthApi();
+      if (data.graph_engine_mode) {
+        set({ graphEngineMode: data.graph_engine_mode });
+      }
+      return data;
+    } catch (err) {
+      console.error("Failed to fetch backend health:", err);
+      return null;
+    }
+  },
+
+  fetchCommunityMap: async () => {
+    try {
+      const data = await fetchCommunityMapApi();
+      set((state) => ({
+        communityMap: data,
+        communitiesCount: data.total_communities ?? state.communitiesCount,
+        ...(data.graph_engine_mode
+          ? { graphEngineMode: data.graph_engine_mode }
+          : {}),
+      }));
+      return data;
+    } catch (err) {
+      console.error("Failed to fetch community map:", err);
+      return null;
+    }
+  },
+
+  fetchLanguageCapabilities: async () => {
+    try {
+      const data = await fetchLanguageCapabilitiesApi();
+      set({ languageCapabilities: data });
+      return data;
+    } catch (err) {
+      console.error("Failed to fetch language capabilities:", err);
+      return null;
     }
   },
 
@@ -3346,6 +3439,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       secretInventory: null,
       apiOperationsReport: null,
       pastaAssessment: null,
+      communityMap: null,
       scanStatusMessage: `Initiating analysis for: ${path}...`,
       scanProgress: {
         is_scanning: true,
@@ -3392,10 +3486,24 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
       if (res.ok) {
         const scanData: ScanResponse = await res.json();
-        set({
+        const scanLangs =
+          scanData.languages_detected &&
+          Object.keys(scanData.languages_detected).length > 0
+            ? scanData.languages_detected
+            : scanData.scope_telemetry?.languages_breakdown ?? {};
+        set((state) => ({
           projectPath: scanData.project_path || path,
           isTargetPickerOpen: false,
           gitScanErrorBanner: null,
+          ...(scanData.graph_engine_mode
+            ? { graphEngineMode: scanData.graph_engine_mode }
+            : {}),
+          languagesDetected: scanLangs,
+          scopeTelemetry: scanData.scope_telemetry ?? null,
+          communitiesCount:
+            typeof scanData.communities_count === "number"
+              ? scanData.communities_count
+              : state.communitiesCount,
           scanStatusMessage: "Mapping complete. Updating application tree and rule hunters...",
           scanProgress: {
             is_scanning: false,
@@ -3407,13 +3515,14 @@ export const useAuditStore = create<AuditState>((set, get) => ({
             percent: 100,
             message: "Scan completed successfully!",
           },
-        });
+        }));
         await Promise.all([
           get().fetchFindings(),
           get().fetchSecretInventoryState(),
           get().fetchProjects(),
           get().fetchMetrics(),
           get().fetchAppTree(),
+          get().fetchCommunityMap(),
         ]);
         set({ isScanning: false, scanStatusMessage: null });
         void Promise.all([
