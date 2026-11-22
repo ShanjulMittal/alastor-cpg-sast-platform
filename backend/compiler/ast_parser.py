@@ -72,6 +72,8 @@ SANITIZER_PATTERNS = {
     "defusedxml.ElementTree.fromstring", "secrets.token_urlsafe", "secrets.token_hex",
 }
 
+_BASELINE_SANITIZER_PATTERNS = frozenset(SANITIZER_PATTERNS)
+
 HTTP_ROUTE_DECORATOR_TOKENS = (
     "@app.get", "@app.post", "@app.put", "@app.delete", "@app.patch", "@app.route",
     "@router.get", "@router.post", "@router.put", "@router.delete", "@router.patch", "@router.route",
@@ -686,9 +688,13 @@ def classify_taint_with_domains(
 
     source_patterns = spec.source_patterns if spec else tuple(SOURCE_PATTERNS)
     sink_domain_map = spec.sink_domain_map if spec else {p: "CODE" for p in SINK_PATTERNS}
-    sanitizer_domain_map = (
-        spec.sanitizer_domain_map if spec else {p: ("UNIVERSAL",) for p in SANITIZER_PATTERNS}
+    sanitizer_domain_map: Dict[str, Tuple[str, ...]] = (
+        dict(spec.sanitizer_domain_map)
+        if spec
+        else {p: ("UNIVERSAL",) for p in SANITIZER_PATTERNS}
     )
+    for _custom_pat in SANITIZER_PATTERNS - _BASELINE_SANITIZER_PATTERNS:
+        sanitizer_domain_map.setdefault(_custom_pat, ("UNIVERSAL",))
 
     source_allowed_types = {
         "subscript", "subscript_expression", "attribute", "member_expression",

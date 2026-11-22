@@ -37,6 +37,7 @@ const LANGUAGE_DISPLAY_NAMES: Record<string, string> = {
   php: "PHP",
   swift: "Swift",
   scala: "Scala",
+  dart: "Dart",
   solidity: "Solidity",
   sql: "SQL",
   bash: "Shell",
@@ -45,6 +46,7 @@ const LANGUAGE_DISPLAY_NAMES: Record<string, string> = {
   hcl: "HCL",
   terraform: "Terraform",
   yaml: "YAML",
+  web_template: "Web Templates",
   html_template: "Templates",
   templates: "Templates",
   jinja: "Templates",
@@ -466,7 +468,7 @@ export function ActiveApplicationBanner() {
                 </span>
                 {polyglotBridgesCount > 0 && (
                   <span
-                    className={`px-1.5 py-0.1 rounded-full text-[9.5px] font-extrabold border ${
+                    className={`px-1.5 py-0.5 rounded-full text-[9.5px] font-extrabold border ${
                       graphViewMode === "COMMUNITY_MAP"
                         ? "bg-white text-violet-950 border-violet-300"
                         : "bg-amber-50 text-amber-950 border-amber-300"

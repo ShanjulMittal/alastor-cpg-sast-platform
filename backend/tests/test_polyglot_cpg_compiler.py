@@ -1701,6 +1701,51 @@ function f(user, a) {
         assert len(s_nodes) >= 1
         assert all(n.is_sanitizer is False for n in s_nodes)
 
+    def test_cypher_rules_enforce_domain_aware_sanitizer_domains(self):
+        from engine.rule_executor import RULES
+
+        rules_by_id = {r["id"]: r["cypher"] for r in RULES}
+        expected_domains = {
+            "RULE-7-SQLI-FORMAT": "SQL",
+            "RULE-10-PATH-TRAVERSAL": "PATH",
+            "RULE-11-SSRF-URLOPEN": "URL",
+            "RULE-12-LOG-INJECTION": "LOG",
+            "RULE-14-CODE-INJECTION": "CODE",
+            "RULE-16-INSECURE-RANDOM-OPEN-REDIRECT": "URL",
+        }
+        for rule_id, domain in expected_domains.items():
+            cypher = rules_by_id[rule_id]
+            assert "sanitizer_domains" in cypher, f"{rule_id} missing domain-aware sanitizer_domains check"
+            assert "'UNIVERSAL' IN" in cypher, f"{rule_id} missing UNIVERSAL sanitizer domain exemption"
+            assert f"'{domain}' IN" in cypher, f"{rule_id} missing '{domain}' sanitizer domain check"
+            assert "NONE(n IN nodes(path) WHERE n.is_sanitizer = true)" not in cypher, (
+                f"{rule_id} still contains domain-blind NONE(... n.is_sanitizer = true)"
+            )
+            assert "{is_sanitizer: true})" not in cypher, (
+                f"{rule_id} still contains domain-blind {{is_sanitizer: true}} matcher"
+            )
+
+    def test_runtime_custom_sanitizer_honored_across_registered_languages(self):
+        from compiler.ast_parser import SANITIZER_PATTERNS, classify_taint_with_domains
+
+        custom_fn = "corpStrictCleanse"
+        SANITIZER_PATTERNS.add(custom_fn)
+        try:
+            for lang_key, node_type, expr in (
+                ("python", "call", "corpStrictCleanse(user_input)"),
+                ("go", "call_expression", "corpStrictCleanse(userInput)"),
+                ("java", "method_invocation", "corpStrictCleanse(userInput)"),
+            ):
+                _, is_sink, is_san, _, domains = classify_taint_with_domains(
+                    expr, node_type, expr, language=lang_key
+                )
+                assert is_sink is False, f"{lang_key} misclassified custom sanitizer as sink"
+                assert is_san is True, f"{lang_key} failed to honor runtime custom sanitizer {custom_fn}"
+                assert "UNIVERSAL" in domains, f"{lang_key} custom sanitizer missing UNIVERSAL domain"
+        finally:
+            SANITIZER_PATTERNS.discard(custom_fn)
+
+
 
 
 

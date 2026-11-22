@@ -93,6 +93,7 @@ export const UI_PREFS_STORAGE_KEY = "alastor_ui_prefs_v4";
 
 let _hasHydratedUiPrefs = false;
 let _sastPlusInFlight: Promise<void> | null = null;
+let _communityMapInFlight: Promise<CommunityMapResponse | null> | null = null;
 let _sastPlusInFlightKey = "";
 const _inflightApiOpsPromises = new Map<string, Promise<ApiOperationsReportResponse | null>>();
 let _pastaInFlight: Promise<PastaAssessmentResponse | null> | null = null;
@@ -2253,18 +2254,23 @@ export const useAuditStore = create<AuditState>((set, get) => ({
             : data.scope_telemetry?.languages_breakdown &&
               Object.keys(data.scope_telemetry.languages_breakdown).length > 0
             ? data.scope_telemetry.languages_breakdown
-            : null;
-        set((state) => ({
+            : data.languages_detected !== undefined
+            ? data.languages_detected
+            : {};
+        set(() => ({
           metrics: data,
           ...(data.graph_engine_mode
             ? { graphEngineMode: data.graph_engine_mode }
             : {}),
-          ...(detectedLangs ? { languagesDetected: detectedLangs } : {}),
+          languagesDetected: detectedLangs,
           ...(data.scope_telemetry !== undefined
-            ? { scopeTelemetry: data.scope_telemetry ?? state.scopeTelemetry }
+            ? { scopeTelemetry: data.scope_telemetry }
             : {}),
           ...(typeof data.communities_count === "number"
             ? { communitiesCount: data.communities_count }
+            : {}),
+          ...(typeof data.communities_count === "number" && data.communities_count === 0
+            ? { communityMap: null }
             : {}),
         }));
         if (
@@ -2294,20 +2300,29 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   },
 
   fetchCommunityMap: async () => {
-    try {
-      const data = await fetchCommunityMapApi();
-      set((state) => ({
-        communityMap: data,
-        communitiesCount: data.total_communities ?? state.communitiesCount,
-        ...(data.graph_engine_mode
-          ? { graphEngineMode: data.graph_engine_mode }
-          : {}),
-      }));
-      return data;
-    } catch (err) {
-      console.error("Failed to fetch community map:", err);
-      return null;
+    if (_communityMapInFlight) {
+      return _communityMapInFlight;
     }
+    const req = (async () => {
+      try {
+        const data = await fetchCommunityMapApi();
+        set((state) => ({
+          communityMap: data,
+          communitiesCount: data.total_communities ?? state.communitiesCount,
+          ...(data.graph_engine_mode
+            ? { graphEngineMode: data.graph_engine_mode }
+            : {}),
+        }));
+        return data;
+      } catch (err) {
+        console.error("Failed to fetch community map:", err);
+        return null;
+      } finally {
+        _communityMapInFlight = null;
+      }
+    })();
+    _communityMapInFlight = req;
+    return req;
   },
 
   fetchLanguageCapabilities: async () => {
@@ -2420,6 +2435,10 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       secretInventory: null,
       apiOperationsReport: null,
       pastaAssessment: null,
+      communityMap: null,
+      communitiesCount: 0,
+      languagesDetected: {},
+      scopeTelemetry: null,
       ...(existingProj?.target_path ? { projectPath: existingProj.target_path } : {}),
     }));
 
@@ -2448,6 +2467,10 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           secretInventory: null,
           apiOperationsReport: null,
           pastaAssessment: null,
+          communityMap: null,
+          communitiesCount: 0,
+          languagesDetected: {},
+          scopeTelemetry: null,
         }));
         if (needsScan) {
           const hasLocalCheckout =
@@ -2480,6 +2503,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchMetrics(),
           get().fetchAppTree(),
           get().fetchProjects(),
+          get().fetchCommunityMap(),
         ]);
         void Promise.all([
           get().fetchDeepDiveAnalytics(),

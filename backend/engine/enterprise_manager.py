@@ -3357,7 +3357,7 @@ class EnterpriseManager:
                         """
                         MATCH (n:CPGNode)
                         WHERE n.name = $fn OR n.name ENDS WITH ('.' + $fn) OR n.code CONTAINS ($fn + '(')
-                        SET n.is_sanitizer = true
+                        SET n.is_sanitizer = true, n.sanitizer_domains = ['UNIVERSAL']
                         """,
                         fn=fn_clean
                     )
@@ -3383,10 +3383,11 @@ class EnterpriseManager:
                         """
                         MATCH (n:CPGNode)
                         WHERE n.name = $fn OR n.name ENDS WITH ('.' + $fn) OR n.code CONTAINS ($fn + '(')
-                        SET n.is_sanitizer = $active
+                        SET n.is_sanitizer = $active, n.sanitizer_domains = $domains
                         """,
                         fn=target.function_name,
-                        active=target.active
+                        active=target.active,
+                        domains=["UNIVERSAL"] if target.active else [],
                     )
             except Exception:
                 pass

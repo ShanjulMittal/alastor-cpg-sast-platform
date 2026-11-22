@@ -1456,4 +1456,337 @@ class TestFastApiDualEngineAndEnterpriseRules:
         assert ef_md5.best_fix_location is not None
         assert "hashlib.sha256" in ef_md5.best_fix_location.recommended_fix
 
+    def test_log_domain_sanitizer_clears_rule12_only_and_never_shell_path_url(self, tmp_path):
+        store = EmbeddedGraphStore(str(tmp_path / "log_domain_parity.db"))
+        try:
+            # 1. source -> _sanitize_log(["LOG"]) -> os.system (SHELL) => MUST FLAG RULE-1!
+            src_sh = _mk_node("src_sh", label="Parameter", name="cmd", code="cmd", filepath="sh.py", start_line=2, is_source=True)
+            san_sh = _mk_node("san_sh", label="Call", name="_sanitize_log", code="_sanitize_log(cmd)", filepath="sh.py", start_line=3, is_sanitizer=True, sanitizer_domains=["LOG"])
+            sink_sh = _mk_node("sink_sh", label="Call", name="os.system", code="os.system(clean_sh)", filepath="sh.py", start_line=4, is_sink=True, sink_domain="SHELL")
+
+            # 2. source -> _sanitize_log(["LOG"]) -> open (PATH) => MUST FLAG RULE-10!
+            src_pt = _mk_node("src_pt", label="Parameter", name="fname", code="fname", filepath="pt.py", start_line=2, is_source=True)
+            san_pt = _mk_node("san_pt", label="Call", name="_sanitize_log", code="_sanitize_log(fname)", filepath="pt.py", start_line=3, is_sanitizer=True, sanitizer_domains=["LOG"])
+            sink_pt = _mk_node("sink_pt", label="Call", name="open", code="open(clean_pt)", filepath="pt.py", start_line=4, is_sink=False, sink_domain="PATH")
+
+            # 3. source -> _sanitize_log(["LOG"]) -> requests.get (URL) => MUST FLAG RULE-11!
+            src_url = _mk_node("src_url", label="Parameter", name="target_url", code="target_url", filepath="url.py", start_line=2, is_source=True)
+            san_url = _mk_node("san_url", label="Call", name="_sanitize_log", code="_sanitize_log(target_url)", filepath="url.py", start_line=3, is_sanitizer=True, sanitizer_domains=["LOG"])
+            sink_url = _mk_node("sink_url", label="Call", name="requests.get", code="requests.get(clean_url)", filepath="url.py", start_line=4, is_sink=False, sink_domain="URL")
+
+            # 4. source -> _sanitize_log(["LOG"]) -> logger.info (LOG) => MUST BE NEUTRALIZED (0 RULE-12)!
+            src_log_safe = _mk_node("src_log_safe", label="Parameter", name="user_msg", code="user_msg", filepath="log_ok.py", start_line=2, is_source=True)
+            san_log_safe = _mk_node("san_log_safe", label="Call", name="_sanitize_log", code="_sanitize_log(user_msg)", filepath="log_ok.py", start_line=3, is_sanitizer=True, sanitizer_domains=["LOG"])
+            sink_log_safe = _mk_node("sink_log_safe", label="Call", name="logger.info", code='logger.info(f"msg={clean_msg}")', filepath="log_ok.py", start_line=4)
+
+            # 5. source -> shlex.quote(["SHELL"]) -> logger.info (LOG) => MUST STILL FLAG RULE-12!
+            src_log_bad = _mk_node("src_log_bad", label="Parameter", name="raw_msg", code="raw_msg", filepath="log_bad.py", start_line=2, is_source=True)
+            san_log_wrong = _mk_node("san_log_wrong", label="Call", name="shlex.quote", code="shlex.quote(raw_msg)", filepath="log_bad.py", start_line=3, is_sanitizer=True, sanitizer_domains=["SHELL"])
+            sink_log_bad = _mk_node("sink_log_bad", label="Call", name="logger.info", code='logger.info(f"msg={quoted_msg}")', filepath="log_bad.py", start_line=4)
+
+            nodes = [
+                src_sh, san_sh, sink_sh,
+                src_pt, san_pt, sink_pt,
+                src_url, san_url, sink_url,
+                src_log_safe, san_log_safe, sink_log_safe,
+                src_log_bad, san_log_wrong, sink_log_bad,
+            ]
+            edges = [
+                _mk_edge("src_sh", "san_sh", "DFG_FLOWS_TO", "cmd"),
+                _mk_edge("san_sh", "sink_sh", "DFG_FLOWS_TO", "clean_sh"),
+                _mk_edge("src_pt", "san_pt", "DFG_FLOWS_TO", "fname"),
+                _mk_edge("san_pt", "sink_pt", "DFG_FLOWS_TO", "clean_pt"),
+                _mk_edge("src_url", "san_url", "DFG_FLOWS_TO", "target_url"),
+                _mk_edge("san_url", "sink_url", "DFG_FLOWS_TO", "clean_url"),
+                _mk_edge("src_log_safe", "san_log_safe", "DFG_FLOWS_TO", "user_msg"),
+                _mk_edge("san_log_safe", "sink_log_safe", "DFG_FLOWS_TO", "clean_msg"),
+                _mk_edge("src_log_bad", "san_log_wrong", "DFG_FLOWS_TO", "raw_msg"),
+                _mk_edge("san_log_wrong", "sink_log_bad", "DFG_FLOWS_TO", "quoted_msg"),
+            ]
+            store.ingest_cpg(nodes, edges)
+
+            findings = store.run_cpg_rules(
+                enabled_rule_ids={
+                    "RULE-1-TAINT",
+                    "RULE-10-PATH-TRAVERSAL",
+                    "RULE-11-SSRF-URLOPEN",
+                    "RULE-12-LOG-INJECTION",
+                }
+            )
+            from collections import defaultdict
+            by_rule = defaultdict(list)
+            for f in findings:
+                by_rule[f.rule_id].append(f.path_nodes[-1]["id"])
+
+            assert "sink_sh" in by_rule["RULE-1-TAINT"]
+            assert "sink_pt" in by_rule["RULE-10-PATH-TRAVERSAL"]
+            assert "sink_url" in by_rule["RULE-11-SSRF-URLOPEN"]
+            assert "sink_log_safe" not in by_rule["RULE-12-LOG-INJECTION"]
+            assert "sink_log_bad" in by_rule["RULE-12-LOG-INJECTION"]
+        finally:
+            store.close()
+
+    def test_custom_sanitizer_endpoint_updates_embedded_sqlite_and_clears_finding_immediately(
+        self, tmp_path, monkeypatch
+    ):
+        from fastapi.testclient import TestClient
+        import main as main_mod
+        from compiler.ast_parser import SANITIZER_PATTERNS
+        from engine.enterprise_manager import EnterpriseManager
+
+        workspace = tmp_path / "custom_san_app"
+        workspace.mkdir()
+        (workspace / "app.py").write_text(
+            "import os\n"
+            "def custom_guard(val):\n"
+            "    return val\n"
+            "def run_cmd(request):\n"
+            "    raw = request.args.get('cmd')\n"
+            "    checked = custom_guard(raw)\n"
+            "    os.system(checked)\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("ALASTOR_GRAPH_ENGINE", "embedded")
+        isolated_mgr = GraphStoreManager(
+            neo4j_client=main_mod.neo4j_client,
+            vault_dir=str(tmp_path / ".alastor_vault"),
+        )
+        isolated_em = EnterpriseManager()
+        monkeypatch.setattr(isolated_em, "_save_persisted_state", lambda: None)
+        monkeypatch.setattr(isolated_em, "_save_scan_cache", lambda: None)
+        monkeypatch.setattr(main_mod, "enterprise_mgr", isolated_em)
+        monkeypatch.setattr(main_mod, "graph_store_mgr", isolated_mgr)
+        monkeypatch.setattr(main_mod, "current_scan_dir", str(workspace))
+        monkeypatch.setattr(main_mod, "current_app_tree", None)
+        monkeypatch.setattr(main_mod, "current_community_map", None)
+        monkeypatch.setattr(main_mod, "_cached_findings", None)
+        monkeypatch.setattr(main_mod, "_cached_external_findings", [])
+        monkeypatch.setattr(main_mod, "_cached_advisories", [])
+        monkeypatch.setattr(main_mod, "_last_neo4j_ingested_dir", None)
+        monkeypatch.setattr(main_mod, "_last_scope_telemetry", None)
+        monkeypatch.setattr(main_mod, "_last_languages_detected", {})
+        monkeypatch.setattr(main_mod, "_last_scanned_files", [])
+        monkeypatch.setattr(main_mod, "_last_cpg_nodes", [])
+        monkeypatch.setattr(main_mod, "_last_cpg_edges", [])
+
+        try:
+            client = TestClient(main_mod.app)
+            scan_resp = client.post("/api/scan", json={"target_path": str(workspace)})
+            assert scan_resp.status_code == 200, scan_resp.text
+
+            before_findings = client.get("/api/findings").json()
+            assert any(f["rule_id"] == "RULE-1-TAINT" for f in before_findings)
+
+            # Register custom_guard as a custom sanitizer -> must update SQLite + memory in-place
+            san_resp = client.post(
+                "/api/settings/sanitizers",
+                json={
+                    "function_name": "custom_guard",
+                    "language": "python",
+                    "target_cwe": "CWE-78",
+                    "description": "Custom allowlist shell guard",
+                },
+            )
+            assert san_resp.status_code == 200, san_resp.text
+            san_id = san_resp.json()["id"]
+
+            after_findings = client.get("/api/findings").json()
+            assert not any(f["rule_id"] == "RULE-1-TAINT" for f in after_findings)
+
+            # Verify SQLite persisted the sanitizer update across fresh reload
+            reloaded = EmbeddedGraphStore(isolated_mgr._db_path)
+            try:
+                reloaded_rules = reloaded.run_cpg_rules(enabled_rule_ids={"RULE-1-TAINT"})
+                assert reloaded_rules == []
+            finally:
+                reloaded.close()
+
+            # Toggle custom sanitizer OFF -> finding must immediately re-appear
+            toggle_resp = client.post(f"/api/settings/sanitizers/{san_id}/toggle")
+            assert toggle_resp.status_code == 200
+            assert toggle_resp.json()["active"] is False
+
+            reopened_findings = client.get("/api/findings").json()
+            assert any(f["rule_id"] == "RULE-1-TAINT" for f in reopened_findings)
+        finally:
+            SANITIZER_PATTERNS.discard("custom_guard")
+            isolated_mgr.close()
+
+    def test_project_activation_isolates_languages_scope_telemetry_and_communities(
+        self, tmp_path, monkeypatch
+    ):
+        from fastapi.testclient import TestClient
+        import main as main_mod
+        from engine.enterprise_manager import EnterpriseManager
+
+        proj_a_dir = tmp_path / "project_alpha"
+        proj_b_dir = tmp_path / "project_beta"
+        (proj_a_dir / "api").mkdir(parents=True)
+        (proj_b_dir / "cmd").mkdir(parents=True)
+
+        (proj_a_dir / "api" / "service.py").write_text(
+            "import os\ndef handler(req):\n    os.system(req.args.get('x'))\n",
+            encoding="utf-8",
+        )
+        (proj_a_dir / ".gitignore").write_text("ignored_secret.py\n", encoding="utf-8")
+        (proj_a_dir / "ignored_secret.py").write_text("X = 1\n", encoding="utf-8")
+
+        (proj_b_dir / "cmd" / "server.go").write_text(
+            'package main\nfunc main() {}\n',
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("ALASTOR_GRAPH_ENGINE", "embedded")
+        isolated_mgr = GraphStoreManager(
+            neo4j_client=main_mod.neo4j_client,
+            vault_dir=str(tmp_path / ".alastor_vault"),
+        )
+        isolated_em = EnterpriseManager()
+        monkeypatch.setattr(isolated_em, "_save_persisted_state", lambda: None)
+        monkeypatch.setattr(isolated_em, "_save_scan_cache", lambda: None)
+        monkeypatch.setattr(main_mod, "enterprise_mgr", isolated_em)
+        monkeypatch.setattr(main_mod, "graph_store_mgr", isolated_mgr)
+        monkeypatch.setattr(main_mod, "current_scan_dir", str(proj_a_dir))
+        monkeypatch.setattr(main_mod, "current_app_tree", None)
+        monkeypatch.setattr(main_mod, "current_community_map", None)
+        monkeypatch.setattr(main_mod, "_cached_findings", None)
+        monkeypatch.setattr(main_mod, "_cached_external_findings", [])
+        monkeypatch.setattr(main_mod, "_cached_advisories", [])
+        monkeypatch.setattr(main_mod, "_last_neo4j_ingested_dir", None)
+        monkeypatch.setattr(main_mod, "_last_scope_telemetry", None)
+        monkeypatch.setattr(main_mod, "_last_languages_detected", {})
+        monkeypatch.setattr(main_mod, "_last_scanned_files", [])
+        monkeypatch.setattr(main_mod, "_last_cpg_nodes", [])
+        monkeypatch.setattr(main_mod, "_last_cpg_edges", [])
+
+        try:
+            client = TestClient(main_mod.app)
+            proj_a_resp = client.post(
+                "/api/projects",
+                json={
+                    "name": "Alpha Py",
+                    "scm_provider": "LOCAL",
+                    "target_path": str(proj_a_dir),
+                    "run_scan_immediately": False,
+                },
+            )
+            assert proj_a_resp.status_code == 200, proj_a_resp.text
+            proj_a_id = proj_a_resp.json()["id"]
+
+            proj_b_resp = client.post(
+                "/api/projects",
+                json={
+                    "name": "Beta Go",
+                    "scm_provider": "LOCAL",
+                    "target_path": str(proj_b_dir),
+                    "run_scan_immediately": False,
+                },
+            )
+            assert proj_b_resp.status_code == 200, proj_b_resp.text
+            proj_b_id = proj_b_resp.json()["id"]
+
+            # Scan Project A -> populates python language, gitignore_excluded >= 1, communities >= 1
+            scan_a = client.post("/api/scan", json={"target_path": str(proj_a_dir)})
+            assert scan_a.status_code == 200, scan_a.text
+            metrics_a = client.get("/api/metrics").json()
+            assert metrics_a["languages_detected"].get("python", 0) >= 1
+            assert metrics_a["scope_telemetry"] is not None
+            assert metrics_a["scope_telemetry"]["gitignore_excluded"] >= 1
+            assert metrics_a["communities_count"] >= 1
+            assert client.get("/api/graph/communities").json()["total_communities"] >= 1
+
+            # Activate Project B -> MUST NOT leak Project A's python language, gitignore telemetry, or communities!
+            act_b = client.post(f"/api/projects/{proj_b_id}/activate")
+            assert act_b.status_code == 200, act_b.text
+
+            metrics_b = client.get("/api/metrics").json()
+            assert "python" not in metrics_b["languages_detected"], (
+                f"Project A python leaked into Project B metrics: {metrics_b['languages_detected']}"
+            )
+            assert metrics_b["languages_detected"].get("go", 0) == 1
+            assert metrics_b["scope_telemetry"] is None
+            assert metrics_b["communities_count"] == 0
+
+            comm_b = client.get("/api/graph/communities").json()
+            assert comm_b["total_communities"] == 0
+            assert comm_b["communities"] == []
+
+            # Re-activating Project A restores Project A's telemetry & communities cleanly
+            act_a = client.post(f"/api/projects/{proj_a_id}/activate")
+            assert act_a.status_code == 200, act_a.text
+            metrics_a_again = client.get("/api/metrics").json()
+            assert metrics_a_again["languages_detected"].get("python", 0) >= 1
+            assert metrics_a_again["communities_count"] >= 1
+        finally:
+            isolated_mgr.close()
+
+    def test_pass3_verified_log_helper_gets_log_domain_only_and_does_not_clear_shell(
+        self, tmp_path, monkeypatch
+    ):
+        from fastapi.testclient import TestClient
+        import main as main_mod
+        from engine.enterprise_manager import EnterpriseManager
+
+        workspace = tmp_path / "pass3_domain_app"
+        workspace.mkdir()
+        (workspace / "service.py").write_text(
+            "import os\n"
+            "import re\n"
+            "import logging\n"
+            "logger = logging.getLogger('svc')\n"
+            "def _clean_log(val):\n"
+            "    return re.sub(r'[\\r\\n]+', ' ', str(val))\n"
+            "def endpoint(request):\n"
+            "    raw = request.args.get('q')\n"
+            "    cleaned = _clean_log(raw)\n"
+            "    logger.info(f'user={cleaned}')\n"
+            "    os.system(cleaned)\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("ALASTOR_GRAPH_ENGINE", "embedded")
+        isolated_mgr = GraphStoreManager(
+            neo4j_client=main_mod.neo4j_client,
+            vault_dir=str(tmp_path / ".alastor_vault"),
+        )
+        isolated_em = EnterpriseManager()
+        monkeypatch.setattr(isolated_em, "_save_persisted_state", lambda: None)
+        monkeypatch.setattr(isolated_em, "_save_scan_cache", lambda: None)
+        monkeypatch.setattr(main_mod, "enterprise_mgr", isolated_em)
+        monkeypatch.setattr(main_mod, "graph_store_mgr", isolated_mgr)
+        monkeypatch.setattr(main_mod, "current_scan_dir", str(workspace))
+        monkeypatch.setattr(main_mod, "current_app_tree", None)
+        monkeypatch.setattr(main_mod, "current_community_map", None)
+        monkeypatch.setattr(main_mod, "_cached_findings", None)
+        monkeypatch.setattr(main_mod, "_cached_external_findings", [])
+        monkeypatch.setattr(main_mod, "_cached_advisories", [])
+        monkeypatch.setattr(main_mod, "_last_neo4j_ingested_dir", None)
+        monkeypatch.setattr(main_mod, "_last_scope_telemetry", None)
+        monkeypatch.setattr(main_mod, "_last_languages_detected", {})
+        monkeypatch.setattr(main_mod, "_last_scanned_files", [])
+        monkeypatch.setattr(main_mod, "_last_cpg_nodes", [])
+        monkeypatch.setattr(main_mod, "_last_cpg_edges", [])
+
+        try:
+            client = TestClient(main_mod.app)
+            scan_resp = client.post("/api/scan", json={"target_path": str(workspace)})
+            assert scan_resp.status_code == 200, scan_resp.text
+
+            clean_calls = [
+                n for n in isolated_mgr._embedded_store._nodes.values()
+                if n.label == "Call" and n.name == "_clean_log"
+            ]
+            assert len(clean_calls) >= 1
+            assert all(n.is_sanitizer is True and n.sanitizer_domains == ["LOG"] for n in clean_calls)
+
+            findings = client.get("/api/findings").json()
+            rule_ids = {f["rule_id"] for f in findings}
+            assert "RULE-1-TAINT" in rule_ids, "CRLF _clean_log() must NOT neutralize os.system() SHELL sink"
+            assert "RULE-12-LOG-INJECTION" not in rule_ids, "CRLF _clean_log() MUST neutralize logger.info() LOG sink"
+        finally:
+            isolated_mgr.close()
+
+
+
 

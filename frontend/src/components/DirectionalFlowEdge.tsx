@@ -211,6 +211,20 @@ export function resolveDirectionalEdgeMeta(
         isAnimatedPulse: true,
         flowLabel: withPrefix("CONFIGURES ▶"),
       };
+    case "COMMUNITY_LINK":
+      return {
+        strokeColor: "#4338ca",
+        badgeTone: "VIOLET",
+        isAnimatedPulse: false,
+        flowLabel: withPrefix(varClean ? `${varClean} ▶` : "COMMUNITY ▶"),
+      };
+    case "POLYGLOT_BRIDGE":
+      return {
+        strokeColor: "#b45309",
+        badgeTone: "AMBER",
+        isAnimatedPulse: true,
+        flowLabel: withPrefix(varClean ? `${varClean} ▶` : "POLYGLOT BRIDGE ▶"),
+      };
     case "AST_CHILD":
     default:
       return {

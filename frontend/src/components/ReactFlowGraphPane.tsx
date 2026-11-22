@@ -953,6 +953,14 @@ export function ReactFlowGraphPane() {
   }, [appTree, findings]);
 
   // Primary Graph Builder Effect (APP_TREE + FINDING_PATH + CPG Backend Views)
+  const shouldPassFilepath =
+    graphViewMode === "DFG_ONLY" ||
+    graphViewMode === "CFG_ONLY" ||
+    graphViewMode === "FULL_CPG" ||
+    (graphViewMode === "CALL_GRAPH" && callGraphScope !== "WHOLE_APP");
+  const effectiveGraphFilepath =
+    shouldPassFilepath || graphViewMode === "APP_TREE" ? activeFilepath : null;
+
   useEffect(() => {
     let isCancelled = false;
     const fitTimers: ReturnType<typeof setTimeout>[] = [];
@@ -1105,7 +1113,7 @@ export function ReactFlowGraphPane() {
               ? rawFiles.filter(
                   (f) =>
                     getFlawCountForFile(f.filepath) > 0 ||
-                    f.filepath === activeFilepath
+                    f.filepath === effectiveGraphFilepath
                 )
               : rawFiles;
 
@@ -1117,13 +1125,13 @@ export function ReactFlowGraphPane() {
             const priorityFiles = files.filter(
               (f) =>
                 getFlawCountForFile(f.filepath) > 0 ||
-                f.filepath === activeFilepath ||
+                f.filepath === effectiveGraphFilepath ||
                 (crossCountByFile.get(f.filepath) || 0) > 0
             );
             const cleanRest = files.filter(
               (f) =>
                 getFlawCountForFile(f.filepath) === 0 &&
-                f.filepath !== activeFilepath &&
+                f.filepath !== effectiveGraphFilepath &&
                 (crossCountByFile.get(f.filepath) || 0) === 0
             );
             files = [
@@ -1264,7 +1272,7 @@ export function ReactFlowGraphPane() {
               );
               const isExpandedElements =
                 expandedFileElements[f.filepath] ??
-                (activeFilepath === f.filepath ||
+                (effectiveGraphFilepath === f.filepath ||
                   (appTree.total_files <= 6 && f.elements.length > 0));
 
               spiderNodes.push({
@@ -1514,15 +1522,9 @@ export function ReactFlowGraphPane() {
       } else {
         setIsLoadingGraph(true);
         try {
-          const shouldPassFilepath =
-            Boolean(activeFilepath) &&
-            graphViewMode !== "APP_TREE" &&
-            graphViewMode !== "ENTRYPOINT_GRAPH" &&
-            graphViewMode !== "COMMUNITY_MAP" &&
-            !(graphViewMode === "CALL_GRAPH" && callGraphScope === "WHOLE_APP");
           const data = await fetchGraphData({
             view_mode: graphViewMode,
-            filepath: shouldPassFilepath ? activeFilepath : null,
+            filepath: shouldPassFilepath ? effectiveGraphFilepath : null,
           });
           if (!isCancelled) {
             rawNodes = data.nodes || [];
@@ -1670,7 +1672,8 @@ export function ReactFlowGraphPane() {
   }, [
     activeFindingFlow,
     graphViewMode,
-    activeFilepath,
+    shouldPassFilepath,
+    effectiveGraphFilepath,
     appTree,
     communitiesCount,
     allCrossFileEdges,
@@ -2849,7 +2852,17 @@ export function ReactFlowGraphPane() {
                   Building directional nodes, edges, and balanced viewport layout
                 </p>
               </>
-            ) : lastAppliedPatch && lastAppliedPatch.verifiedSevered ? (
+            ) : graphViewMode === "COMMUNITY_MAP" ? (
+              <div className="rounded-xl border border-indigo-200 bg-white/95 px-6 py-5 shadow-sm max-w-md text-center">
+                <Layers className="w-9 h-9 mx-auto mb-2.5 text-indigo-700" />
+                <p className="text-sm font-extrabold text-slate-900">
+                  No Leiden communities generated yet
+                </p>
+                <p className="text-xs text-slate-700 mt-1 leading-relaxed">
+                  Run a scan to generate Leiden architectural communities &amp; polyglot bridges
+                </p>
+              </div>
+            ) : graphViewMode === "FINDING_PATH" && lastAppliedPatch && lastAppliedPatch.verifiedSevered ? (
               <>
                 <ShieldCheck className="w-11 h-11 mb-3 text-emerald-700" />
                 <p className="text-sm font-extrabold text-emerald-900 font-mono">
@@ -2863,16 +2876,6 @@ export function ReactFlowGraphPane() {
                   eliminated all source-to-sink attack paths.
                 </p>
               </>
-            ) : graphViewMode === "COMMUNITY_MAP" ? (
-              <div className="rounded-xl border border-indigo-200 bg-white/95 px-6 py-5 shadow-sm max-w-md text-center">
-                <Layers className="w-9 h-9 mx-auto mb-2.5 text-indigo-700" />
-                <p className="text-sm font-extrabold text-slate-900">
-                  No Leiden communities generated yet
-                </p>
-                <p className="text-xs text-slate-700 mt-1 leading-relaxed">
-                  Run a scan to generate Leiden architectural communities &amp; polyglot bridges
-                </p>
-              </div>
             ) : (
               <>
                 <Layers className="w-10 h-10 mb-3 text-slate-400" />

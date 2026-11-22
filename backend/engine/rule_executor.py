@@ -397,7 +397,14 @@ RULES = [
             OR (c.code CONTAINS 'SELECT ' AND (c.code CONTAINS '.format(' OR c.code CONTAINS ' + ' OR c.code CONTAINS ' % '))
           )
           AND NOT EXISTS {
-            MATCH (san:CPGNode {is_sanitizer: true})-[:DFG_FLOWS_TO*1..5]->(c)
+            MATCH (san:CPGNode)-[:DFG_FLOWS_TO*1..5]->(c)
+            WHERE san.is_sanitizer = true
+              AND (
+                san.sanitizer_domains IS NULL
+                OR size(san.sanitizer_domains) = 0
+                OR 'UNIVERSAL' IN san.sanitizer_domains
+                OR 'SQL' IN san.sanitizer_domains
+              )
           }
         RETURN
           'HIGH' AS severity,
@@ -510,7 +517,16 @@ RULES = [
             OR sink.name ENDS WITH '.writeFile'
             OR sink.name ENDS WITH '.writeFileSync'
           )
-          AND NONE(n IN nodes(path) WHERE n.is_sanitizer = true)
+          AND NONE(
+            n IN nodes(path)
+            WHERE n.is_sanitizer = true
+              AND (
+                n.sanitizer_domains IS NULL
+                OR size(n.sanitizer_domains) = 0
+                OR 'UNIVERSAL' IN n.sanitizer_domains
+                OR 'PATH' IN n.sanitizer_domains
+              )
+          )
         WITH source, sink, path
         ORDER BY length(path) ASC
         WITH source, sink, head(collect(path)) AS shortest_p
@@ -533,11 +549,26 @@ RULES = [
         "cypher": """
         MATCH (u:Call)
         WHERE (u.name = 'urlopen' OR u.name ENDS WITH '.urlopen' OR u.name = 'urlretrieve' OR u.name ENDS WITH '.urlretrieve')
-          AND NOT u.is_sanitizer = true
+          AND NOT (
+            u.is_sanitizer = true
+            AND (
+              u.sanitizer_domains IS NULL
+              OR size(u.sanitizer_domains) = 0
+              OR 'UNIVERSAL' IN u.sanitizer_domains
+              OR 'URL' IN u.sanitizer_domains
+            )
+          )
           AND NOT u.code CONTAINS '("https://'
           AND NOT u.code CONTAINS "('https://"
           AND NOT EXISTS {
-            MATCH (san:CPGNode {is_sanitizer: true})-[:DFG_FLOWS_TO*1..6]->(u)
+            MATCH (san:CPGNode)-[:DFG_FLOWS_TO*1..6]->(u)
+            WHERE san.is_sanitizer = true
+              AND (
+                san.sanitizer_domains IS NULL
+                OR size(san.sanitizer_domains) = 0
+                OR 'UNIVERSAL' IN san.sanitizer_domains
+                OR 'URL' IN san.sanitizer_domains
+              )
           }
         RETURN
           'MEDIUM' AS severity,
@@ -548,7 +579,16 @@ RULES = [
         MATCH path = (source:CPGNode {is_source: true})-[:DFG_FLOWS_TO*1..12]->(sink:Call)
         WHERE NOT source.code CONTAINS 'sys.argv'
           AND sink.name IN ['requests.get', 'requests.post', 'requests.put', 'requests.delete', 'requests.request', 'http_requests.get', 'http_requests.post', 'http_requests.request', 'httpx.get', 'httpx.post', 'axios.get', 'axios.post']
-          AND NONE(n IN nodes(path) WHERE n.is_sanitizer = true)
+          AND NONE(
+            n IN nodes(path)
+            WHERE n.is_sanitizer = true
+              AND (
+                n.sanitizer_domains IS NULL
+                OR size(n.sanitizer_domains) = 0
+                OR 'UNIVERSAL' IN n.sanitizer_domains
+                OR 'URL' IN n.sanitizer_domains
+              )
+          )
         WITH source, sink, path
         ORDER BY length(path) ASC
         WITH source, sink, head(collect(path)) AS shortest_p
@@ -572,7 +612,16 @@ RULES = [
         WHERE NOT source.code CONTAINS 'sys.argv'
           AND sink.name IN ['logger.info', 'logger.warning', 'logger.error', 'logger.critical', 'logging.info', 'logging.warning', 'logging.error']
           AND (sink.code CONTAINS 'f"' OR sink.code CONTAINS "f'" OR sink.code CONTAINS ' + ')
-          AND NONE(n IN nodes(path) WHERE n.is_sanitizer = true)
+          AND NONE(
+            n IN nodes(path)
+            WHERE n.is_sanitizer = true
+              AND (
+                n.sanitizer_domains IS NULL
+                OR size(n.sanitizer_domains) = 0
+                OR 'UNIVERSAL' IN n.sanitizer_domains
+                OR 'LOG' IN n.sanitizer_domains
+              )
+          )
         WITH source, sink, path
         ORDER BY length(path) ASC
         WITH source, sink, head(collect(path)) AS shortest_p
@@ -634,7 +683,14 @@ RULES = [
           AND NOT c.code STARTS WITH 'exec("'
           AND NOT c.code STARTS WITH "exec('"
           AND NOT EXISTS {
-            MATCH (san:CPGNode {is_sanitizer: true})-[:DFG_FLOWS_TO*1..5]->(c)
+            MATCH (san:CPGNode)-[:DFG_FLOWS_TO*1..5]->(c)
+            WHERE san.is_sanitizer = true
+              AND (
+                san.sanitizer_domains IS NULL
+                OR size(san.sanitizer_domains) = 0
+                OR 'UNIVERSAL' IN san.sanitizer_domains
+                OR 'CODE' IN san.sanitizer_domains
+              )
           }
         RETURN
           'CRITICAL' AS severity,
@@ -709,7 +765,16 @@ RULES = [
         MATCH path = (source:CPGNode {is_source: true})-[:DFG_FLOWS_TO*1..10]->(sink:Call)
         WHERE NOT source.code CONTAINS 'sys.argv'
           AND sink.name IN ['RedirectResponse', 'redirect', 'flask.redirect', 'res.redirect', 'NextResponse.redirect']
-          AND NONE(n IN nodes(path) WHERE n.is_sanitizer = true)
+          AND NONE(
+            n IN nodes(path)
+            WHERE n.is_sanitizer = true
+              AND (
+                n.sanitizer_domains IS NULL
+                OR size(n.sanitizer_domains) = 0
+                OR 'UNIVERSAL' IN n.sanitizer_domains
+                OR 'URL' IN n.sanitizer_domains
+              )
+          )
         WITH source, sink, path
         ORDER BY length(path) ASC
         WITH source, sink, head(collect(path)) AS shortest_p

@@ -87,7 +87,7 @@ from engine.remediation_patcher import (
     undo_workspace_patch,
 )
 from compiler.scanner import ScannedFile, scan_directory, scan_directory_with_telemetry, CODE_EXTENSIONS, IGNORE_DIRS
-from compiler.language_registry import list_language_capabilities
+from compiler.language_registry import list_language_capabilities, resolve_language_for_filename
 from compiler.ast_parser import ASTNormalizer
 from compiler.cfg_builder import CFGBuilder
 from compiler.dfg_builder import DFGBuilder
@@ -1560,7 +1560,7 @@ def _scan_project_locked(req: ScanRequest) -> ScanResponse:
         # Inspect each Function CPGNode's AST body so helper functions earn sanitizer status ONLY
         # when their implementation genuinely enforces stdlib path confinement, SSRF IP/origin guards,
         # or CR/LF log neutralization — never merely by function name.
-        verified_sanitizer_funcs = set()
+        verified_sanitizer_func_domains: Dict[str, List[str]] = {}
         inline_path_guarded_scopes = set()
         inline_ssrf_guarded_scopes = set()
         for fn_node in all_nodes:
@@ -1591,22 +1591,43 @@ def _scan_project_locked(req: ScanRequest) -> ScanResponse:
                     and "\\r" in fn_src
                     and (".replace(" in fn_src or "re.sub(" in fn_src)
                 )
-                if has_path_confinement or has_ssrf_confinement or has_crlf_sanitization:
-                    verified_sanitizer_funcs.add(fn_node.name)
+                helper_domains: List[str] = []
+                if has_path_confinement:
+                    helper_domains.append("PATH")
+                if has_ssrf_confinement:
+                    helper_domains.append("URL")
+                if has_crlf_sanitization:
+                    helper_domains.append("LOG")
+                if helper_domains:
+                    existing_domains = verified_sanitizer_func_domains.setdefault(fn_node.name, [])
+                    for dom in helper_domains:
+                        if dom not in existing_domains:
+                            existing_domains.append(dom)
 
-        if verified_sanitizer_funcs or inline_path_guarded_scopes or inline_ssrf_guarded_scopes:
+        if verified_sanitizer_func_domains or inline_path_guarded_scopes or inline_ssrf_guarded_scopes:
             for call_node in all_nodes:
-                if call_node.label == "Call" and not call_node.is_sanitizer:
+                if call_node.label == "Call":
                     short_callee = call_node.name.split(".")[-1] if "." in call_node.name else call_node.name
-                    if short_callee in verified_sanitizer_funcs or call_node.name in verified_sanitizer_funcs:
+                    matched_domains: List[str] = []
+                    if call_node.name in verified_sanitizer_func_domains:
+                        matched_domains.extend(verified_sanitizer_func_domains[call_node.name])
+                    if short_callee in verified_sanitizer_func_domains:
+                        matched_domains.extend(verified_sanitizer_func_domains[short_callee])
+                    if matched_domains:
                         call_node.is_sanitizer = True
                         call_node.is_sink = False
+                        call_node.sanitizer_domains = list(
+                            dict.fromkeys([*(call_node.sanitizer_domains or []), *matched_domains])
+                        )
                     elif (
                         call_node.scope_id in inline_path_guarded_scopes
                         and short_callee in ("realpath", "resolve", "basename")
                     ):
                         call_node.is_sanitizer = True
                         call_node.is_sink = False
+                        call_node.sanitizer_domains = list(
+                            dict.fromkeys([*(call_node.sanitizer_domains or []), "PATH"])
+                        )
                     elif (
                         call_node.scope_id in inline_ssrf_guarded_scopes
                         and (
@@ -1620,6 +1641,9 @@ def _scan_project_locked(req: ScanRequest) -> ScanResponse:
                     ):
                         call_node.is_sanitizer = True
                         call_node.is_sink = False
+                        call_node.sanitizer_domains = list(
+                            dict.fromkeys([*(call_node.sanitizer_domains or []), "URL"])
+                        )
 
         for idx, sf in enumerate(scanned_files):
             pct = 60 + int(20 * ((idx + 1) / num_code_files))
@@ -1849,6 +1873,14 @@ def get_or_compute_findings(force_refresh: bool = False) -> List[Finding]:
                                 _sanitize_log(neo_rule_err),
                             )
                             graph_store_mgr.ensure_backend(force_probe=True)
+                            if (
+                                graph_store_mgr.mode == "EMBEDDED_SQLITE"
+                                and _last_cpg_nodes
+                                and graph_store_mgr._embedded_store.get_counts().get("nodes", 0) == 0
+                            ):
+                                graph_store_mgr._embedded_store.ingest_cpg(
+                                    _last_cpg_nodes, _last_cpg_edges
+                                )
                             raw_sast = graph_store_mgr.run_cpg_rules(
                                 scanned_files=_last_scanned_files or None,
                             )
@@ -2459,11 +2491,12 @@ def get_metrics():
     categories = current_app_tree.category_counts if current_app_tree else {}
     tech_stack = current_app_tree.detected_tech_stack if current_app_tree else []
     total_files = current_app_tree.total_files if current_app_tree else 0
-    comm_count = (
-        current_community_map.total_communities
-        if current_community_map is not None
-        else graph_store_mgr.get_communities().total_communities
-    )
+    if current_community_map is not None:
+        comm_count = current_community_map.total_communities
+    elif _last_neo4j_ingested_dir is None or _last_neo4j_ingested_dir == _norm_cur:
+        comm_count = graph_store_mgr.get_communities().total_communities
+    else:
+        comm_count = 0
 
     return MetricsResponse(
         total_nodes=node_count,
@@ -3081,7 +3114,13 @@ def _synthesize_app_tree_nodes_and_edges(
 @app.get("/api/graph/communities", response_model=CommunityMapResponse)
 def get_graph_communities():
     """Returns the active scan's deterministic Leiden architectural community & polyglot bridge map."""
-    cm = current_community_map or graph_store_mgr.get_communities()
+    _norm_cur = os.path.normcase(os.path.abspath(current_scan_dir)) if current_scan_dir else ""
+    if current_community_map is not None:
+        cm = current_community_map
+    elif _last_neo4j_ingested_dir is None or _last_neo4j_ingested_dir == _norm_cur:
+        cm = graph_store_mgr.get_communities()
+    else:
+        cm = CommunityMapResponse(graph_engine_mode=graph_store_mgr.mode)
     if cm.graph_engine_mode != graph_store_mgr.mode:
         cm = cm.model_copy(update={"graph_engine_mode": graph_store_mgr.mode})
     return cm
@@ -3096,7 +3135,13 @@ def get_graph(
     """Returns nodes and edges filtered by view mode with bounded limits for sub-50ms ReactFlow canvas rendering."""
     global current_app_tree
     if view_mode == "COMMUNITY_MAP":
-        cm = current_community_map or graph_store_mgr.get_communities()
+        _norm_cur = os.path.normcase(os.path.abspath(current_scan_dir)) if current_scan_dir else ""
+        if current_community_map is not None:
+            cm = current_community_map
+        elif _last_neo4j_ingested_dir is None or _last_neo4j_ingested_dir == _norm_cur:
+            cm = graph_store_mgr.get_communities()
+        else:
+            cm = CommunityMapResponse(graph_engine_mode=graph_store_mgr.mode)
         if cm.graph_engine_mode != graph_store_mgr.mode:
             cm = cm.model_copy(update={"graph_engine_mode": graph_store_mgr.mode})
         return build_community_graph_view(cm)
@@ -3880,7 +3925,9 @@ def activate_project(project_id: str, skip_warmup: bool = Query(False)):
     cached last-scan findings, application tree, and Track Changes history so the user
     can view saved scan details without having to re-scan every time.
     """
-    global current_scan_dir, current_app_tree, _cached_findings, _cached_findings_time, _cached_external_findings, _cached_advisories
+    global current_scan_dir, current_app_tree, current_community_map
+    global _cached_findings, _cached_findings_time, _cached_external_findings, _cached_advisories
+    global _last_languages_detected, _last_scope_telemetry, _last_scanned_files, _last_cpg_nodes, _last_cpg_edges
     target = None
     for p in enterprise_mgr.projects:
         if p.id == project_id:
@@ -3897,6 +3944,27 @@ def activate_project(project_id: str, skip_warmup: bool = Query(False)):
         _norm_act = os.path.normcase(current_scan_dir)
         _cached_external_findings = []
         _cached_advisories = []
+        switched_away_from_ingested = (_last_neo4j_ingested_dir != _norm_act)
+        if switched_away_from_ingested:
+            current_community_map = CommunityMapResponse(graph_engine_mode=graph_store_mgr.mode)
+            _last_languages_detected = {}
+            _last_scope_telemetry = None
+            _last_scanned_files = []
+            _last_cpg_nodes = []
+            _last_cpg_edges = []
+        else:
+            restored_cm = graph_store_mgr.get_communities()
+            current_community_map = restored_cm
+            saved_langs = graph_store_mgr.get_meta("languages_detected")
+            if isinstance(saved_langs, dict):
+                _last_languages_detected = {str(k): int(v) for k, v in saved_langs.items()}
+            saved_scope = graph_store_mgr.get_meta("scope_telemetry")
+            if isinstance(saved_scope, dict):
+                try:
+                    _last_scope_telemetry = ScanScopeTelemetry.model_validate(saved_scope)
+                except Exception:
+                    _last_scope_telemetry = None
+
         if skip_warmup:
             enterprise_mgr._save_persisted_state()
             return target
@@ -3909,6 +3977,14 @@ def activate_project(project_id: str, skip_warmup: bool = Query(False)):
                 current_app_tree = AppTreeAnalyzer(current_scan_dir).analyze()
         else:
             current_app_tree = AppTreeAnalyzer(current_scan_dir).analyze()
+
+        if switched_away_from_ingested and current_app_tree:
+            derived_langs: Dict[str, int] = {}
+            for fp_info in current_app_tree.flat_files:
+                lang_key = resolve_language_for_filename(fp_info.filename or fp_info.filepath)
+                if lang_key:
+                    derived_langs[lang_key] = derived_langs.get(lang_key, 0) + 1
+            _last_languages_detected = derived_langs
 
         if cached and isinstance(cached.get("latest_findings"), list):
             try:
@@ -3928,6 +4004,13 @@ def activate_project(project_id: str, skip_warmup: bool = Query(False)):
             target.files_scanned_count = current_app_tree.total_files
         if cached or _last_neo4j_ingested_dir == _norm_act:
             enterprise_mgr._sync_active_project_metrics(refreshed)
+    else:
+        current_community_map = CommunityMapResponse(graph_engine_mode=graph_store_mgr.mode)
+        _last_languages_detected = {}
+        _last_scope_telemetry = None
+        _last_scanned_files = []
+        _last_cpg_nodes = []
+        _last_cpg_edges = []
 
     enterprise_mgr._save_persisted_state()
     return target
@@ -4076,8 +4159,12 @@ def add_custom_sanitizer_rule(req: AddCustomSanitizerRequest):
     """Registers a custom sanitizer function and dynamically marks matching CPG nodes in the active GraphStore."""
     global _cached_findings
     try:
-        active_neo4j = neo4j_client if graph_store_mgr.mode == "NEO4J_APOC" else None
-        san = enterprise_mgr.add_custom_sanitizer(req, neo4j_client=active_neo4j)
+        san = enterprise_mgr.add_custom_sanitizer(req, neo4j_client=None)
+        graph_store_mgr.apply_custom_sanitizer(
+            san.function_name,
+            active=san.active,
+            domains=["UNIVERSAL"] if san.active else [],
+        )
         _cached_findings = None
         get_or_compute_findings(force_refresh=True)
         return san
@@ -4089,10 +4176,14 @@ def add_custom_sanitizer_rule(req: AddCustomSanitizerRequest):
 def toggle_custom_sanitizer_rule(san_id: str):
     """Toggles a custom sanitizer active/inactive and updates active GraphStore CPG nodes."""
     global _cached_findings
-    active_neo4j = neo4j_client if graph_store_mgr.mode == "NEO4J_APOC" else None
-    san = enterprise_mgr.toggle_custom_sanitizer(san_id, neo4j_client=active_neo4j)
+    san = enterprise_mgr.toggle_custom_sanitizer(san_id, neo4j_client=None)
     if not san:
         raise HTTPException(status_code=404, detail=f"Sanitizer not found: {san_id}")
+    graph_store_mgr.apply_custom_sanitizer(
+        san.function_name,
+        active=san.active,
+        domains=["UNIVERSAL"] if san.active else [],
+    )
     _cached_findings = None
     get_or_compute_findings(force_refresh=True)
     return san

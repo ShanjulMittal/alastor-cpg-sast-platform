@@ -1195,7 +1195,9 @@ class EmbeddedGraphStore:
                 or u.name.endswith(".urlopen")
                 or u.name.endswith(".urlretrieve")
             )
-            if not is_urllib or u.is_sanitizer:
+            if not is_urllib or (
+                u.is_sanitizer and is_sanitizer_compatible_for_sink(u.sanitizer_domains, "URL")
+            ):
                 continue
             if '("https://' in u.code or "('https://" in u.code:
                 continue
@@ -1235,7 +1237,7 @@ class EmbeddedGraphStore:
             if c.name in _LOG_INJECTION_SINKS
             and ('f"' in c.code or "f'" in c.code or " + " in c.code)
         }
-        paths = self._shortest_dfg_paths_for_domain(sources, sinks, None, max_depth=10)
+        paths = self._shortest_dfg_paths_for_domain(sources, sinks, "LOG", max_depth=10)
         paths.sort(key=lambda pair: (len(pair[0]), pair[0][0].id, pair[0][-1].id))
         for p_nodes, p_edges in paths[:100]:
             sink = p_nodes[-1]
@@ -1596,6 +1598,67 @@ class EmbeddedGraphStore:
                 extra_nodes=list(self._nodes.values())[:50],
             )
 
+    def apply_custom_sanitizer(
+        self,
+        function_name: str,
+        active: bool = True,
+        domains: Optional[List[str]] = None,
+    ) -> int:
+        """
+        Dynamically marks or unmarks matching CPG nodes in both SQLite (`cpg_nodes`) and
+        in-memory adjacency indices using strictly parameterized `?` SQL statements.
+        """
+        fn_clean = (function_name or "").strip()
+        if not fn_clean:
+            return 0
+        if active:
+            eff_domains = [
+                str(d).strip().upper()
+                for d in (domains or ["UNIVERSAL"])
+                if str(d).strip()
+            ] or ["UNIVERSAL"]
+        else:
+            eff_domains = []
+        domains_json = json.dumps(eff_domains)
+        is_san_int = 1 if active else 0
+        call_needle = f"{fn_clean}("
+        dotted_suffix = f".{fn_clean}"
+
+        with self._lock:
+            self._ensure_loaded()
+            matched_ids: List[str] = [
+                node.id
+                for node in self._nodes.values()
+                if (
+                    node.name == fn_clean
+                    or node.name.endswith(dotted_suffix)
+                    or call_needle in node.code
+                )
+            ]
+            if not matched_ids:
+                return 0
+
+            conn = self._get_conn()
+            try:
+                conn.executemany(
+                    "UPDATE cpg_nodes SET is_sanitizer = ?, sanitizer_domains_json = ? WHERE id = ?",
+                    [(is_san_int, domains_json, nid) for nid in matched_ids],
+                )
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                raise
+
+            for nid in matched_ids:
+                node = self._nodes[nid]
+                node.is_sanitizer = bool(active)
+                node.sanitizer_domains = list(eff_domains)
+
+            return len(matched_ids)
+
 
 # ---------------------------------------------------------------------------
 # Neo4jGraphStore — Primary Bolt + APOC Engine Wrapper
@@ -1772,6 +1835,53 @@ class Neo4jGraphStore:
                 uniq_edges[str(e["id"])] = dict(e)
         return {"view_mode": mode_upper, "nodes": list(uniq_nodes.values()), "edges": list(uniq_edges.values())}
 
+    def apply_custom_sanitizer(
+        self,
+        function_name: str,
+        active: bool = True,
+        domains: Optional[List[str]] = None,
+    ) -> int:
+        fn_clean = (function_name or "").strip()
+        if not fn_clean:
+            return 0
+        eff_domains = (
+            [str(d).strip().upper() for d in (domains or ["UNIVERSAL"]) if str(d).strip()] or ["UNIVERSAL"]
+            if active
+            else []
+        )
+        updated = 0
+        if self.neo4j_client and getattr(self.neo4j_client, "driver", None):
+            try:
+                with self.neo4j_client.driver.session() as session:
+                    rec = session.run(
+                        """
+                        MATCH (n:CPGNode)
+                        WHERE n.name = $fn OR n.name ENDS WITH ('.' + $fn) OR n.code CONTAINS ($fn + '(')
+                        SET n.is_sanitizer = $active, n.sanitizer_domains = $domains
+                        RETURN count(n) AS updated
+                        """,
+                        fn=fn_clean,
+                        active=bool(active),
+                        domains=eff_domains,
+                    ).single()
+                    if rec:
+                        updated = int(rec["updated"] or 0)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to apply custom sanitizer %s in Neo4j: %s",
+                    _sanitize_log_text(fn_clean),
+                    _sanitize_log_text(exc),
+                )
+        for node in self._last_nodes:
+            if (
+                node.name == fn_clean
+                or node.name.endswith(f".{fn_clean}")
+                or f"{fn_clean}(" in node.code
+            ):
+                node.is_sanitizer = bool(active)
+                node.sanitizer_domains = list(eff_domains)
+        return updated
+
     def close(self) -> None:
         self.embedded_cache.close()
 
@@ -1937,6 +2047,30 @@ class GraphStoreManager:
             findings=findings,
             app_tree=app_tree,
         )
+
+    def apply_custom_sanitizer(
+        self,
+        function_name: str,
+        active: bool = True,
+        domains: Optional[List[str]] = None,
+    ) -> int:
+        """
+        Applies a custom sanitizer update in-place across the active backend (Neo4j when
+        `NEO4J_APOC`) AND the embedded SQLite store so live rule queries reflect it immediately.
+        """
+        updated_embedded = self._embedded_store.apply_custom_sanitizer(
+            function_name=function_name,
+            active=active,
+            domains=domains,
+        )
+        if self.mode == "NEO4J_APOC" and self._neo4j_store is not None:
+            updated_neo4j = self._neo4j_store.apply_custom_sanitizer(
+                function_name=function_name,
+                active=active,
+                domains=domains,
+            )
+            return max(updated_neo4j, updated_embedded)
+        return updated_embedded
 
     def close(self) -> None:
         with self._lock:
