@@ -45,7 +45,9 @@ with warnings.catch_warnings():
         TableStyle,
     )
 
+from engine.frontier_ai_engine import scrub_raw_secrets_text
 from models import (
+    EvReplayBundleItem,
     ExploitChainItem,
     Finding,
     GoLiveObservationItem,
@@ -58,6 +60,24 @@ from models import (
 
 _CTRL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 _MASK_FALLBACK_LABEL = "[REDACTED_" + "SECRET]"
+_EV_SENSITIVE_HEADER_KEYS = frozenset(
+    {
+        "authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "x-auth-token",
+        "proxy-authorization",
+        "x-access-token",
+    }
+)
+_EV_SAFE_PLACEHOLDERS = frozenset(
+    {"<USER_A_TOKEN>", "<USER_B_TOKEN>", "<REDACTED_HEADER>", _MASK_FALLBACK_LABEL, "[REDACTED]"}
+)
+_EV_BEARER_BASIC_RX = re.compile(
+    r"\b(Bearer|Basic)\s+(?![<\[]|REDACTED)[A-Za-z0-9._~+/=-]{8,}\b",
+    re.IGNORECASE,
+)
 
 # Corporate Daylight Palette
 _HEX_NAVY = "0F172A"
@@ -104,6 +124,7 @@ class SarReportBundle(BaseModel):
     metrics: MetricsResponse
     findings: List[Finding] = Field(default_factory=list)
     exploit_chains: List[ExploitChainItem] = Field(default_factory=list)
+    ev_replays: List[EvReplayBundleItem] = Field(default_factory=list)
 
 
 def _clean_xml_text(value: Any, max_len: int = 0) -> str:
@@ -133,11 +154,64 @@ def _scrub_value_recursive(node: Any, replacements: List[Tuple[str, str]]) -> An
     return node
 
 
+def _scrub_ev_text_value(
+    value: Optional[str],
+    replacements: List[Tuple[str, str]],
+) -> str:
+    if value is None:
+        return ""
+    out = _scrub_value_recursive(str(value), replacements)
+    out = scrub_raw_secrets_text(out)
+    out = _EV_BEARER_BASIC_RX.sub(r"\1 [REDACTED_SECRET]", out)
+    return out
+
+
+def _sanitize_ev_replay_item(
+    item: EvReplayBundleItem,
+    replacements: List[Tuple[str, str]],
+) -> EvReplayBundleItem:
+    dumped = item.model_dump()
+    scrubbed = _scrub_value_recursive(dumped, replacements)
+    for text_field in (
+        "evidence_summary",
+        "response_excerpt",
+        "curl_poc",
+        "pytest_poc",
+        "target_url",
+        "path",
+        "body",
+        "expected_indicator",
+    ):
+        cur_val = scrubbed.get(text_field)
+        if cur_val is not None:
+            scrubbed[text_field] = _scrub_ev_text_value(str(cur_val), replacements)
+
+    raw_q = scrubbed.get("query_params")
+    if isinstance(raw_q, dict):
+        scrubbed["query_params"] = {
+            str(k): _scrub_ev_text_value(str(v), replacements)
+            for k, v in raw_q.items()
+        }
+
+    raw_hdrs = scrubbed.get("masked_headers")
+    clean_hdrs: Dict[str, str] = {}
+    if isinstance(raw_hdrs, dict):
+        for hk, hv in raw_hdrs.items():
+            key_s = str(hk)
+            val_s = str(hv or "")
+            if key_s.lower() in _EV_SENSITIVE_HEADER_KEYS:
+                clean_hdrs[key_s] = val_s if val_s in _EV_SAFE_PLACEHOLDERS else "<REDACTED_HEADER>"
+            else:
+                clean_hdrs[key_s] = _scrub_ev_text_value(val_s, replacements)
+    scrubbed["masked_headers"] = clean_hdrs
+    return EvReplayBundleItem.model_validate(scrubbed)
+
+
 def sanitize_bundle_for_export(bundle: SarReportBundle) -> SarReportBundle:
     """
     Deep-copies the bundle, strips `secret_value_raw` on every finding, and scrubs all
     raw credential occurrences (length >= 4, sorted by length descending) across every
-    model field in `pasta`, `sast_plus`, `raci`, `metrics`, and `findings`.
+    model field in `pasta`, `sast_plus`, `raci`, `metrics`, `findings`, and `ev_replays`.
     """
     mask_by_raw: Dict[str, str] = {}
     candidate_lists: List[List[Finding]] = [list(bundle.findings or [])]
@@ -146,6 +220,15 @@ def sanitize_bundle_for_export(bundle: SarReportBundle) -> SarReportBundle:
             raw_cand = f_item.secret_value_raw
             if raw_cand and len(raw_cand) >= 4 and raw_cand not in mask_by_raw:
                 mask_by_raw[raw_cand] = f_item.secret_value_masked or _MASK_FALLBACK_LABEL
+
+    for rep in bundle.ev_replays or []:
+        for hk, hv in (rep.masked_headers or {}).items():
+            if hk.lower() in _EV_SENSITIVE_HEADER_KEYS and hv and hv not in _EV_SAFE_PLACEHOLDERS:
+                if len(hv) >= 4 and hv not in mask_by_raw:
+                    mask_by_raw[hv] = "<REDACTED_HEADER>"
+                parts = hv.split(None, 1)
+                if len(parts) == 2 and len(parts[1]) >= 4 and parts[1] not in mask_by_raw:
+                    mask_by_raw[parts[1]] = _MASK_FALLBACK_LABEL
 
     ordered_raws = sorted(mask_by_raw.keys(), key=len, reverse=True)
     for idx_hi, longer_raw in enumerate(ordered_raws):
@@ -167,6 +250,11 @@ def sanitize_bundle_for_export(bundle: SarReportBundle) -> SarReportBundle:
         dumped_f = f_orig.model_dump(exclude={"secret_value_raw"})
         scrubbed_f = _scrub_value_recursive(dumped_f, sorted_replacements)
         scrubbed_f.pop("secret_value_raw", None)
+        if scrubbed_f.get("ev_evidence_summary") is not None:
+            scrubbed_f["ev_evidence_summary"] = _scrub_ev_text_value(
+                str(scrubbed_f["ev_evidence_summary"]),
+                sorted_replacements,
+            )
         sanitized_findings.append(Finding.model_validate(scrubbed_f))
 
     scrubbed_pasta = PastaAssessmentResponse.model_validate(
@@ -189,6 +277,10 @@ def sanitize_bundle_for_export(bundle: SarReportBundle) -> SarReportBundle:
         )
         for chain in (bundle.exploit_chains or [])
     ]
+    scrubbed_ev_replays: List[EvReplayBundleItem] = [
+        _sanitize_ev_replay_item(rep, sorted_replacements)
+        for rep in (bundle.ev_replays or [])
+    ]
 
     clean_app = _scrub_value_recursive(bundle.application_name, sorted_replacements)
     clean_path = _scrub_value_recursive(bundle.project_path, sorted_replacements)
@@ -203,6 +295,7 @@ def sanitize_bundle_for_export(bundle: SarReportBundle) -> SarReportBundle:
         metrics=scrubbed_metrics,
         findings=sanitized_findings,
         exploit_chains=scrubbed_chains,
+        ev_replays=scrubbed_ev_replays,
     )
 
 
@@ -321,6 +414,90 @@ def _build_formal_signoff_rows(bundle: SarReportBundle) -> List[Dict[str, str]]:
     ]
 
 
+def _resolve_ev_status_maps(clean: SarReportBundle) -> Tuple[Dict[str, str], Dict[str, str]]:
+    finding_ev_map: Dict[str, str] = {
+        f.id: str(f.ev_status)
+        for f in (clean.findings or [])
+        if f.id and getattr(f, "ev_status", None)
+    }
+    replay_ev_map: Dict[str, str] = {}
+    for rep in clean.ev_replays or []:
+        if not rep.finding_id:
+            continue
+        prev = replay_ev_map.get(rep.finding_id)
+        if prev is None or (rep.status == "RUNTIME_EXPLOIT_CONFIRMED" and prev != "RUNTIME_EXPLOIT_CONFIRMED"):
+            replay_ev_map[rep.finding_id] = str(rep.status)
+    return finding_ev_map, replay_ev_map
+
+
+def _ev_badge_for_observation(
+    obs: GoLiveObservationItem,
+    finding_ev_map: Dict[str, str],
+    replay_ev_map: Dict[str, str],
+) -> str:
+    fid = obs.linked_finding_id or ""
+    if not fid:
+        return ""
+    ev_st = finding_ev_map.get(fid) or replay_ev_map.get(fid)
+    if ev_st == "RUNTIME_EXPLOIT_CONFIRMED":
+        return "[RUNTIME EXPLOIT CONFIRMED]"
+    if ev_st == "FIXED_VERIFIED":
+        return "[FIXED VERIFIED]"
+    return ""
+
+
+def _build_ev_attestation_rows(ev_replays: List[EvReplayBundleItem]) -> List[List[str]]:
+    return [
+        [
+            rep.replay_id,
+            rep.probe_family,
+            f"{rep.method} {rep.path}",
+            rep.status,
+            rep.finding_id or "UNLINKED",
+            rep.evidence_summary,
+        ]
+        for rep in ev_replays
+    ]
+
+
+def _format_ev_attestation_summary(ev_replays: List[EvReplayBundleItem]) -> str:
+    ev_conf_cnt = sum(1 for r in ev_replays if r.status == "RUNTIME_EXPLOIT_CONFIRMED")
+    ev_fix_cnt = sum(1 for r in ev_replays if r.status == "FIXED_VERIFIED")
+    return (
+        f"{len(ev_replays)} persisted EV replay bundle(s): "
+        f"{ev_conf_cnt} RUNTIME EXPLOIT CONFIRMED, {ev_fix_cnt} FIXED VERIFIED."
+    )
+
+
+def _build_mandatory_blocker_rows(
+    clean: SarReportBundle,
+    mandatory_items: List[GoLiveObservationItem],
+    include_badge_in_why: bool = False,
+) -> List[List[str]]:
+    finding_ev_map, replay_ev_map = _resolve_ev_status_maps(clean)
+    blk_rows: List[List[str]] = []
+    for b in mandatory_items:
+        ev_badge = _ev_badge_for_observation(b, finding_ev_map, replay_ev_map)
+        id_sev_col = f"{b.id}\n[{b.severity}]\n{ev_badge}" if ev_badge else f"{b.id}\n[{b.severity}]"
+        why_col = (
+            f"{ev_badge} {b.why_issue} {b.why_gate_classification}"
+            if (include_badge_in_why and ev_badge)
+            else f"{b.why_issue} {b.why_gate_classification}"
+        )
+        blk_rows.append(
+            [
+                id_sev_col,
+                f"{b.source_type}\n{b.cwe_or_standard}",
+                f"{b.filepath}:L{b.line}",
+                why_col,
+                b.mandatory_fix_action,
+                f"{b.raci_owner} ({b.effort_estimate})",
+                f"-{b.risk_reduction_points} pts",
+            ]
+        )
+    return blk_rows
+
+
 def _format_attack_tree_chain(scenario: PastaAttackTreeScenario) -> str:
     ordered_nodes = [n for n in scenario.nodes if n.node_role != "BFL_SHIELD"]
     if not ordered_nodes:
@@ -406,6 +583,7 @@ def build_sar_json_dict(bundle: SarReportBundle) -> Dict[str, Any]:
         },
         "findings": [f.model_dump() for f in clean.findings],
         "exploit_chains": [c.model_dump() for c in clean.exploit_chains],
+        "ev_replays": [r.model_dump() for r in clean.ev_replays],
     }
 
 
@@ -429,7 +607,22 @@ def _docx_repeat_header_row(row: Any) -> None:
 
 def _docx_status_color(status_txt: str) -> RGBColor:
     up = (status_txt or "").upper()
-    if any(k in up for k in ("NO-GO", "NO_GO", "CRITICAL", "HIGH", "FAIL", "ACTION_REQUIRED", "MANDATORY", "EXPLOITABLE")):
+    if any(
+        k in up
+        for k in (
+            "NO-GO",
+            "NO_GO",
+            "CRITICAL",
+            "HIGH",
+            "FAIL",
+            "ACTION_REQUIRED",
+            "MANDATORY",
+            "EXPLOITABLE",
+            "RUNTIME EXPLOIT CONFIRMED",
+            "RUNTIME_EXPLOIT_CONFIRMED",
+            "STILL_VULNERABLE",
+        )
+    ):
         return _DOCX_ROSE
     if any(k in up for k in ("CONDITIONAL", "MODERATE", "MEDIUM", "WARNING", "MONITORED", "SLA", "PARTIALLY", "WAIVER", "WAIVED")):
         return _DOCX_AMBER
@@ -859,18 +1052,7 @@ def generate_sar_docx_bytes(bundle: SarReportBundle) -> bytes:
             _DOCX_EMERALD,
         )
     else:
-        blk_rows = [
-            [
-                f"{b.id}\n[{b.severity}]",
-                f"{b.source_type}\n{b.cwe_or_standard}",
-                f"{b.filepath}:L{b.line}",
-                f"{b.why_issue} {b.why_gate_classification}",
-                b.mandatory_fix_action,
-                f"{b.raci_owner} ({b.effort_estimate})",
-                f"-{b.risk_reduction_points} pts",
-            ]
-            for b in mandatory_items
-        ]
+        blk_rows = _build_mandatory_blocker_rows(clean, mandatory_items, include_badge_in_why=False)
         _docx_add_styled_table(
             doc,
             [
@@ -885,6 +1067,26 @@ def generate_sar_docx_bytes(bundle: SarReportBundle) -> bytes:
             blk_rows,
             status_col_indices=(0,),
             mono_col_indices=(2, 4),
+        )
+
+    _docx_add_sub_heading(
+        doc,
+        "Live Exploit Verification (EV) & Post-Fix ev-replay Runtime Attestation",
+    )
+    if not clean.ev_replays:
+        _docx_add_body(doc, "No live EV probes executed for this assessment scope.")
+    else:
+        _docx_add_body(
+            doc,
+            _format_ev_attestation_summary(clean.ev_replays),
+            bold_prefix="Runtime Attestation Summary:",
+        )
+        _docx_add_styled_table(
+            doc,
+            ["Replay ID", "Probe Family", "Endpoint", "Status", "Finding ID", "Evidence Summary"],
+            _build_ev_attestation_rows(clean.ev_replays),
+            status_col_indices=(3,),
+            mono_col_indices=(0, 2, 4),
         )
 
     # Section 7 — POST-GO-LIVE ALLOWED OBSERVATIONS (Deferrable with Binding SLA & Compensating Controls)
@@ -1009,7 +1211,22 @@ def generate_sar_docx_bytes(bundle: SarReportBundle) -> bytes:
 # ---------------------------------------------------------------------------
 def _rl_status_hex(status_txt: str) -> str:
     up = (status_txt or "").upper()
-    if any(k in up for k in ("NO-GO", "NO_GO", "CRITICAL", "HIGH", "FAIL", "ACTION_REQUIRED", "MANDATORY", "EXPLOITABLE")):
+    if any(
+        k in up
+        for k in (
+            "NO-GO",
+            "NO_GO",
+            "CRITICAL",
+            "HIGH",
+            "FAIL",
+            "ACTION_REQUIRED",
+            "MANDATORY",
+            "EXPLOITABLE",
+            "RUNTIME EXPLOIT CONFIRMED",
+            "RUNTIME_EXPLOIT_CONFIRMED",
+            "STILL_VULNERABLE",
+        )
+    ):
         return f"#{_HEX_ROSE}"
     if any(k in up for k in ("CONDITIONAL", "MODERATE", "MEDIUM", "WARNING", "MONITORED", "SLA", "PARTIALLY", "WAIVER", "WAIVED")):
         return f"#{_HEX_AMBER}"
@@ -1551,18 +1768,7 @@ def generate_sar_pdf_bytes(bundle: SarReportBundle) -> bytes:
             )
         )
     else:
-        blk_rows = [
-            [
-                f"{b.id} [{b.severity}]",
-                f"{b.source_type} / {b.cwe_or_standard}",
-                f"{b.filepath}:L{b.line}",
-                f"{b.why_issue} {b.why_gate_classification}",
-                b.mandatory_fix_action,
-                f"{b.raci_owner} ({b.effort_estimate})",
-                f"-{b.risk_reduction_points} pts",
-            ]
-            for b in mandatory_items
-        ]
+        blk_rows = _build_mandatory_blocker_rows(clean, mandatory_items, include_badge_in_why=True)
         story.append(
             _build_rl_table(
                 ["ID & Sev", "Domain & CWE", "Location", "Why It Blocks Go-Live", "Mandatory Fix", "Owner & Effort", "Reduction"],
@@ -1574,6 +1780,35 @@ def generate_sar_pdf_bytes(bundle: SarReportBundle) -> bytes:
                 mono_cell_st,
                 status_cols=(0,),
                 mono_cols=(2, 4),
+            )
+        )
+
+    story.append(
+        Paragraph(
+            "Live Exploit Verification (EV) &amp; Post-Fix ev-replay Runtime Attestation",
+            subsec_st,
+        )
+    )
+    if not clean.ev_replays:
+        story.append(Paragraph("No live EV probes executed for this assessment scope.", body_st))
+    else:
+        story.append(
+            Paragraph(
+                f"<b>Runtime Attestation Summary:</b> {_rl_esc(_format_ev_attestation_summary(clean.ev_replays), max_len=400)}",
+                body_st,
+            )
+        )
+        story.append(
+            _build_rl_table(
+                ["Replay ID", "Probe Family", "Endpoint", "Status", "Finding ID", "Evidence Summary"],
+                _build_ev_attestation_rows(clean.ev_replays),
+                [0.12, 0.18, 0.15, 0.24, 0.11, 0.20],
+                avail_w,
+                hdr_cell_st,
+                cell_st,
+                mono_cell_st,
+                status_cols=(3,),
+                mono_cols=(0, 2, 4),
             )
         )
 

@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 from compiler.app_tree import AppTreeAnalyzer
 from engine.api_operations_engine import ApiOperationsEngine
+from engine.frontier_ai_engine import scrub_raw_secrets_text
 from models import (
     ApiEndpointOperationDossier,
     ApiOperationsReportResponse,
@@ -253,6 +254,12 @@ def _normalize_severity(raw_sev: str) -> Literal["CRITICAL", "HIGH", "MEDIUM", "
     return "LOW"
 
 
+_BEARER_FALLBACK_RX = re.compile(
+    r"\bBearer\s+(?![<\[]|REDACTED)[A-Za-z0-9._~+/=-]{8,}\b",
+    re.IGNORECASE,
+)
+
+
 def _redact_sensitive_text(text: str, forbidden_values: Set[str]) -> str:
     safe_txt = (text or "").replace("\x00", "").strip()
     if not safe_txt or not forbidden_values:
@@ -261,6 +268,27 @@ def _redact_sensitive_text(text: str, forbidden_values: Set[str]) -> str:
         if raw_val and raw_val in safe_txt:
             safe_txt = safe_txt.replace(raw_val, "[REDACTED]")
     return safe_txt
+
+
+def _scrub_ev_summary_text(
+    raw_summary: Optional[str],
+    forbidden_values: Optional[Set[str]] = None,
+    extra_secret: Optional[str] = None,
+    max_len: int = 200,
+) -> str:
+    txt = str(raw_summary or "").replace("\r", " ").replace("\n", " ").replace("\x00", "").strip()
+    if not txt:
+        return ""
+    extra: Set[str] = set()
+    if forbidden_values:
+        extra.update(v for v in forbidden_values if isinstance(v, str) and len(v) >= 4)
+    if extra_secret and len(extra_secret) >= 4:
+        extra.add(extra_secret)
+    scrubbed = scrub_raw_secrets_text(txt, extra_raw_secrets=extra)
+    scrubbed = _BEARER_FALLBACK_RX.sub("Bearer [REDACTED_SECRET]", scrubbed)
+    if max_len > 3 and len(scrubbed) > max_len:
+        return scrubbed[: max_len - 3] + "..."
+    return scrubbed
 
 
 def _finding_location(f: Finding) -> Tuple[str, int, str]:
@@ -821,14 +849,11 @@ class PastaThreatEngine:
             )
         return jewels
 
-    def _classify_default_finding_gate(
+    def _classify_static_finding_gate(
         self,
         f: Finding,
     ) -> Tuple[GoLiveGateStatus, GoLiveSlaWindow, str, str, int]:
-        """
-        Applies the deterministic Go-Live Gate policy to an active Finding.
-        Returns `(gate_status, sla_window, why_classification, compensating_control, risk_reduction_pts)`.
-        """
+        """Static baseline Go-Live Gate policy classification for an active Finding."""
         sev = _normalize_severity(f.severity)
         cwe = (f.cwe_id or "").upper()
         is_cred = bool(f.is_secret_finding or cwe == "CWE-798")
@@ -930,6 +955,48 @@ class PastaThreatEngine:
             3,
         )
 
+    def _classify_default_finding_gate(
+        self,
+        f: Finding,
+    ) -> Tuple[GoLiveGateStatus, GoLiveSlaWindow, str, str, int]:
+        """
+        Applies the deterministic Go-Live Gate policy to an active Finding.
+        Any Finding with `ev_status == 'RUNTIME_EXPLOIT_CONFIRMED'` is unconditionally promoted
+        to `MANDATORY_PRE_GO_LIVE` (`PRE_LAUNCH`) regardless of original static severity.
+        Returns `(gate_status, sla_window, why_classification, compensating_control, risk_reduction_pts)`.
+        """
+        ev_status = getattr(f, "ev_status", None)
+        ev_sum_clean = _scrub_ev_summary_text(
+            getattr(f, "ev_evidence_summary", None),
+            extra_secret=getattr(f, "secret_value_raw", None),
+            max_len=200,
+        )
+
+        if ev_status == "RUNTIME_EXPLOIT_CONFIRMED":
+            why_ev = (
+                "Auto-promoted to Mandatory Pre-Go-Live Blocker: Live Exploit Verification (EV) "
+                "confirmed active runtime exploitability."
+            )
+            if ev_sum_clean:
+                why_ev = f"{why_ev} Evidence: {ev_sum_clean}"
+            return (
+                "MANDATORY_PRE_GO_LIVE",
+                "PRE_LAUNCH",
+                why_ev,
+                "No post-launch deferral permitted without CISO waiver; remediate vulnerable endpoint and re-run post-fix ev-replay to verify FIXED_VERIFIED prior to launch.",
+                26,
+            )
+
+        gate_st, sla_win, why_static, comp_ctrl, red_pts = self._classify_static_finding_gate(f)
+        if ev_status == "FIXED_VERIFIED":
+            ev_note = (
+                f" [EV Post-Fix Replay: FIXED_VERIFIED — {ev_sum_clean}]"
+                if ev_sum_clean
+                else " [EV Post-Fix Replay: FIXED_VERIFIED — remediation confirmed via live replay.]"
+            )
+            return gate_st, sla_win, f"{why_static}{ev_note}", comp_ctrl, red_pts
+        return gate_st, sla_win, why_static, comp_ctrl, red_pts
+
     def _build_golive_observations(
         self,
         active_findings: List[Finding],
@@ -962,6 +1029,7 @@ class PastaThreatEngine:
         sorted_findings = sorted(
             active_findings,
             key=lambda item: (
+                0 if getattr(item, "ev_status", None) == "RUNTIME_EXPLOIT_CONFIRMED" else 1,
                 _SEVERITY_ORDER.get(item.severity, 9),
                 0 if item.reachability_status == "REACHABLE" else 1,
                 item.id,
@@ -1024,7 +1092,10 @@ class PastaThreatEngine:
                     is_overridden=False,
                     sla_window=def_sla,
                     why_issue=why_issue_txt[:420],
-                    why_gate_classification=why_gate,
+                    why_gate_classification=_redact_sensitive_text(
+                        scrub_raw_secrets_text(why_gate, extra_raw_secrets=forbidden_raw_values),
+                        forbidden_raw_values,
+                    ),
                     mandatory_fix_action=_redact_sensitive_text(bfl_fix, forbidden_raw_values)[:320],
                     compensating_control=comp_ctrl,
                     effort_estimate=f.effort_estimate or "~25 mins",
@@ -1251,7 +1322,12 @@ class PastaThreatEngine:
         prioritized_findings = sorted(
             active_findings,
             key=lambda item: (
-                0 if item.secret_validation_status == "VERIFIED_ACTIVE" else 1,
+                0
+                if (
+                    item.secret_validation_status == "VERIFIED_ACTIVE"
+                    or getattr(item, "ev_status", None) == "RUNTIME_EXPLOIT_CONFIRMED"
+                )
+                else 1,
                 _SEVERITY_ORDER.get(item.severity, 9),
                 0 if item.reachability_status == "REACHABLE" else 1,
                 item.id,
@@ -1314,9 +1390,17 @@ class PastaThreatEngine:
                 prop_title = f"Scope Propagation ({os.path.basename(sink_fp)})"
 
             is_cred = bool(f.is_secret_finding or (f.cwe_id or "").upper() == "CWE-798")
-            is_dormant_or_guarded = (
+            is_ev_confirmed = getattr(f, "ev_status", None) == "RUNTIME_EXPLOIT_CONFIRMED"
+            is_dormant_or_guarded = (not is_ev_confirmed) and (
                 (not is_cred and f.reachability_status != "REACHABLE")
-                or (is_cred and (f.secret_source == "GIT_HISTORY" or f.secret_validation_status in ("REVOKED_OR_INVALID", "TEST_OR_PLACEHOLDER")) and f.secret_validation_status != "VERIFIED_ACTIVE")
+                or (
+                    is_cred
+                    and (
+                        f.secret_source == "GIT_HISTORY"
+                        or f.secret_validation_status in ("REVOKED_OR_INVALID", "TEST_OR_PLACEHOLDER")
+                    )
+                    and f.secret_validation_status != "VERIFIED_ACTIVE"
+                )
             )
             tree_status: Literal["EXPLOITABLE_PATH", "PARTIALLY_GUARDED", "SEVERED_BY_CONTROLS"] = (
                 "PARTIALLY_GUARDED" if is_dormant_or_guarded else "EXPLOITABLE_PATH"

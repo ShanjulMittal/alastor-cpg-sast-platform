@@ -70,6 +70,13 @@ from models import (
     ExploitChainResponse,
     PatchPanelValidateRequest,
     PatchPanelValidateResponse,
+    EvStatusType,
+    EvRunRequest,
+    EvPlanResponse,
+    EvRunResponse,
+    EvReplayRequest,
+    EvReplayResponse,
+    EvReplayListResponse,
 )
 from database.neo4j_client import Neo4jClient
 from database.batch_ingestor import BatchIngestor
@@ -81,6 +88,7 @@ from engine.enterprise_manager import EnterpriseManager
 from engine.frontier_ai_engine import FrontierAiEngine, scrub_raw_secrets_text
 from engine.secret_validator_engine import get_secret_validator_engine
 from engine.api_operations_engine import get_api_operations_engine
+from engine.exploit_verification_engine import ExploitVerificationEngine
 from engine.security_playbooks import (
     classify_repo_kinds_and_baselines,
     run_cognitive_hunt,
@@ -180,6 +188,9 @@ frontier_ai_engine = FrontierAiEngine(
 )
 secret_validator_engine = get_secret_validator_engine(enterprise_mgr.platform_root)
 api_operations_engine = get_api_operations_engine()
+ev_engine = ExploitVerificationEngine(
+    vault_dir=os.path.join(enterprise_mgr.platform_root, ".alastor_vault")
+)
 current_scan_dir: str = enterprise_mgr.platform_root
 current_app_tree: Optional[AppTreeSummary] = None
 graph_store_mgr = GraphStoreManager.get_instance(
@@ -1860,6 +1871,7 @@ _cached_cognitive_findings: List[Finding] = []
 _cached_cognitive_dir: str = ""
 _last_neo4j_ingested_dir: Optional[str] = None
 _findings_lock = threading.Lock()
+_ev_scan_cache_sync_lock = threading.Lock()
 
 _COGNITIVE_REDACT_FALLBACK = "[REDACTED_" + "SECRET]"
 
@@ -1868,6 +1880,135 @@ def _snapshot_cached_cognitive() -> Tuple[List[Finding], str]:
     """Returns a thread-safe snapshot of cached cognitive findings and their directory."""
     with _findings_lock:
         return list(_cached_cognitive_findings), _cached_cognitive_dir
+
+
+def _correlate_ev_status_onto_findings(
+    project_path: str,
+    findings: List[Finding],
+    status_map: Optional[Dict[str, Tuple[EvStatusType, str]]] = None,
+    clear_stale: bool = False,
+) -> List[Finding]:
+    """
+    Correlates persisted Exploit Verification (`ev_status` / scrubbed `ev_evidence_summary`)
+    from `ev_engine` onto matching Finding objects without mutating callers' inputs in place.
+    """
+    if not findings:
+        return findings
+    eff_map = (
+        status_map
+        if status_map is not None
+        else ev_engine.get_confirmed_status_map(project_path)
+    )
+    if not eff_map and not clear_stale:
+        return findings
+
+    correlated: List[Finding] = []
+    for f in findings:
+        if f.id in eff_map:
+            ev_st, ev_sum = eff_map[f.id]
+            extra_raw = [f.secret_value_raw] if f.secret_value_raw else None
+            safe_sum = scrub_raw_secrets_text(ev_sum or "", extra_raw_secrets=extra_raw)
+            correlated.append(
+                f.model_copy(
+                    deep=True,
+                    update={
+                        "ev_status": ev_st,
+                        "ev_evidence_summary": safe_sum,
+                    },
+                )
+            )
+        elif clear_stale and (f.ev_status is not None or f.ev_evidence_summary is not None):
+            correlated.append(
+                f.model_copy(
+                    deep=True,
+                    update={
+                        "ev_status": None,
+                        "ev_evidence_summary": None,
+                    },
+                )
+            )
+        else:
+            correlated.append(f)
+    return correlated
+
+
+def _sync_cached_findings_ev_status(project_path: str, clear_stale: bool = True) -> None:
+    """
+    Synchronizes persisted `ev_engine` status onto in-memory cached findings and per-project
+    scan cache without nesting `ev_engine._lock` inside `_findings_lock`.
+    """
+    global _cached_findings, _cached_external_findings, _cached_cognitive_findings
+    status_map = ev_engine.get_confirmed_status_map(project_path)
+    norm_req = os.path.normcase(os.path.realpath(project_path))
+
+    with _findings_lock:
+        norm_cur = os.path.normcase(os.path.realpath(current_scan_dir or enterprise_mgr.platform_root))
+        if norm_req == norm_cur:
+            if _cached_findings is not None:
+                _cached_findings = _correlate_ev_status_onto_findings(
+                    project_path,
+                    _cached_findings,
+                    status_map=status_map,
+                    clear_stale=clear_stale,
+                )
+            if _cached_external_findings:
+                _cached_external_findings = _correlate_ev_status_onto_findings(
+                    project_path,
+                    _cached_external_findings,
+                    status_map=status_map,
+                    clear_stale=clear_stale,
+                )
+        if _cached_cognitive_dir:
+            try:
+                norm_cog = os.path.normcase(os.path.realpath(_cached_cognitive_dir))
+            except Exception:
+                norm_cog = ""
+            if norm_cog and norm_cog == norm_req and _cached_cognitive_findings:
+                _cached_cognitive_findings = _correlate_ev_status_onto_findings(
+                    project_path,
+                    _cached_cognitive_findings,
+                    status_map=status_map,
+                    clear_stale=clear_stale,
+                )
+
+    with _ev_scan_cache_sync_lock:
+        cached_entry = enterprise_mgr.get_cached_scan_for_project(project_path)
+        if cached_entry and isinstance(cached_entry.get("latest_findings"), list):
+            updated_lf: List[Any] = []
+            changed = False
+            for raw_fd in cached_entry["latest_findings"]:
+                if not isinstance(raw_fd, dict):
+                    updated_lf.append(raw_fd)
+                    continue
+                fid = str(raw_fd.get("id") or "")
+                if fid in status_map:
+                    ev_st, ev_sum = status_map[fid]
+                    raw_sec = raw_fd.get("secret_value_raw")
+                    safe_sum = scrub_raw_secrets_text(
+                        ev_sum or "",
+                        extra_raw_secrets=[raw_sec] if raw_sec else None,
+                    )
+                    if raw_fd.get("ev_status") != ev_st or raw_fd.get("ev_evidence_summary") != safe_sum:
+                        new_fd = dict(raw_fd)
+                        new_fd["ev_status"] = ev_st
+                        new_fd["ev_evidence_summary"] = safe_sum
+                        updated_lf.append(new_fd)
+                        changed = True
+                    else:
+                        updated_lf.append(raw_fd)
+                elif clear_stale and (
+                    raw_fd.get("ev_status") is not None or raw_fd.get("ev_evidence_summary") is not None
+                ):
+                    new_fd = dict(raw_fd)
+                    new_fd["ev_status"] = None
+                    new_fd["ev_evidence_summary"] = None
+                    updated_lf.append(new_fd)
+                    changed = True
+                else:
+                    updated_lf.append(raw_fd)
+            if changed:
+                cached_entry["latest_findings"] = updated_lf
+                enterprise_mgr._save_scan_cache()
 
 
 def _scrub_cognitive_text(text: str, replacements: List[Tuple[str, str]]) -> str:
@@ -2080,10 +2221,12 @@ def get_findings(include_suppressed: bool = Query(True), project_path: Optional[
             _cached_p = enterprise_mgr.get_cached_scan_for_project(project_path)
             if _cached_p and isinstance(_cached_p.get("latest_findings"), list):
                 _proj_f = enterprise_mgr.enrich_findings([Finding(**f) for f in _cached_p["latest_findings"]])
+                _proj_f = _correlate_ev_status_onto_findings(project_path, _proj_f)
                 if not include_suppressed:
                     _proj_f = [f for f in _proj_f if f.triage_status != "NOT_EXPLOITABLE"]
                 return _redact_findings_for_active_rbac(_proj_f)
-    all_f = get_or_compute_findings()
+    active_dir = current_scan_dir or enterprise_mgr.platform_root
+    all_f = _correlate_ev_status_onto_findings(active_dir, get_or_compute_findings())
     if not include_suppressed:
         all_f = [f for f in all_f if f.triage_status != "NOT_EXPLOITABLE"]
     return _redact_findings_for_active_rbac(all_f)
@@ -2408,6 +2551,7 @@ def export_security_report(format: str = Query("markdown", description="markdown
     metrics = get_metrics()
     raci_raw = enterprise_mgr.get_raci_governance(raw_findings)
     active_target = current_scan_dir or enterprise_mgr.platform_root
+    raw_findings = _correlate_ev_status_onto_findings(active_target, raw_findings)
     app_name = os.path.basename(os.path.abspath(active_target)) or active_target
     sast_plus_raw = enterprise_mgr.get_sast_plus_suite(active_target, raw_findings)
     pasta_raw = sast_plus_raw.pasta_assessment or enterprise_mgr.pasta_engine.evaluate_pasta(
@@ -2423,6 +2567,7 @@ def export_security_report(format: str = Query("markdown", description="markdown
             raci=raci_raw,
             metrics=metrics,
             findings=raw_findings,
+            ev_replays=ev_engine.list_replays(active_target).replays,
         )
     )
     findings = sanitized_export.findings
@@ -4723,7 +4868,7 @@ def _resolve_findings_for_project_target(target_dir: str) -> List[Finding]:
     if norm_req == norm_cur:
         findings = get_or_compute_findings()
         if findings:
-            return findings
+            return _correlate_ev_status_onto_findings(target_dir, findings)
     cached = enterprise_mgr.get_cached_scan_for_project(target_dir)
     if cached and isinstance(cached.get("latest_findings"), list):
         base_findings = enterprise_mgr.enrich_findings(
@@ -4742,8 +4887,11 @@ def _resolve_findings_for_project_target(target_dir: str) -> List[Finding]:
                 if cf.id not in seen_ids:
                     seen_ids.add(cf.id)
                     merged.append(cf.model_copy(deep=True))
-            return enterprise_mgr.enrich_findings(merged)
-    return base_findings
+            return _correlate_ev_status_onto_findings(
+                target_dir,
+                enterprise_mgr.enrich_findings(merged),
+            )
+    return _correlate_ev_status_onto_findings(target_dir, base_findings)
 
 
 def _resolve_community_map_for_target(target_dir: str) -> Optional[CommunityMapResponse]:
@@ -5099,7 +5247,10 @@ def export_sar_golive_report(
         )
 
     target_dir = _resolve_confined_project_target(project_path)
-    raw_findings = _resolve_findings_for_project_target(target_dir)
+    raw_findings = _correlate_ev_status_onto_findings(
+        target_dir,
+        _resolve_findings_for_project_target(target_dir),
+    )
     comm_map = _resolve_community_map_for_target(target_dir)
     api_ops_sar = api_operations_engine.analyze_workspace_api_operations(target_dir, raw_findings)
     s8_chains_sar = synthesize_exploit_chains(
@@ -5122,6 +5273,7 @@ def export_sar_golive_report(
     raci = enterprise_mgr.get_raci_governance(raw_findings)
     metrics = _safe_metrics_for_project_target(target_dir, raw_findings)
     app_name = pasta.application_name or os.path.basename(os.path.abspath(target_dir)) or "alastor_target"
+    ev_replays_sar = ev_engine.list_replays(target_dir).replays
 
     bundle = sanitize_bundle_for_export(
         SarReportBundle(
@@ -5134,6 +5286,7 @@ def export_sar_golive_report(
             metrics=metrics,
             findings=raw_findings,
             exploit_chains=s8_chains_sar.chains,
+            ev_replays=ev_replays_sar,
         )
     )
 
@@ -5322,6 +5475,93 @@ def validate_cognitive_patch_panel(req: PatchPanelValidateRequest):
         finding=matched_finding,
         ai_engine=frontier_ai_engine if req.use_ai else None,
     )
+
+
+# ---------------------------------------------------------------------------
+# 16. ALASTOR v5.0 Pillar 3 — Live Exploit Verification & Post-Fix ev-replay (/api/ev/*)
+# ---------------------------------------------------------------------------
+def _resolve_confined_ev_project_path(project_path: Optional[str]) -> str:
+    """Rejects explicit traversal segments and confines `project_path` to active workspace roots."""
+    if project_path is not None:
+        raw = str(project_path)
+        if "\x00" in raw or any(ord(ch) < 32 for ch in raw):
+            raise HTTPException(status_code=400, detail="Invalid project_path supplied.")
+        segs = [s for s in raw.strip().replace("\\", "/").split("/") if s]
+        if any(s == ".." for s in segs):
+            raise HTTPException(
+                status_code=400,
+                detail="Path traversal segments ('..') are not permitted in project_path.",
+            )
+    return _resolve_confined_project_target(project_path)
+
+
+def _collect_ev_findings_and_ops(target_dir: str) -> Tuple[List[Finding], ApiOperationsReportResponse]:
+    all_findings = _resolve_findings_for_project_target(target_dir)
+    active_findings = [
+        f for f in all_findings if f.triage_status not in ("NOT_EXPLOITABLE", "RESOLVED")
+    ]
+    api_ops = api_operations_engine.analyze_workspace_api_operations(target_dir, active_findings)
+    return active_findings, api_ops
+
+
+@app.post("/api/ev/plan", response_model=EvPlanResponse)
+def plan_exploit_verification(req: EvRunRequest):
+    """Plans non-destructive EV probes across CPG, OpenAPI, and Postman routes with ZERO network traffic."""
+    target_dir = _resolve_confined_ev_project_path(req.project_path)
+    active_findings, api_ops = _collect_ev_findings_and_ops(target_dir)
+    try:
+        return ev_engine.plan_probes(target_dir, req, active_findings, api_ops)
+    except ValueError as val_exc:
+        raise HTTPException(status_code=400, detail=_sanitize_log(val_exc)) from val_exc
+
+
+@app.post("/api/ev/run", response_model=EvRunResponse)
+def run_exploit_verification(req: EvRunRequest):
+    """Executes safe-by-default live Exploit Verification probes (or dry-run plan when armed=False)."""
+    target_dir = _resolve_confined_ev_project_path(req.project_path)
+    active_findings, api_ops = _collect_ev_findings_and_ops(target_dir)
+    try:
+        run_resp = ev_engine.run_verification(target_dir, req, active_findings, api_ops)
+    except ValueError as val_exc:
+        raise HTTPException(status_code=400, detail=_sanitize_log(val_exc)) from val_exc
+    if req.armed:
+        _sync_cached_findings_ev_status(target_dir, clear_stale=True)
+    return run_resp
+
+
+@app.post("/api/ev/replay", response_model=EvReplayResponse)
+def replay_exploit_verification(req: EvReplayRequest):
+    """Replays persisted EV bundles post-fix to confirm FIXED_VERIFIED vs STILL_VULNERABLE."""
+    target_dir = _resolve_confined_ev_project_path(req.project_path)
+    try:
+        replay_resp = ev_engine.replay_confirmed(target_dir, req)
+    except ValueError as val_exc:
+        raise HTTPException(status_code=400, detail=_sanitize_log(val_exc)) from val_exc
+    _sync_cached_findings_ev_status(target_dir, clear_stale=True)
+    return replay_resp
+
+
+@app.get("/api/ev/replays", response_model=EvReplayListResponse)
+def list_exploit_verification_replays(project_path: Optional[str] = Query(None)):
+    """Lists scrubbed, persisted EV replay bundles for a confined workspace."""
+    target_dir = _resolve_confined_ev_project_path(project_path)
+    return ev_engine.list_replays(target_dir)
+
+
+@app.delete("/api/ev/replays/{replay_id}")
+def delete_exploit_verification_replay(
+    replay_id: str,
+    project_path: Optional[str] = Query(None),
+):
+    """Deletes a persisted EV replay bundle and clears stale EV status on cached workspace findings."""
+    target_dir = _resolve_confined_ev_project_path(project_path)
+    if not ev_engine.delete_replay(target_dir, replay_id):
+        raise HTTPException(
+            status_code=404,
+            detail=f"EV replay bundle '{_sanitize_log(replay_id)}' not found.",
+        )
+    _sync_cached_findings_ev_status(target_dir, clear_stale=True)
+    return {"deleted": True, "replay_id": replay_id}
 
 
 
