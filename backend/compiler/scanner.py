@@ -122,7 +122,7 @@ def _is_confined(real_root: str, candidate_path: str) -> bool:
     try:
         real_target = os.path.realpath(candidate_path)
         return os.path.commonpath([real_root, real_target]) == real_root
-    except ValueError:
+    except (ValueError, OSError):
         return False
 
 
@@ -212,16 +212,10 @@ def _rule_matches(rule: _GitignoreRule, rel_path: str, is_dir: bool) -> bool:
         return False
 
     if rule.anchored:
-        if "**" in rule.pattern:
-            return _match_segments(local_rel.split("/"), rule.pattern.split("/"))
-        return fnmatch.fnmatchcase(local_rel, rule.pattern)
+        return _match_segments(local_rel.split("/"), rule.pattern.split("/"))
 
     basename = local_rel.rsplit("/", 1)[-1]
-    if fnmatch.fnmatchcase(basename, rule.pattern):
-        return True
-    if fnmatch.fnmatchcase(local_rel, rule.pattern):
-        return True
-    return False
+    return fnmatch.fnmatchcase(basename, rule.pattern)
 
 
 def _is_gitignored(

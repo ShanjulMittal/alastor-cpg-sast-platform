@@ -35,6 +35,7 @@ from compiler.language_registry import (
     get_language_spec,
     get_parser_for_language,
     list_language_capabilities,
+    _load_fallback_bundled_parser,
 )
 from compiler.scanner import (
     CODE_EXTENSIONS,
@@ -42,6 +43,7 @@ from compiler.scanner import (
     ScannedFile,
     scan_directory,
     scan_directory_with_telemetry,
+    _is_confined,
 )
 
 
@@ -272,6 +274,63 @@ class TestLanguageRegistry:
         assert by_lang["web_template"].parser_available is True
         assert ".blade.php" in by_lang["web_template"].extensions
         assert by_lang["solidity"].parser_available is True
+
+    def test_ast_node_type_categories_are_mutually_disjoint_across_all_18_specs(self):
+        category_fields = (
+            "module_node_types",
+            "class_node_types",
+            "function_node_types",
+            "parameter_node_types",
+            "assignment_node_types",
+            "call_node_types",
+            "control_node_types",
+            "loop_node_types",
+            "return_node_types",
+            "identifier_node_types",
+            "literal_node_types",
+            "import_node_types",
+            "skip_node_types",
+        )
+        for lang_key, spec in LANGUAGE_SPECS.items():
+            seen: dict[str, str] = {}
+            for field_name in category_fields:
+                for node_type in getattr(spec, field_name):
+                    assert node_type not in seen, (
+                        f"LanguageSpec[{lang_key!r}] repeats AST node type {node_type!r} "
+                        f"in both {seen[node_type]} and {field_name}"
+                    )
+                    seen[node_type] = field_name
+
+    def test_get_parser_for_language_returns_distinct_instances_across_threads(self):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        barrier = threading.Barrier(4)
+
+        def fetch_and_parse(lang_key: str):
+            p = get_parser_for_language(lang_key)
+            assert p is not None
+            tree = p.parse(LANGUAGE_SNIPPETS[lang_key])
+            assert tree.root_node.end_byte > 0
+            barrier.wait(timeout=5)
+            return id(p)
+
+        main_py_id = id(get_parser_for_language("python"))
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futs = [pool.submit(fetch_and_parse, "python") for _ in range(4)]
+            worker_ids = [f.result() for f in futs]
+
+        assert len(set(worker_ids) | {main_py_id}) == 5
+
+    def test_fallback_bundled_parser_loader(self):
+        for lang_key in ("python", "javascript", "typescript", "tsx"):
+            parser = _load_fallback_bundled_parser(lang_key)
+            assert parser is not None
+            tree = parser.parse(LANGUAGE_SNIPPETS[lang_key])
+            assert tree.root_node.end_byte > 0
+
+        assert _load_fallback_bundled_parser("go") is None
+        assert _load_fallback_bundled_parser("unknown_lang") is None
 
 
 class TestHostileRepoScopeWalker:
@@ -532,3 +591,71 @@ class TestHostileRepoScopeWalker:
         assert ".env" not in paths
         assert "a/b/ignored_sub/drop.py" not in paths
         assert telemetry.gitignore_excluded >= 1
+
+    def test_gitignore_wildcards_do_not_cross_slash_boundaries(self, tmp_path: Path):
+        (tmp_path / ".gitignore").write_text(
+            "/*.py\n"
+            "src/*.py\n"
+            "foo*bar.py\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / "foo_mid_bar.py").write_text("x = 2\n", encoding="utf-8")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "a.py").write_text("x = 3\n", encoding="utf-8")
+        (tmp_path / "src" / "deep").mkdir()
+        (tmp_path / "src" / "deep" / "app.py").write_text("x = 4\n", encoding="utf-8")
+        (tmp_path / "pkg").mkdir()
+        (tmp_path / "pkg" / "app.py").write_text("x = 5\n", encoding="utf-8")
+        (tmp_path / "foo" / "sub").mkdir(parents=True)
+        (tmp_path / "foo" / "sub" / "bar.py").write_text("x = 6\n", encoding="utf-8")
+
+        scanned, telemetry = scan_directory_with_telemetry(str(tmp_path))
+        paths = {s.filepath for s in scanned}
+
+        assert "a.py" not in paths
+        assert "foo_mid_bar.py" not in paths
+        assert "src/a.py" not in paths
+        assert "pkg/app.py" in paths
+        assert "src/deep/app.py" in paths
+        assert "foo/sub/bar.py" in paths
+        assert telemetry.gitignore_excluded == 3
+
+    def test_is_confined_fails_closed_on_oserror_and_drops_escaping_dir_and_file_links(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        outside = tmp_path / "outside"
+        repo.mkdir()
+        outside.mkdir()
+        (repo / "ok.py").write_text("x = 1\n", encoding="utf-8")
+        fake_file_link = repo / "esc_file.py"
+        fake_file_link.write_text("OUTSIDE_MARKER = 'f'\n", encoding="utf-8")
+        fake_dir_link = repo / "esc_dir"
+        fake_dir_link.mkdir()
+        (fake_dir_link / "nested.py").write_text("OUTSIDE_MARKER = 'd'\n", encoding="utf-8")
+
+        real_islink = os.path.islink
+        real_realpath = os.path.realpath
+
+        def mock_islink(p):
+            ap = os.path.abspath(p)
+            if ap in (os.path.abspath(str(fake_file_link)), os.path.abspath(str(fake_dir_link))):
+                return True
+            return real_islink(p)
+
+        def mock_realpath(p):
+            ap = os.path.abspath(p)
+            if ap == os.path.abspath(str(fake_file_link)):
+                return str(outside / "secret_file.py")
+            if ap == os.path.abspath(str(fake_dir_link)):
+                return str(outside / "secret_dir")
+            return real_realpath(p)
+
+        with mock.patch("compiler.scanner.os.path.islink", side_effect=mock_islink), \
+             mock.patch("compiler.scanner.os.path.realpath", side_effect=mock_realpath):
+            scanned, telemetry = scan_directory_with_telemetry(str(repo))
+
+        assert {s.filepath for s in scanned} == {"ok.py"}
+        assert telemetry.symlinks_dropped == 2
+
+        with mock.patch("compiler.scanner.os.path.realpath", side_effect=OSError("bad reparse point")):
+            assert _is_confined(str(repo), str(fake_file_link)) is False

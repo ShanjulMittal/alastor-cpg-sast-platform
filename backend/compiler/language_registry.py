@@ -103,7 +103,6 @@ _JS_SHARED_SKIP_TYPES = (
     "type_annotation",
     "type_arguments",
     "type_parameters",
-    "import_statement",
     "jsx_text",
     "jsx_closing_element",
     "string_fragment",
@@ -707,7 +706,7 @@ LANGUAGE_SPECS: Dict[str, LanguageSpec] = {
         return_node_types=("return",),
         identifier_node_types=("identifier", "instance_variable", "constant"),
         literal_node_types=("string", "integer", "float", "true", "false", "nil"),
-        import_node_types=("call",),
+        import_node_types=(),
         skip_node_types=("comment",),
         source_patterns=(
             "params[",
@@ -941,12 +940,12 @@ LANGUAGE_SPECS: Dict[str, LanguageSpec] = {
             ".svelte",
         ),
         module_node_types=("document", "fragment"),
-        class_node_types=("element",),
+        class_node_types=(),
         function_node_types=("script_element",),
-        parameter_node_types=("attribute",),
+        parameter_node_types=(),
         assignment_node_types=("attribute",),
-        call_node_types=("element", "script_element"),
-        control_node_types=("element",),
+        call_node_types=("element",),
+        control_node_types=(),
         loop_node_types=(),
         return_node_types=(),
         identifier_node_types=("tag_name", "attribute_name"),
@@ -1004,8 +1003,9 @@ _COMPOUND_SUFFIXES: Tuple[Tuple[str, str], ...] = tuple(
     )
 )
 
-_PARSER_LOCK = threading.RLock()
-_PARSER_CACHE: Dict[str, Optional[tree_sitter.Parser]] = {}
+_LANGUAGE_LOCK = threading.RLock()
+_LANGUAGE_CACHE: Dict[str, Optional[tree_sitter.Language]] = {}
+_THREAD_LOCAL_PARSERS = threading.local()
 
 
 def resolve_language_for_filename(filename: str) -> Optional[str]:
@@ -1037,58 +1037,97 @@ def get_language_spec(lang_key: str) -> LanguageSpec:
     return LANGUAGE_SPECS[normalized]
 
 
-def _load_fallback_bundled_parser(lang_key: str) -> Optional[tree_sitter.Parser]:
+def _load_fallback_bundled_language(lang_key: str) -> Optional[tree_sitter.Language]:
     """Fallback loader using pinned individual tree-sitter wheels for core languages."""
     try:
         if lang_key == "python":
             import tree_sitter_python
 
-            return tree_sitter.Parser(tree_sitter.Language(tree_sitter_python.language()))
+            return tree_sitter.Language(tree_sitter_python.language())
         if lang_key == "javascript":
             import tree_sitter_javascript
 
-            return tree_sitter.Parser(tree_sitter.Language(tree_sitter_javascript.language()))
+            return tree_sitter.Language(tree_sitter_javascript.language())
         if lang_key == "typescript":
             import tree_sitter_typescript
 
-            return tree_sitter.Parser(tree_sitter.Language(tree_sitter_typescript.language_typescript()))
+            return tree_sitter.Language(tree_sitter_typescript.language_typescript())
         if lang_key == "tsx":
             import tree_sitter_typescript
 
-            return tree_sitter.Parser(tree_sitter.Language(tree_sitter_typescript.language_tsx()))
+            return tree_sitter.Language(tree_sitter_typescript.language_tsx())
     except Exception:
         return None
     return None
 
 
+def _load_fallback_bundled_parser(lang_key: str) -> Optional[tree_sitter.Parser]:
+    """Constructs a fresh Parser from pinned individual tree-sitter wheels."""
+    language = _load_fallback_bundled_language(lang_key)
+    if language is None:
+        return None
+    return tree_sitter.Parser(language)
+
+
+def _get_cached_language(normalized: str, spec: LanguageSpec) -> Optional[tree_sitter.Language]:
+    """Thread-safe lazy cache of immutable tree_sitter.Language grammar objects."""
+    with _LANGUAGE_LOCK:
+        if normalized in _LANGUAGE_CACHE:
+            return _LANGUAGE_CACHE[normalized]
+
+        language: Optional[tree_sitter.Language] = None
+        try:
+            import tree_sitter_language_pack
+
+            language = tree_sitter_language_pack.get_language(spec.grammar_name)
+        except Exception:
+            language = None
+
+        if language is None:
+            language = _load_fallback_bundled_language(normalized)
+
+        _LANGUAGE_CACHE[normalized] = language
+        return language
+
+
 def get_parser_for_language(lang_key: str) -> Optional[tree_sitter.Parser]:
     """
-    Thread-safe lazy Tree-sitter parser cache.
-    Tries tree_sitter_language_pack first and falls back to individual pinned wheels
-    for python/javascript/typescript/tsx. Returns None cleanly for unsupported languages.
+    Thread-safe lazy Tree-sitter parser provider.
+    Caches immutable tree_sitter.Language grammars globally and stores mutable
+    tree_sitter.Parser instances per thread in threading.local() so concurrent
+    threads never share a C TSParser*. Returns None cleanly for unsupported languages.
     """
     normalized = (lang_key or "").strip().lower()
     spec = LANGUAGE_SPECS.get(normalized)
     if spec is None:
         return None
 
-    with _PARSER_LOCK:
-        if normalized in _PARSER_CACHE:
-            return _PARSER_CACHE[normalized]
+    thread_cache: Optional[Dict[str, Optional[tree_sitter.Parser]]] = getattr(
+        _THREAD_LOCAL_PARSERS, "parsers", None
+    )
+    if thread_cache is None:
+        thread_cache = {}
+        _THREAD_LOCAL_PARSERS.parsers = thread_cache
 
-        parser: Optional[tree_sitter.Parser] = None
+    if normalized in thread_cache:
+        return thread_cache[normalized]
+
+    language = _get_cached_language(normalized, spec)
+    parser: Optional[tree_sitter.Parser] = None
+    if language is not None:
+        parser = tree_sitter.Parser(language)
+    else:
         try:
             import tree_sitter_language_pack
 
             parser = tree_sitter_language_pack.get_parser(spec.grammar_name)
         except Exception:
             parser = None
-
         if parser is None:
             parser = _load_fallback_bundled_parser(normalized)
 
-        _PARSER_CACHE[normalized] = parser
-        return parser
+    thread_cache[normalized] = parser
+    return parser
 
 
 def list_language_capabilities() -> LanguageCapabilitiesResponse:
