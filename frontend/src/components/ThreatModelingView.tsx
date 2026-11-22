@@ -30,7 +30,9 @@ import {
   EdgeBlastState,
 } from "./DirectionalFlowEdge";
 import { PastaThreatWorkbench } from "@/components/PastaThreatWorkbench";
+import { CognitiveSecurityWorkbench } from "@/components/CognitiveSecurityWorkbench";
 import {
+  Brain,
   ShieldAlert,
   KeyRound,
   Eye,
@@ -964,6 +966,7 @@ export const ThreatModelingView: React.FC = () => {
     saveSecretConfigState,
     fetchSecretInventoryState,
     verifySecretsLive,
+    exploitChainsResult,
   } = useAuditStore();
 
   const effectivePasta =
@@ -973,6 +976,7 @@ export const ThreatModelingView: React.FC = () => {
     | "TRUST_BOUNDARIES"
     | "STRIDE_BOARD"
     | "PASTA_WORKBENCH"
+    | "COGNITIVE_HUNTER"
     | "SECRET_KEYS_VAULT"
     | "ENTRYPOINTS_PBOM"
   >("TRUST_BOUNDARIES");
@@ -1526,6 +1530,32 @@ export const ThreatModelingView: React.FC = () => {
               {effectivePasta
                 ? effectivePasta.projected_golive_risk_level
                 : "7 Stages"}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveSubTab("COGNITIVE_HUNTER")}
+            className={`px-3.5 py-2 rounded-lg text-xs font-extrabold flex items-center gap-2 transition-all border ${
+              activeSubTab === "COGNITIVE_HUNTER"
+                ? "bg-violet-700 text-white border-violet-800 shadow-sm"
+                : "bg-white text-slate-700 hover:bg-slate-100 border-slate-300"
+            }`}
+          >
+            <Brain className="w-3.5 h-3.5" />
+            <span>Cognitive Hunt &amp; Chains (17-Lens • S6 • S8)</span>
+            <span
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-extrabold border ${
+                activeSubTab === "COGNITIVE_HUNTER"
+                  ? "bg-white text-violet-950 border-violet-200"
+                  : exploitChainsResult && exploitChainsResult.total_chains > 0
+                  ? "bg-rose-50 text-rose-950 border-rose-300"
+                  : "bg-indigo-50 text-indigo-950 border-indigo-300"
+              }`}
+            >
+              {exploitChainsResult && exploitChainsResult.total_chains > 0
+                ? `${exploitChainsResult.total_chains} Chains`
+                : "17 Lenses"}
             </span>
           </button>
 
@@ -2550,6 +2580,9 @@ export const ThreatModelingView: React.FC = () => {
 
       {/* TAB 2B: 7-STAGE PASTA THREAT MODELING, ATTACK TREES & GO-LIVE GATE */}
       {activeSubTab === "PASTA_WORKBENCH" && <PastaThreatWorkbench />}
+
+      {/* TAB 2C: ALASTOR v5.0 PILLAR 2 — COGNITIVE HUNTER, S6 VERIFIER & S8 EXPLOIT CHAINS */}
+      {activeSubTab === "COGNITIVE_HUNTER" && <CognitiveSecurityWorkbench />}
 
       {/* TAB 3: SECRET KEYS & CREDENTIALS VAULT */}
       {activeSubTab === "SECRET_KEYS_VAULT" && (

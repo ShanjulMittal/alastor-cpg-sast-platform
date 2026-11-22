@@ -1506,3 +1506,188 @@ export interface PastaAssessmentResponse {
   golive_observations: GoLiveObservationItem[];
   make_it_live_checklist: string[];
 }
+
+// ---------------------------------------------------------------------------
+// 15. Cognitive Security Interfaces (ALASTOR v5.0 Pillar 2)
+// ---------------------------------------------------------------------------
+export type PlaybookKind = "LENS" | "METHOD";
+export type BaselineDisposition =
+  | "COVERED_CLEAN"
+  | "FINDING_DETECTED"
+  | "UNDISPOSED_GAP";
+export type CognitiveExecutionMode = "DETERMINISTIC" | "HYBRID_AI";
+export type AdversarialVerdictType =
+  | "TRUE_POSITIVE"
+  | "FALSE_POSITIVE"
+  | "NEEDS_REVIEW";
+export type PatchPanelVerdictType =
+  | "APPROVED"
+  | "REVISIONS_REQUIRED"
+  | "REJECTED";
+export type PersonaVerdictType = "APPROVE" | "CONCERN" | "REJECT";
+export type ExploitChainHopType =
+  | "ENTRYPOINT"
+  | "LEAKED_SECRET"
+  | "VULNERABILITY"
+  | "COMMUNITY_BRIDGE"
+  | "CROWN_JEWEL";
+
+export interface PlaybookDefinitionItem {
+  id: string;
+  name: string;
+  kind: PlaybookKind;
+  description: string;
+  cwe_ids: string[];
+  trigger_signals: string[];
+  hard_gate_criteria: string;
+  false_positive_traps: string[];
+  real_mitigations: string[];
+  supports_deterministic_probe: boolean;
+  auto_triggered: boolean;
+}
+
+export interface RepoBaselineItem {
+  id: string;
+  repo_kind: string;
+  title: string;
+  cwe_or_owasp: string;
+  status: BaselineDisposition;
+  linked_finding_ids: string[];
+  rationale: string;
+}
+
+export interface CognitivePlaybooksResponse {
+  project_path: string;
+  repo_kinds: string[];
+  total_playbooks: number;
+  playbooks: PlaybookDefinitionItem[];
+  baseline_items: RepoBaselineItem[];
+  covered_count: number;
+  detected_count: number;
+  undisposed_gap_count: number;
+  ai_available: boolean;
+}
+
+export interface CognitiveHuntRequest {
+  project_path?: string | null;
+  playbook_ids?: string[];
+  use_ai?: boolean;
+  include_sibling_sweep?: boolean;
+  max_ai_units?: number;
+}
+
+export interface CognitiveHuntResponse {
+  project_path: string;
+  execution_mode: CognitiveExecutionMode;
+  executed_playbooks: string[];
+  repo_kinds: string[];
+  findings: Finding[];
+  sibling_findings: Finding[];
+  baseline_items: RepoBaselineItem[];
+  undisposed_gap_count: number;
+  hostile_files_stripped: number;
+  ai_cache_hits: number;
+  summary: string;
+}
+
+export interface AdversarialVerifyRequest {
+  project_path?: string | null;
+  finding_ids?: string[];
+  use_ai?: boolean;
+  max_batch?: number;
+}
+
+export interface AdversarialFindingVerdict {
+  finding_id: string;
+  verdict: AdversarialVerdictType;
+  confidence: number;
+  cvss_vector: string;
+  cvss_score: number;
+  exclusion_rule?: string | null;
+  rationale: string;
+  verification_mode: CognitiveExecutionMode;
+  cached: boolean;
+}
+
+export interface AdversarialVerifyResponse {
+  execution_mode: CognitiveExecutionMode;
+  total_verified: number;
+  true_positives: number;
+  false_positives: number;
+  needs_review: number;
+  verdicts: AdversarialFindingVerdict[];
+  summary: string;
+}
+
+export interface ExploitChainHop {
+  step_number: number;
+  hop_type: ExploitChainHopType;
+  title: string;
+  filepath: string;
+  line: number;
+  cwe_or_rule: string;
+  community_id?: string | null;
+  linked_finding_id?: string | null;
+  detail: string;
+}
+
+export interface ExploitChainItem {
+  id: string;
+  title: string;
+  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  chain_cvss: number;
+  blast_radius_communities: string[];
+  hops: ExploitChainHop[];
+  linked_finding_ids: string[];
+  break_the_chain_fix: string;
+  narrative: string;
+  nodes: Array<Record<string, any>>;
+  edges: Array<Record<string, any>>;
+}
+
+export interface ExploitChainRequest {
+  project_path?: string | null;
+  use_ai?: boolean;
+  max_chains?: number;
+}
+
+export interface ExploitChainResponse {
+  project_path: string;
+  execution_mode: CognitiveExecutionMode;
+  total_chains: number;
+  critical_chains: number;
+  chains: ExploitChainItem[];
+  synced_to_pasta: boolean;
+  summary: string;
+}
+
+export interface PersonaReviewItem {
+  persona_id: "security_architect" | "penetration_tester" | "cross_repo_analyzer";
+  persona_label: string;
+  verdict: PersonaVerdictType;
+  score: number;
+  findings: string[];
+  summary: string;
+}
+
+export interface PatchPanelValidateRequest {
+  project_path?: string | null;
+  finding_id?: string | null;
+  filepath: string;
+  original_code: string;
+  proposed_code: string;
+  cwe_id?: string | null;
+  use_ai?: boolean;
+}
+
+export interface PatchPanelValidateResponse {
+  overall_verdict: PatchPanelVerdictType;
+  execution_mode: CognitiveExecutionMode;
+  syntax_ok: boolean;
+  syntax_error?: string | null;
+  hostile_patch_blocked: boolean;
+  hostile_patch_reasons: string[];
+  cpg_sink_severed: boolean;
+  personas: PersonaReviewItem[];
+  summary: string;
+}

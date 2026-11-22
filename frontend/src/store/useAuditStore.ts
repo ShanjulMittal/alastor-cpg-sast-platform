@@ -61,6 +61,12 @@ import {
   CommunityMapResponse,
   LanguageCapabilitiesResponse,
   BackendHealthResponse,
+  CognitivePlaybooksResponse,
+  CognitiveHuntResponse,
+  AdversarialVerifyResponse,
+  ExploitChainResponse,
+  PatchPanelValidateRequest,
+  PatchPanelValidateResponse,
 } from "@/types/cpg";
 import {
   BACKEND_URL,
@@ -87,6 +93,12 @@ import {
   overridePastaGate,
   downloadSarReportBlob,
   isLikelyLocalProjectPath,
+  fetchCognitivePlaybooks as fetchCognitivePlaybooksApi,
+  runCognitiveHuntApi,
+  runAdversarialVerifyApi,
+  fetchExploitChainsApi,
+  synthesizeExploitChainsApi,
+  validatePatchPanelApi,
 } from "@/lib/api";
 
 export const UI_PREFS_STORAGE_KEY = "alastor_ui_prefs_v4";
@@ -98,6 +110,11 @@ let _sastPlusInFlightKey = "";
 const _inflightApiOpsPromises = new Map<string, Promise<ApiOperationsReportResponse | null>>();
 let _pastaInFlight: Promise<PastaAssessmentResponse | null> | null = null;
 let _pastaInFlightKey = "";
+let _cognitivePlaybooksInFlight: Promise<CognitivePlaybooksResponse | null> | null = null;
+let _cognitivePlaybooksInFlightKey = "";
+let _exploitChainsInFlight: Promise<ExploitChainResponse | null> | null = null;
+let _exploitChainsInFlightKey = "";
+let _cognitiveEpoch = 0;
 
 const VALID_APP_THEMES: AppThemeId[] = [
   "olympian-light",
@@ -286,6 +303,19 @@ interface AuditState {
   communitiesCount: number;
   communityMap: CommunityMapResponse | null;
   languageCapabilities: LanguageCapabilitiesResponse | null;
+
+  // Pillar 2: 17-Lens Cognitive Hunter, S6 Adversarial Verifier, S8 Exploit Chains & S11 Patch Panel
+  cognitivePlaybooks: CognitivePlaybooksResponse | null;
+  cognitiveHuntResult: CognitiveHuntResponse | null;
+  adversarialVerifyResult: AdversarialVerifyResponse | null;
+  exploitChainsResult: ExploitChainResponse | null;
+  patchPanelResult: PatchPanelValidateResponse | null;
+  isLoadingCognitive: boolean;
+  isRunningCognitiveHunt: boolean;
+  isRunningAdversarialVerify: boolean;
+  isRunningExploitChains: boolean;
+  isValidatingPatchPanel: boolean;
+  cognitiveErrorBanner: string | null;
 
   // UI Simplicity, Layout & Command Palette State
   uiDensityMode: "SIMPLE_CLEAN" | "PRO_DETAILED";
@@ -535,6 +565,26 @@ interface AuditState {
     payload: PastaGateOverridePayload
   ) => Promise<PastaAssessmentResponse | null>;
   downloadSarGoLiveReport: (format: "docx" | "pdf") => Promise<boolean>;
+  fetchCognitivePlaybooksState: (
+    projectPathOverride?: string | null
+  ) => Promise<CognitivePlaybooksResponse | null>;
+  runCognitiveSemanticHunt: (opts?: {
+    playbookIds?: string[];
+    useAi?: boolean;
+    includeSiblingSweep?: boolean;
+  }) => Promise<CognitiveHuntResponse | null>;
+  runAdversarialVerification: (opts?: {
+    findingIds?: string[];
+    useAi?: boolean;
+  }) => Promise<AdversarialVerifyResponse | null>;
+  fetchExploitChainsState: (opts?: {
+    useAi?: boolean;
+    forceSynthesize?: boolean;
+    projectPathOverride?: string | null;
+  }) => Promise<ExploitChainResponse | null>;
+  runPatchPanelValidation: (
+    payload: PatchPanelValidateRequest
+  ) => Promise<PatchPanelValidateResponse | null>;
   triggerScan: (
     targetPath?: string,
     options?: GitRepoScanOptions
@@ -639,6 +689,18 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   communitiesCount: 0,
   communityMap: null,
   languageCapabilities: null,
+
+  cognitivePlaybooks: null,
+  cognitiveHuntResult: null,
+  adversarialVerifyResult: null,
+  exploitChainsResult: null,
+  patchPanelResult: null,
+  isLoadingCognitive: false,
+  isRunningCognitiveHunt: false,
+  isRunningAdversarialVerify: false,
+  isRunningExploitChains: false,
+  isValidatingPatchPanel: false,
+  cognitiveErrorBanner: null,
 
   uiDensityMode: "SIMPLE_CLEAN",
   ideLayoutMode: "SPLIT_BOTH",
@@ -1987,6 +2049,9 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       selectedFinding: finding,
       activePathStepIndex: 0,
       remediationPreview: null,
+      ...(state.selectedFinding?.id !== finding.id
+        ? { patchPanelResult: null }
+        : {}),
       selectedGraphNodeId: firstNode ? firstNode.id : null,
       activeFilepath: firstNode ? firstNode.filepath : null,
       activeStartLine: firstNode ? firstNode.start_line : null,
@@ -2426,6 +2491,13 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       runScan ||
       Boolean(existingProj && !existingProj.last_scan_at && !existingProj.has_cached_scan);
 
+    // Invalidate any in-flight Pillar 2 cognitive requests from previous project
+    _cognitiveEpoch += 1;
+    _cognitivePlaybooksInFlight = null;
+    _cognitivePlaybooksInFlightKey = "";
+    _exploitChainsInFlight = null;
+    _exploitChainsInFlightKey = "";
+
     // Optimistically mark the selected project as active on frame 1
     set((state) => ({
       projects: state.projects.map((p) => ({
@@ -2439,6 +2511,12 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       communitiesCount: 0,
       languagesDetected: {},
       scopeTelemetry: null,
+      cognitivePlaybooks: null,
+      cognitiveHuntResult: null,
+      adversarialVerifyResult: null,
+      exploitChainsResult: null,
+      patchPanelResult: null,
+      cognitiveErrorBanner: null,
       ...(existingProj?.target_path ? { projectPath: existingProj.target_path } : {}),
     }));
 
@@ -2453,6 +2531,11 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       );
       if (res.ok) {
         const proj: ProjectConfig = await res.json();
+        _cognitiveEpoch += 1;
+        _cognitivePlaybooksInFlight = null;
+        _cognitivePlaybooksInFlightKey = "";
+        _exploitChainsInFlight = null;
+        _exploitChainsInFlightKey = "";
         set((state) => ({
           projectPath: proj.target_path,
           projects: state.projects.map((p) =>
@@ -2471,6 +2554,12 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           communitiesCount: 0,
           languagesDetected: {},
           scopeTelemetry: null,
+          cognitivePlaybooks: null,
+          cognitiveHuntResult: null,
+          adversarialVerifyResult: null,
+          exploitChainsResult: null,
+          patchPanelResult: null,
+          cognitiveErrorBanner: null,
         }));
         if (needsScan) {
           const hasLocalCheckout =
@@ -3452,11 +3541,280 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     }
   },
 
+  fetchCognitivePlaybooksState: async (projectPathOverride?: string | null) => {
+    const rawPath = (
+      projectPathOverride !== undefined && projectPathOverride !== null
+        ? projectPathOverride
+        : get().projectPath || ""
+    ).trim();
+    const key = isLikelyLocalProjectPath(rawPath) ? rawPath : "__active__";
+    if (_cognitivePlaybooksInFlight && _cognitivePlaybooksInFlightKey === key) {
+      return _cognitivePlaybooksInFlight;
+    }
+    const reqEpoch = _cognitiveEpoch;
+    set({ isLoadingCognitive: true, cognitiveErrorBanner: null });
+    _cognitivePlaybooksInFlightKey = key;
+    const reqPromise = (async () => {
+      try {
+        const data = await fetchCognitivePlaybooksApi(
+          key === "__active__" ? undefined : key
+        );
+        if (_cognitivePlaybooksInFlight !== reqPromise || reqEpoch !== _cognitiveEpoch) {
+          return data;
+        }
+        const latestRaw = (get().projectPath || "").trim();
+        const latestKey = isLikelyLocalProjectPath(latestRaw)
+          ? latestRaw
+          : "__active__";
+        if (projectPathOverride === undefined && latestKey !== key) {
+          set({ isLoadingCognitive: false });
+          return data;
+        }
+        set({
+          cognitivePlaybooks: data,
+          isLoadingCognitive: false,
+          cognitiveErrorBanner: null,
+        });
+        return data;
+      } catch (err: any) {
+        const msg = err?.detail || err?.message || "Failed to load Cognitive Security playbooks.";
+        console.error("Failed to fetch Cognitive Security playbooks:", err);
+        if (_cognitivePlaybooksInFlight === reqPromise && reqEpoch === _cognitiveEpoch) {
+          set({
+            isLoadingCognitive: false,
+            cognitiveErrorBanner: msg,
+          });
+        }
+        return null;
+      } finally {
+        if (_cognitivePlaybooksInFlight === reqPromise) {
+          _cognitivePlaybooksInFlight = null;
+          _cognitivePlaybooksInFlightKey = "";
+        }
+      }
+    })();
+    _cognitivePlaybooksInFlight = reqPromise;
+    return reqPromise;
+  },
+
+  runCognitiveSemanticHunt: async (opts) => {
+    const reqEpoch = _cognitiveEpoch;
+    const rawPath = (get().projectPath || "").trim();
+    const localPath = isLikelyLocalProjectPath(rawPath) ? rawPath : undefined;
+    set({ isRunningCognitiveHunt: true, cognitiveErrorBanner: null });
+    try {
+      const data = await runCognitiveHuntApi({
+        ...(localPath ? { project_path: localPath } : {}),
+        ...(opts?.playbookIds && opts.playbookIds.length > 0
+          ? { playbook_ids: opts.playbookIds }
+          : {}),
+        use_ai: Boolean(opts?.useAi),
+        include_sibling_sweep: opts?.includeSiblingSweep ?? true,
+      });
+      if (reqEpoch !== _cognitiveEpoch) {
+        return data;
+      }
+      set((state) => {
+        const covered = data.baseline_items.filter(
+          (b) => b.status === "COVERED_CLEAN"
+        ).length;
+        const detected = data.baseline_items.filter(
+          (b) => b.status === "FINDING_DETECTED"
+        ).length;
+        return {
+          cognitiveHuntResult: data,
+          isRunningCognitiveHunt: false,
+          cognitiveErrorBanner: null,
+          ...(state.cognitivePlaybooks
+            ? {
+                cognitivePlaybooks: {
+                  ...state.cognitivePlaybooks,
+                  repo_kinds:
+                    data.repo_kinds.length > 0
+                      ? data.repo_kinds
+                      : state.cognitivePlaybooks.repo_kinds,
+                  baseline_items: data.baseline_items,
+                  covered_count: covered,
+                  detected_count: detected,
+                  undisposed_gap_count: data.undisposed_gap_count,
+                },
+              }
+            : {}),
+        };
+      });
+      await Promise.all([
+        get().fetchFindings(),
+        get().fetchMetrics(),
+      ]);
+      void Promise.all([
+        get().fetchExploitChainsState({ forceSynthesize: true }),
+        get().fetchPastaState(),
+      ]);
+      return data;
+    } catch (err: any) {
+      const msg = err?.detail || err?.message || "Cognitive semantic hunt failed.";
+      console.error("Failed to run Cognitive semantic hunt:", err);
+      if (reqEpoch === _cognitiveEpoch) {
+        set({
+          isRunningCognitiveHunt: false,
+          cognitiveErrorBanner: msg,
+        });
+      }
+      return null;
+    }
+  },
+
+  runAdversarialVerification: async (opts) => {
+    const reqEpoch = _cognitiveEpoch;
+    const rawPath = (get().projectPath || "").trim();
+    const localPath = isLikelyLocalProjectPath(rawPath) ? rawPath : undefined;
+    set({ isRunningAdversarialVerify: true, cognitiveErrorBanner: null });
+    try {
+      const data = await runAdversarialVerifyApi({
+        ...(localPath ? { project_path: localPath } : {}),
+        ...(opts?.findingIds && opts.findingIds.length > 0
+          ? { finding_ids: opts.findingIds }
+          : {}),
+        use_ai: Boolean(opts?.useAi),
+      });
+      if (reqEpoch !== _cognitiveEpoch) {
+        return data;
+      }
+      set({
+        adversarialVerifyResult: data,
+        isRunningAdversarialVerify: false,
+        cognitiveErrorBanner: null,
+      });
+      return data;
+    } catch (err: any) {
+      const msg = err?.detail || err?.message || "S6 Adversarial verification failed.";
+      console.error("Failed to run S6 Adversarial verification:", err);
+      if (reqEpoch === _cognitiveEpoch) {
+        set({
+          isRunningAdversarialVerify: false,
+          cognitiveErrorBanner: msg,
+        });
+      }
+      return null;
+    }
+  },
+
+  fetchExploitChainsState: async (opts) => {
+    const rawPath = (
+      opts?.projectPathOverride !== undefined && opts?.projectPathOverride !== null
+        ? opts.projectPathOverride
+        : get().projectPath || ""
+    ).trim();
+    const key = isLikelyLocalProjectPath(rawPath) ? rawPath : "__active__";
+    const useAi = Boolean(opts?.useAi);
+    const forceSynthesize = Boolean(opts?.forceSynthesize) || useAi;
+    const inflightKey = `${key}:${useAi ? "ai" : "det"}`;
+
+    if (
+      !forceSynthesize &&
+      _exploitChainsInFlight &&
+      _exploitChainsInFlightKey === inflightKey
+    ) {
+      return _exploitChainsInFlight;
+    }
+
+    const reqEpoch = _cognitiveEpoch;
+    set({ isRunningExploitChains: true, cognitiveErrorBanner: null });
+    _exploitChainsInFlightKey = inflightKey;
+
+    const reqPromise = (async () => {
+      try {
+        const data = forceSynthesize
+          ? await synthesizeExploitChainsApi({
+              ...(key === "__active__" ? {} : { project_path: key }),
+              use_ai: useAi,
+            })
+          : await fetchExploitChainsApi(key === "__active__" ? undefined : key);
+
+        if (_exploitChainsInFlight !== reqPromise || reqEpoch !== _cognitiveEpoch) {
+          return data;
+        }
+        const latestRaw = (get().projectPath || "").trim();
+        const latestKey = isLikelyLocalProjectPath(latestRaw)
+          ? latestRaw
+          : "__active__";
+        if (opts?.projectPathOverride === undefined && latestKey !== key) {
+          set({ isRunningExploitChains: false });
+          return data;
+        }
+        set({
+          exploitChainsResult: data,
+          isRunningExploitChains: false,
+          cognitiveErrorBanner: null,
+        });
+        if (forceSynthesize) {
+          void get().fetchPastaState();
+        }
+        return data;
+      } catch (err: any) {
+        const msg = err?.detail || err?.message || "Failed to synthesize S8 Exploit Chains.";
+        console.error("Failed to fetch/synthesize S8 Exploit Chains:", err);
+        if (_exploitChainsInFlight === reqPromise && reqEpoch === _cognitiveEpoch) {
+          set({
+            isRunningExploitChains: false,
+            cognitiveErrorBanner: msg,
+          });
+        }
+        return null;
+      } finally {
+        if (_exploitChainsInFlight === reqPromise) {
+          _exploitChainsInFlight = null;
+          _exploitChainsInFlightKey = "";
+        }
+      }
+    })();
+
+    _exploitChainsInFlight = reqPromise;
+    return reqPromise;
+  },
+
+  runPatchPanelValidation: async (payload: PatchPanelValidateRequest) => {
+    const reqEpoch = _cognitiveEpoch;
+    const rawPath = (get().projectPath || "").trim();
+    const localPath = isLikelyLocalProjectPath(rawPath) ? rawPath : undefined;
+    set({ isValidatingPatchPanel: true, cognitiveErrorBanner: null });
+    try {
+      const data = await validatePatchPanelApi({
+        ...payload,
+        project_path: payload.project_path ?? localPath,
+      });
+      if (reqEpoch !== _cognitiveEpoch) {
+        return data;
+      }
+      set({
+        patchPanelResult: data,
+        isValidatingPatchPanel: false,
+        cognitiveErrorBanner: null,
+      });
+      return data;
+    } catch (err: any) {
+      const msg = err?.detail || err?.message || "S11 3-Persona Patch Panel validation failed.";
+      console.error("Failed to validate patch with S11 3-Persona Panel:", err);
+      if (reqEpoch === _cognitiveEpoch) {
+        set({
+          isValidatingPatchPanel: false,
+          cognitiveErrorBanner: msg,
+        });
+      }
+      return null;
+    }
+  },
+
   triggerScan: async (targetPath?: string, options?: GitRepoScanOptions) => {
     const path = (targetPath || get().projectPath || "").trim();
     if (!path) {
       return { ok: false, error: "Please select or paste a target path or GitHub repository URL." };
     }
+    _cognitiveEpoch += 1;
+    _cognitivePlaybooksInFlight = null;
+    _cognitivePlaybooksInFlightKey = "";
+    _exploitChainsInFlight = null;
+    _exploitChainsInFlightKey = "";
     set({
       isScanning: true,
       gitScanErrorBanner: null,
@@ -3464,6 +3822,12 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       apiOperationsReport: null,
       pastaAssessment: null,
       communityMap: null,
+      cognitivePlaybooks: null,
+      cognitiveHuntResult: null,
+      adversarialVerifyResult: null,
+      exploitChainsResult: null,
+      patchPanelResult: null,
+      cognitiveErrorBanner: null,
       scanStatusMessage: `Initiating analysis for: ${path}...`,
       scanProgress: {
         is_scanning: true,

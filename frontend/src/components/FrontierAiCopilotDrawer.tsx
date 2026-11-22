@@ -31,6 +31,8 @@ import {
   GitCompare,
   Play,
   ArrowUpRight,
+  XCircle,
+  Users,
 } from "lucide-react";
 
 const FALLBACK_PROVIDERS: AiProviderInfo[] = [
@@ -105,6 +107,13 @@ export function FrontierAiCopilotDrawer() {
   const loadAiPatchIntoDiffEditor = useAuditStore(
     (s) => s.loadAiPatchIntoDiffEditor
   );
+  const remediationPreview = useAuditStore((s) => s.remediationPreview);
+  const patchPanelResult = useAuditStore((s) => s.patchPanelResult);
+  const isValidatingPatchPanel = useAuditStore((s) => s.isValidatingPatchPanel);
+  const cognitiveErrorBanner = useAuditStore((s) => s.cognitiveErrorBanner);
+  const runPatchPanelValidation = useAuditStore(
+    (s) => s.runPatchPanelValidation
+  );
 
   const findings = useAuditStore((s) => s.findings);
   const selectedFinding = useAuditStore((s) => s.selectedFinding);
@@ -137,6 +146,7 @@ export function FrontierAiCopilotDrawer() {
   const [appliedTriageIds, setAppliedTriageIds] = useState<
     Record<string, boolean>
   >({});
+  const [useAiPatchPersonas, setUseAiPatchPersonas] = useState<boolean>(false);
 
   useEffect(() => {
     void fetchAiConfigState();
@@ -1258,6 +1268,316 @@ export function FrontierAiCopilotDrawer() {
                 </button>
               </div>
             )}
+
+            {/* S11 Dual-Verified 3-Persona + AST/CPG Patch Validation Panel */}
+            {(() => {
+              const fallbackNode =
+                selectedFinding?.path_nodes &&
+                selectedFinding.path_nodes.length > 0
+                  ? selectedFinding.path_nodes[
+                      selectedFinding.path_nodes.length - 1
+                    ]
+                  : null;
+              const candidateFilepath =
+                aiLastSynthesizedPatch?.filepath ||
+                remediationPreview?.filepath ||
+                selectedFinding?.best_fix_location?.filepath ||
+                fallbackNode?.filepath ||
+                "";
+              const candidateOriginal =
+                (aiLastSynthesizedPatch
+                  ? remediationPreview?.original_content ||
+                    aiLastSynthesizedPatch.before_snippet
+                  : remediationPreview?.original_content ||
+                    selectedFinding?.best_fix_location?.before_code_block ||
+                    selectedFinding?.best_fix_location?.code_snippet) || "";
+              const candidateProposed =
+                aiLastSynthesizedPatch?.patched_full_content ||
+                aiLastSynthesizedPatch?.after_snippet ||
+                remediationPreview?.patched_content ||
+                selectedFinding?.best_fix_location?.after_code_block ||
+                selectedFinding?.best_fix_location?.recommended_fix ||
+                "";
+              const canRunPanel = Boolean(
+                candidateFilepath.trim() && candidateProposed.trim()
+              );
+
+              const handleRunS11Validation = () => {
+                if (!canRunPanel) return;
+                void runPatchPanelValidation({
+                  finding_id:
+                    aiLastSynthesizedPatch?.finding_id ||
+                    remediationPreview?.finding_id ||
+                    selectedFinding?.id ||
+                    null,
+                  filepath: candidateFilepath.trim(),
+                  original_code: candidateOriginal || "# original snippet",
+                  proposed_code: candidateProposed,
+                  cwe_id: selectedFinding?.cwe_id || null,
+                  use_ai: isProviderReady && useAiPatchPersonas,
+                });
+              };
+
+              return (
+                <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-3 shadow-sm">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="font-extrabold text-slate-900 text-xs flex items-center gap-1.5">
+                        <Users className="w-4 h-4 text-indigo-700 shrink-0" />
+                        <span>S11 Dual-Verified 3-Persona Patch Panel</span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
+                        Fail-closed deterministic AST syntax, hostile-patch
+                        post-gate &amp; CPG taint-severance verification plus
+                        3-persona review.
+                      </p>
+                    </div>
+                    <span className="px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-300 text-emerald-900 font-mono text-[9px] font-extrabold shrink-0">
+                      $0 / BYOK
+                    </span>
+                  </div>
+
+                  {isProviderReady && (
+                    <label className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-950 text-[11px] font-semibold cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={useAiPatchPersonas}
+                        onChange={(e) =>
+                          setUseAiPatchPersonas(e.target.checked)
+                        }
+                        className="accent-indigo-700"
+                      />
+                      <span>Use BYOK AI Personas</span>
+                    </label>
+                  )}
+
+                  <button
+                    type="button"
+                    disabled={!canRunPanel || isValidatingPatchPanel}
+                    onClick={handleRunS11Validation}
+                    className="w-full py-2 px-3 rounded-xl bg-sky-700 hover:bg-sky-800 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-colors"
+                  >
+                    {isValidatingPatchPanel ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <ShieldCheck className="w-4 h-4" />
+                    )}
+                    <span>
+                      {isValidatingPatchPanel
+                        ? "Running S11 Gates & 3 Personas..."
+                        : "Run S11 3-Persona + AST/CPG Validation"}
+                    </span>
+                  </button>
+
+                  {!canRunPanel && (
+                    <p className="text-[10px] font-mono text-slate-600">
+                      Synthesize an AI patch or select a finding with a
+                      remediation preview to enable S11 validation.
+                    </p>
+                  )}
+
+                  {cognitiveErrorBanner && (
+                    <div
+                      role="alert"
+                      className="p-2.5 rounded-lg bg-rose-50 border border-rose-300 text-rose-950 text-[11px] font-semibold flex items-start gap-1.5"
+                    >
+                      <AlertTriangle className="w-3.5 h-3.5 text-rose-700 shrink-0 mt-0.5" />
+                      <span className="break-words">{cognitiveErrorBanner}</span>
+                    </div>
+                  )}
+
+                  {patchPanelResult && (
+                    <div className="space-y-3 pt-1">
+                      {/* Overall Verdict Banner */}
+                      <div
+                        className={`p-2.5 rounded-xl border space-y-1 ${
+                          patchPanelResult.overall_verdict === "APPROVED"
+                            ? "bg-emerald-50 border-emerald-300 text-emerald-950"
+                            : patchPanelResult.overall_verdict ===
+                              "REVISIONS_REQUIRED"
+                            ? "bg-amber-50 border-amber-300 text-amber-950"
+                            : "bg-rose-50 border-rose-300 text-rose-950"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <span className="font-mono text-[11px] font-extrabold flex items-center gap-1.5">
+                            {patchPanelResult.overall_verdict === "APPROVED" ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-700" />
+                            ) : patchPanelResult.overall_verdict ===
+                              "REVISIONS_REQUIRED" ? (
+                              <AlertTriangle className="w-4 h-4 text-amber-700" />
+                            ) : (
+                              <XCircle className="w-4 h-4 text-rose-700" />
+                            )}
+                            <span>
+                              VERDICT:{" "}
+                              {patchPanelResult.overall_verdict.replace(
+                                /_/g,
+                                " "
+                              )}
+                            </span>
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded bg-white border border-slate-300 text-slate-900 font-mono text-[9px] font-bold">
+                            {patchPanelResult.execution_mode}
+                          </span>
+                        </div>
+                        {patchPanelResult.summary && (
+                          <p className="text-[11px] leading-snug">
+                            {patchPanelResult.summary}
+                          </p>
+                        )}
+                      </div>
+
+                      {/* 3 Deterministic Safety Gates */}
+                      <div className="space-y-1.5">
+                        <div className="text-[10px] font-mono font-extrabold uppercase text-slate-700">
+                          3 Deterministic Safety Gates (Fail-Closed)
+                        </div>
+                        <div className="grid grid-cols-1 gap-1.5">
+                          <div
+                            className={`p-2 rounded-lg border flex items-start justify-between gap-2 text-[11px] ${
+                              patchPanelResult.syntax_ok
+                                ? "bg-emerald-50 border-emerald-300 text-emerald-950"
+                                : "bg-rose-50 border-rose-300 text-rose-950"
+                            }`}
+                          >
+                            <div className="space-y-0.5 min-w-0">
+                              <div className="font-bold flex items-center gap-1.5">
+                                {patchPanelResult.syntax_ok ? (
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                                ) : (
+                                  <XCircle className="w-3.5 h-3.5 text-rose-700 shrink-0" />
+                                )}
+                                <span>AST Syntax</span>
+                              </div>
+                              {patchPanelResult.syntax_error && (
+                                <div className="font-mono text-[10px] text-rose-900 break-words">
+                                  {patchPanelResult.syntax_error}
+                                </div>
+                              )}
+                            </div>
+                            <span className="font-mono text-[10px] font-extrabold shrink-0">
+                              {patchPanelResult.syntax_ok ? "PASS" : "FAIL"}
+                            </span>
+                          </div>
+
+                          <div
+                            className={`p-2 rounded-lg border flex items-start justify-between gap-2 text-[11px] ${
+                              !patchPanelResult.hostile_patch_blocked
+                                ? "bg-emerald-50 border-emerald-300 text-emerald-950"
+                                : "bg-rose-50 border-rose-300 text-rose-950"
+                            }`}
+                          >
+                            <div className="space-y-1 min-w-0">
+                              <div className="font-bold flex items-center gap-1.5">
+                                {!patchPanelResult.hostile_patch_blocked ? (
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                                ) : (
+                                  <XCircle className="w-3.5 h-3.5 text-rose-700 shrink-0" />
+                                )}
+                                <span>Hostile-Patch Post-Gate</span>
+                              </div>
+                              {patchPanelResult.hostile_patch_reasons.length >
+                                0 && (
+                                <ul className="list-disc pl-4 space-y-0.5 text-[10px] font-mono text-rose-950">
+                                  {patchPanelResult.hostile_patch_reasons.map(
+                                    (reason, idx) => (
+                                      <li key={idx}>{reason}</li>
+                                    )
+                                  )}
+                                </ul>
+                              )}
+                            </div>
+                            <span className="font-mono text-[10px] font-extrabold shrink-0">
+                              {!patchPanelResult.hostile_patch_blocked
+                                ? "CLEAN"
+                                : "BLOCKED"}
+                            </span>
+                          </div>
+
+                          <div
+                            className={`p-2 rounded-lg border flex items-center justify-between gap-2 text-[11px] ${
+                              patchPanelResult.cpg_sink_severed
+                                ? "bg-emerald-50 border-emerald-300 text-emerald-950"
+                                : "bg-amber-50 border-amber-300 text-amber-950"
+                            }`}
+                          >
+                            <div className="font-bold flex items-center gap-1.5">
+                              {patchPanelResult.cpg_sink_severed ? (
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                              ) : (
+                                <AlertTriangle className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                              )}
+                              <span>CPG Taint Severance</span>
+                            </div>
+                            <span className="font-mono text-[10px] font-extrabold shrink-0">
+                              {patchPanelResult.cpg_sink_severed
+                                ? "SEVERED"
+                                : "UNVERIFIED"}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 3 Persona Scorecards */}
+                      {patchPanelResult.personas.length > 0 && (
+                        <div className="space-y-1.5">
+                          <div className="text-[10px] font-mono font-extrabold uppercase text-slate-700">
+                            3-Persona Review Scorecards
+                          </div>
+                          <div className="space-y-2">
+                            {patchPanelResult.personas.map((persona) => {
+                              const pPillClass =
+                                persona.verdict === "APPROVE"
+                                  ? "bg-emerald-50 text-emerald-900 border-emerald-300"
+                                  : persona.verdict === "CONCERN"
+                                  ? "bg-amber-50 text-amber-950 border-amber-300"
+                                  : "bg-rose-50 text-rose-950 border-rose-300";
+                              return (
+                                <div
+                                  key={persona.persona_id}
+                                  className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5"
+                                >
+                                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                                    <span className="text-xs font-extrabold text-slate-900">
+                                      {persona.persona_label}
+                                    </span>
+                                    <div className="flex items-center gap-1.5 font-mono text-[10px]">
+                                      <span
+                                        className={`px-1.5 py-0.5 rounded border font-extrabold ${pPillClass}`}
+                                      >
+                                        {persona.verdict}
+                                      </span>
+                                      <span className="px-1.5 py-0.5 rounded bg-white border border-slate-300 text-slate-900 font-extrabold">
+                                        {persona.score}/100
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  {persona.summary && (
+                                    <p className="text-[11px] text-slate-800 leading-snug">
+                                      {persona.summary}
+                                    </p>
+                                  )}
+
+                                  {persona.findings.length > 0 && (
+                                    <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-slate-700">
+                                      {persona.findings.map((note, idx) => (
+                                        <li key={idx}>{note}</li>
+                                      ))}
+                                    </ul>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
 

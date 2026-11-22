@@ -22,6 +22,15 @@ import {
   SecretScannerConfig,
   SecretScannerConfigUpdate,
   SecretVerifyRequestPayload,
+  CognitivePlaybooksResponse,
+  CognitiveHuntRequest,
+  CognitiveHuntResponse,
+  AdversarialVerifyRequest,
+  AdversarialVerifyResponse,
+  ExploitChainRequest,
+  ExploitChainResponse,
+  PatchPanelValidateRequest,
+  PatchPanelValidateResponse,
 } from "@/types/cpg";
 
 export const BACKEND_URL =
@@ -418,4 +427,122 @@ export async function downloadSarReportBlob(
   const filename = sanitizedName || `ALASTOR_SAR_GoLive_Report.${format}`;
   const blob = await res.blob();
   return { blob, filename };
+}
+
+// ---------------------------------------------------------------------------
+// 15. ALASTOR v5.0 Pillar 2 — Cognitive Security API Clients
+// ---------------------------------------------------------------------------
+export async function fetchCognitivePlaybooks(
+  projectPath?: string | null
+): Promise<CognitivePlaybooksResponse> {
+  const qs = new URLSearchParams();
+  const localPath = normalizeLocalProjectPath(projectPath);
+  if (localPath) {
+    qs.set("project_path", localPath);
+  }
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return apiFetchJson<CognitivePlaybooksResponse>(
+    `/api/cognitive/playbooks${suffix}`
+  );
+}
+
+export async function runCognitiveHuntApi(
+  payload: CognitiveHuntRequest
+): Promise<CognitiveHuntResponse> {
+  const localPath = normalizeLocalProjectPath(payload.project_path);
+  const body: CognitiveHuntRequest = {
+    ...(localPath ? { project_path: localPath } : {}),
+    ...(payload.playbook_ids !== undefined
+      ? { playbook_ids: payload.playbook_ids }
+      : {}),
+    ...(typeof payload.use_ai === "boolean" ? { use_ai: payload.use_ai } : {}),
+    ...(typeof payload.include_sibling_sweep === "boolean"
+      ? { include_sibling_sweep: payload.include_sibling_sweep }
+      : {}),
+    ...(typeof payload.max_ai_units === "number"
+      ? { max_ai_units: payload.max_ai_units }
+      : {}),
+  };
+  return apiFetchJson<CognitiveHuntResponse>("/api/cognitive/hunt", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function runAdversarialVerifyApi(
+  payload: AdversarialVerifyRequest
+): Promise<AdversarialVerifyResponse> {
+  const localPath = normalizeLocalProjectPath(payload.project_path);
+  const body: AdversarialVerifyRequest = {
+    ...(localPath ? { project_path: localPath } : {}),
+    ...(payload.finding_ids !== undefined
+      ? { finding_ids: payload.finding_ids }
+      : {}),
+    ...(typeof payload.use_ai === "boolean" ? { use_ai: payload.use_ai } : {}),
+    ...(typeof payload.max_batch === "number"
+      ? { max_batch: payload.max_batch }
+      : {}),
+  };
+  return apiFetchJson<AdversarialVerifyResponse>(
+    "/api/cognitive/adversarial-verify",
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+export async function fetchExploitChainsApi(
+  projectPath?: string | null
+): Promise<ExploitChainResponse> {
+  const qs = new URLSearchParams();
+  const localPath = normalizeLocalProjectPath(projectPath);
+  if (localPath) {
+    qs.set("project_path", localPath);
+  }
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return apiFetchJson<ExploitChainResponse>(
+    `/api/cognitive/exploit-chains${suffix}`
+  );
+}
+
+export async function synthesizeExploitChainsApi(
+  payload: ExploitChainRequest
+): Promise<ExploitChainResponse> {
+  const localPath = normalizeLocalProjectPath(payload.project_path);
+  const body: ExploitChainRequest = {
+    ...(localPath ? { project_path: localPath } : {}),
+    ...(typeof payload.use_ai === "boolean" ? { use_ai: payload.use_ai } : {}),
+    ...(typeof payload.max_chains === "number"
+      ? { max_chains: payload.max_chains }
+      : {}),
+  };
+  return apiFetchJson<ExploitChainResponse>("/api/cognitive/exploit-chains", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function validatePatchPanelApi(
+  payload: PatchPanelValidateRequest
+): Promise<PatchPanelValidateResponse> {
+  const localPath = normalizeLocalProjectPath(payload.project_path);
+  const body: PatchPanelValidateRequest = {
+    ...(localPath ? { project_path: localPath } : {}),
+    ...(payload.finding_id !== undefined
+      ? { finding_id: payload.finding_id }
+      : {}),
+    filepath: payload.filepath,
+    original_code: payload.original_code,
+    proposed_code: payload.proposed_code,
+    ...(payload.cwe_id !== undefined ? { cwe_id: payload.cwe_id } : {}),
+    ...(typeof payload.use_ai === "boolean" ? { use_ai: payload.use_ai } : {}),
+  };
+  return apiFetchJson<PatchPanelValidateResponse>(
+    "/api/cognitive/validate-patch",
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    }
+  );
 }
