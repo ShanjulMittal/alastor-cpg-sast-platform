@@ -30,6 +30,7 @@ from models import (
     AppTreeSummary,
     AttackSurfaceEndpoint,
     DirectoryTreeNode,
+    ExploitChainItem,
     Finding,
     GoLiveGateStatus,
     GoLiveObservationItem,
@@ -1784,6 +1785,186 @@ class PastaThreatEngine:
             evidence_items=evidence_items,
         )
 
+    def _convert_exploit_chains_to_attack_trees(
+        self,
+        exploit_chains: Optional[List[ExploitChainItem]],
+        crown_jewels: List[PastaCrownJewelItem],
+        forbidden_raw_values: Set[str],
+    ) -> List[PastaAttackTreeScenario]:
+        """Converts up to top 3 confirmed S8 Multi-Hop Exploit Chains into Stage VI attack tree scenarios."""
+        if not exploit_chains:
+            return []
+
+        jewel_ids = {cj.id for cj in crown_jewels}
+        converted: List[PastaAttackTreeScenario] = []
+
+        for chain in list(exploit_chains)[:3]:
+            raw_cid = (chain.id or "").strip()
+            if raw_cid.startswith("s8-chain-"):
+                sc_id = raw_cid
+            elif raw_cid.startswith("chain-"):
+                sc_id = f"s8-{raw_cid}"
+            else:
+                sc_id = f"s8-chain-{_slugify(raw_cid or chain.title, 24)}"
+
+            eff_sev = _normalize_severity(chain.severity)
+            hops = list(chain.hops or [])
+            vuln_indices = [
+                idx for idx, h in enumerate(hops) if h.hop_type == "VULNERABILITY"
+            ]
+            last_vuln_idx = vuln_indices[-1] if vuln_indices else -1
+
+            # Infer target Crown Jewel ID and STRIDE letter from hops
+            combined_meta = " ".join(
+                f"{h.hop_type} {h.title} {h.cwe_or_rule}" for h in hops
+            ).upper()
+            if any(k in combined_meta for k in ("HOST", "RUNTIME", "CWE-78", "CWE-502", "CWE-120", "CWE-416")):
+                target_cj = "HOST_RUNTIME_AND_OS"
+                stride_let = "E"
+            elif any(k in combined_meta for k in ("LEAKED_SECRET", "CREDENTIAL", "CWE-798", "VAULT")):
+                target_cj = "SECRETS_AND_CREDENTIALS"
+                stride_let = "I"
+            elif any(k in combined_meta for k in ("DATABASE", "SQL", "LEDGER", "TREASURY", "PII", "CWE-89")):
+                target_cj = "DATABASE_STORES"
+                stride_let = "T"
+            elif any(k in combined_meta for k in ("SSRF", "CWE-918", "METADATA")):
+                target_cj = "AI_AND_EXTERNAL_APIS"
+                stride_let = "I"
+            else:
+                target_cj = "AUTH_AND_SESSION_BOUNDARY"
+                stride_let = "S"
+            if jewel_ids and target_cj not in jewel_ids:
+                target_cj = crown_jewels[0].id
+
+            cwe_tokens: List[str] = []
+            for h in hops:
+                if h.cwe_or_rule and h.cwe_or_rule not in cwe_tokens:
+                    cwe_tokens.append(h.cwe_or_rule)
+            capec_lbl = f"S8_EXPLOIT_CHAIN ({', '.join(cwe_tokens[:3])})" if cwe_tokens else "S8_EXPLOIT_CHAIN"
+
+            primary_hop = next(
+                (h for h in hops if h.hop_type in ("VULNERABILITY", "LEAKED_SECRET") and h.filepath),
+                hops[0] if hops else None,
+            )
+            primary_fp = primary_hop.filepath if primary_hop and primary_hop.filepath else "workspace"
+            primary_ln = max(1, int(primary_hop.line or 1)) if primary_hop else 1
+
+            tree_nodes: List[PastaAttackTreeNode] = []
+            for idx, h in enumerate(hops):
+                if h.hop_type == "ENTRYPOINT":
+                    n_role: Literal[
+                        "GOAL",
+                        "CAPEC_VECTOR",
+                        "ENTRYPOINT",
+                        "PROPAGATION",
+                        "VULN_SINK",
+                        "BFL_SHIELD",
+                        "CROWN_JEWEL",
+                    ] = "ENTRYPOINT"
+                elif h.hop_type == "LEAKED_SECRET":
+                    n_role = "CAPEC_VECTOR"
+                elif h.hop_type == "COMMUNITY_BRIDGE":
+                    n_role = "PROPAGATION"
+                elif h.hop_type == "CROWN_JEWEL":
+                    n_role = "CROWN_JEWEL"
+                else:
+                    n_role = "VULN_SINK" if idx == last_vuln_idx else "PROPAGATION"
+
+                tree_nodes.append(
+                    PastaAttackTreeNode(
+                        id=f"{sc_id}-n{idx + 1}",
+                        node_role=n_role,
+                        title=_redact_sensitive_text(h.title[:80], forbidden_raw_values),
+                        subtitle=_redact_sensitive_text(
+                            f"{h.filepath}:L{max(1, int(h.line or 1))}" if h.filepath else h.hop_type,
+                            forbidden_raw_values,
+                        ),
+                        severity=eff_sev,
+                        filepath=h.filepath or primary_fp,
+                        line=max(1, int(h.line or 1)),
+                        cwe_or_capec=_redact_sensitive_text(h.cwe_or_rule or h.hop_type, forbidden_raw_values),
+                        is_severed=False,
+                        linked_finding_id=h.linked_finding_id,
+                    )
+                )
+
+            bfl_node_id = f"{sc_id}-bfl"
+            clean_bfl = _redact_sensitive_text(
+                chain.break_the_chain_fix or "Sever earliest chain hop with auth guard and BFL remediation.",
+                forbidden_raw_values,
+            )
+            tree_nodes.append(
+                PastaAttackTreeNode(
+                    id=bfl_node_id,
+                    node_role="BFL_SHIELD",
+                    title="S8 Break-the-Chain BFL Shield",
+                    subtitle=clean_bfl[:96],
+                    severity="PASS",
+                    filepath=primary_fp,
+                    line=primary_ln,
+                    cwe_or_capec="S8-BFL",
+                    is_severed=True,
+                    linked_finding_id=chain.linked_finding_ids[0] if chain.linked_finding_ids else None,
+                )
+            )
+
+            tree_edges: List[PastaAttackTreeEdge] = []
+            hop_node_count = len(hops)
+            for idx in range(max(0, hop_node_count - 1)):
+                src_h = hops[idx]
+                dst_h = hops[idx + 1]
+                tree_edges.append(
+                    PastaAttackTreeEdge(
+                        id=f"{sc_id}-e{idx + 1}",
+                        source=f"{sc_id}-n{idx + 1}",
+                        target=f"{sc_id}-n{idx + 2}",
+                        label=f"{src_h.hop_type} -> {dst_h.hop_type}",
+                        is_blocked=False,
+                    )
+                )
+            if hop_node_count >= 2:
+                tree_edges.append(
+                    PastaAttackTreeEdge(
+                        id=f"{sc_id}-e-bfl",
+                        source=bfl_node_id,
+                        target=f"{sc_id}-n2",
+                        label="SEVERS AT BFL",
+                        is_blocked=True,
+                    )
+                )
+
+            clean_title = _redact_sensitive_text(
+                chain.title if chain.title.startswith("[S8 Chain]") else f"[S8 Chain] {chain.title}",
+                forbidden_raw_values,
+            )
+            clean_narrative = _redact_sensitive_text(
+                chain.narrative or f"S8 multi-hop exploit chain (CVSS {chain.chain_cvss:.1f}) targeting {target_cj}.",
+                forbidden_raw_values,
+            )
+
+            converted.append(
+                PastaAttackTreeScenario(
+                    id=sc_id,
+                    title=clean_title,
+                    attacker_persona="Chained Multi-Hop Adversary (S8)",
+                    mitre_capec=capec_lbl,
+                    stride_letter=stride_let,
+                    target_crown_jewel=target_cj,
+                    status="EXPLOITABLE_PATH",
+                    severity=eff_sev,
+                    narrative=clean_narrative,
+                    bfl_remediation=clean_bfl,
+                    projected_risk_reduction=max(12, min(35, int(round(float(chain.chain_cvss or 7.5) * 3)))),
+                    linked_finding_id=chain.linked_finding_ids[0] if chain.linked_finding_ids else None,
+                    primary_filepath=primary_fp,
+                    primary_line=primary_ln,
+                    nodes=tree_nodes,
+                    edges=tree_edges,
+                )
+            )
+
+        return converted
+
     def evaluate_pasta(
         self,
         target_dir: str,
@@ -1796,6 +1977,7 @@ class PastaThreatEngine:
         pipeline_checks: Optional[List[PipelineSecurityCheck]] = None,
         extra_forbidden_values: Optional[Set[str]] = None,
         forbidden_raw_secrets: Optional[Set[str]] = None,
+        exploit_chains: Optional[List[ExploitChainItem]] = None,
     ) -> PastaAssessmentResponse:
         eff_target = (target_dir or ".").strip() or "."
         abs_target = os.path.abspath(eff_target)
@@ -1929,6 +2111,17 @@ class PastaThreatEngine:
             crown_jewels=crown_jewels,
             forbidden_raw_values=forbidden_raw_values,
         )
+        s8_chain_trees = self._convert_exploit_chains_to_attack_trees(
+            exploit_chains=exploit_chains,
+            crown_jewels=crown_jewels,
+            forbidden_raw_values=forbidden_raw_values,
+        )
+        if s8_chain_trees:
+            existing_tree_ids = {t.id for t in attack_trees}
+            for s8_sc in s8_chain_trees:
+                if s8_sc.id not in existing_tree_ids:
+                    attack_trees.append(s8_sc)
+                    existing_tree_ids.add(s8_sc.id)
 
         # Compute Risk Scores & Go-Live Verdict with strict invariants
         preset_mult = _PRESET_MULTIPLIERS.get(effective_preset, 1.0)

@@ -46,6 +46,7 @@ with warnings.catch_warnings():
     )
 
 from models import (
+    ExploitChainItem,
     Finding,
     GoLiveObservationItem,
     MetricsResponse,
@@ -102,6 +103,7 @@ class SarReportBundle(BaseModel):
     raci: RaciGovernanceResponse
     metrics: MetricsResponse
     findings: List[Finding] = Field(default_factory=list)
+    exploit_chains: List[ExploitChainItem] = Field(default_factory=list)
 
 
 def _clean_xml_text(value: Any, max_len: int = 0) -> str:
@@ -181,6 +183,12 @@ def sanitize_bundle_for_export(bundle: SarReportBundle) -> SarReportBundle:
     scrubbed_metrics = MetricsResponse.model_validate(
         _scrub_value_recursive(bundle.metrics.model_dump(), sorted_replacements)
     )
+    scrubbed_chains: List[ExploitChainItem] = [
+        ExploitChainItem.model_validate(
+            _scrub_value_recursive(chain.model_dump(), sorted_replacements)
+        )
+        for chain in (bundle.exploit_chains or [])
+    ]
 
     clean_app = _scrub_value_recursive(bundle.application_name, sorted_replacements)
     clean_path = _scrub_value_recursive(bundle.project_path, sorted_replacements)
@@ -194,6 +202,7 @@ def sanitize_bundle_for_export(bundle: SarReportBundle) -> SarReportBundle:
         raci=scrubbed_raci,
         metrics=scrubbed_metrics,
         findings=sanitized_findings,
+        exploit_chains=scrubbed_chains,
     )
 
 
@@ -396,6 +405,7 @@ def build_sar_json_dict(bundle: SarReportBundle) -> Dict[str, Any]:
             "formal_signoff_table": signoff_rows,
         },
         "findings": [f.model_dump() for f in clean.findings],
+        "exploit_chains": [c.model_dump() for c in clean.exploit_chains],
     }
 
 
@@ -802,6 +812,38 @@ def generate_sar_docx_bytes(bundle: SarReportBundle) -> bytes:
         status_col_indices=(3,),
         mono_col_indices=(4, 5),
     )
+
+    if clean.exploit_chains:
+        _docx_add_sub_heading(doc, "5C. S8 Multi-Hop Exploit Chains")
+        s8_rows = [
+            [
+                _clean_xml_text(ch.title, max_len=140),
+                f"{ch.severity} (CVSS {ch.chain_cvss:.1f})",
+                _clean_xml_text(
+                    " -> ".join(f"[{h.hop_type}] {h.title}" for h in ch.hops),
+                    max_len=360,
+                ),
+                _clean_xml_text(
+                    ", ".join(ch.blast_radius_communities) or "Single Module",
+                    max_len=140,
+                ),
+                _clean_xml_text(ch.break_the_chain_fix, max_len=280),
+            ]
+            for ch in clean.exploit_chains[:10]
+        ]
+        _docx_add_styled_table(
+            doc,
+            [
+                "Chain Title",
+                "Severity & Chain CVSS",
+                "Attack Hops",
+                "Blast-Radius Communities",
+                "Break-the-Chain Priority Fix",
+            ],
+            s8_rows,
+            status_col_indices=(1,),
+            mono_col_indices=(2, 4),
+        )
 
     # Section 6 — MANDATORY PRE-GO-LIVE BLOCKERS (Must Fix Before Launch)
     _docx_add_section_heading(doc, 6, "MANDATORY PRE-GO-LIVE BLOCKERS (Must Fix Before Launch)")
@@ -1457,6 +1499,38 @@ def generate_sar_pdf_bytes(bundle: SarReportBundle) -> bytes:
             mono_cols=(4, 5),
         )
     )
+
+    if clean.exploit_chains:
+        story.append(Paragraph("5C. S8 Multi-Hop Exploit Chains", subsec_st))
+        s8_pdf_rows = [
+            [
+                ch.title,
+                f"{ch.severity} (CVSS {ch.chain_cvss:.1f})",
+                " -> ".join(f"[{h.hop_type}] {h.title}" for h in ch.hops),
+                ", ".join(ch.blast_radius_communities) or "Single Module",
+                ch.break_the_chain_fix,
+            ]
+            for ch in clean.exploit_chains[:10]
+        ]
+        story.append(
+            _build_rl_table(
+                [
+                    "Chain Title",
+                    "Severity & Chain CVSS",
+                    "Attack Hops",
+                    "Blast-Radius Communities",
+                    "Break-the-Chain Priority Fix",
+                ],
+                s8_pdf_rows,
+                [0.20, 0.14, 0.30, 0.14, 0.22],
+                avail_w,
+                hdr_cell_st,
+                cell_st,
+                mono_cell_st,
+                status_cols=(1,),
+                mono_cols=(2, 4),
+            )
+        )
 
     # Section 6 — MANDATORY PRE-GO-LIVE BLOCKERS (Must Fix Before Launch)
     story.append(

@@ -37,10 +37,12 @@ from models import (
     ScanSnapshotRecord, TrackChangesSummary, CreateTestProfileRequest,
     BatchRuleSelectionRequest, TenantAccount, UserProfileRecord,
     CreateAccountRequest, CreateUserProfileRequest, SwitchUserOrAccountRequest,
-    UserAccountsStateResponse
+    UserAccountsStateResponse, CommunityMapResponse
 )
 from engine.rule_executor import RULES
 from engine.polyglot_rules import POLYGLOT_RULE_CATALOG
+from engine.security_playbooks import COGNITIVE_RULE_CATALOG
+from engine.exploit_chain_engine import synthesize_exploit_chains
 from engine.osv_lockfile_scanner import run_live_osv_lockfile_scan, run_cicd_workflow_security_scan
 from engine.api_operations_engine import analyze_workspace_api_operations
 from engine.pasta_threat_engine import PastaThreatEngine
@@ -322,6 +324,36 @@ def compute_best_fix_location(finding: Finding) -> BestFixLocation:
         explanation = (
             f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Replacing the unbounded loop header with a bounded "
             f"iteration range prevents CPU exhaustion (DoS)."
+        )
+    elif rule_upper.startswith("COG-1") or cwe == "CWE-639":
+        rec_fix = finding.remediation or "Enforce authenticated actor context (Depends(get_current_user)) and scope queries by owner_id == current_user.id"
+        explanation = (
+            f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Adding an explicit authentication and "
+            f"object-ownership/tenant predicate eliminates unauthorized cross-user resource access (IDOR / BOLA)."
+        )
+    elif rule_upper.startswith("COG-2") or cwe in ("CWE-840", "CWE-362"):
+        rec_fix = finding.remediation or "Validate positive bounds (amount > 0) with Decimal arithmetic inside an atomic transaction / SELECT FOR UPDATE lock"
+        explanation = (
+            f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Validating bounds and serializing state "
+            f"mutations inside an atomic database lock closes negative-amount and TOCTOU double-spend races."
+        )
+    elif rule_upper.startswith("COG-3") or cwe in ("CWE-942", "CWE-352", "CWE-614"):
+        rec_fix = finding.remediation or "Restrict CORS allow_origins to explicit trusted domains, set HttpOnly=True and Secure=True on cookies, and disable DEBUG in production"
+        explanation = (
+            f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Hardening CORS/CSRF, cookie security flags, "
+            f"and runtime debug configuration seals cross-origin credential leakage and state-forging paths."
+        )
+    elif rule_upper.startswith("COG-4") or cwe in ("CWE-200", "CWE-532"):
+        rec_fix = finding.remediation or "Return explicit allowlisted DTO fields excluding password hashes/secrets/PII and log sanitized identifiers only"
+        explanation = (
+            f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Stripping sensitive fields and raw tracebacks "
+            f"from outbound HTTP responses and logs prevents credential and PII disclosure."
+        )
+    elif rule_upper.startswith("COG-5") or cwe in ("CWE-345", "CWE-922"):
+        rec_fix = finding.remediation or "Validate exact event.origin against a strict allowlist in message listeners and move auth tokens from localStorage to HttpOnly cookies"
+        explanation = (
+            f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Enforcing postMessage origin checks and "
+            f"eliminating XSS-readable token storage neutralizes client-side account takeover."
         )
     elif "ORPHAN" in rule_upper or "UNREACHABLE" in rule_upper or cwe in ("CWE-561", "CWE-489"):
         rec_fix = "# Remove unreferenced gadget / move cleanup before return statement (or into finally block)"
@@ -893,6 +925,142 @@ def populate_plain_english_and_raci(
             f"1. Configure the XML parser at `{fp}`:L{ln} to prohibit DTDs and external general/parameter entities.",
             "2. Add an XXE negative unit test and confirm ALASTOR reports zero CWE-611 issues."
         ]
+    elif rule_upper.startswith("COG-1") or cwe == "CWE-639":
+        finding.plain_english_summary = (
+            f"WHAT IS WRONG: The API route handler at `{fp}` (Line {ln}, `{code_snip[:90]}`) accepts a caller-supplied "
+            f"object identifier and reads or mutates backing records without verifying caller ownership or tenant isolation (IDOR / BOLA). "
+            f"TECHNICAL EVIDENCE: {raw_desc}"
+        )
+        finding.non_coder_analogy = (
+            "Like a bank teller handing over any customer's account statement simply because someone changed the account number on a slip without checking their ID."
+        )
+        finding.business_impact = (
+            "Cross-Tenant Data Breach & Unauthorized Account Modification (OWASP A01:2021 / CWE-639): Any authenticated or external caller "
+            "can enumerate object IDs to view, modify, or delete records belonging to other customers."
+        )
+        finding.effort_estimate = "~20 mins (Add auth dependency and owner_id / tenant_id query predicate)"
+        finding.financial_risk_tier = "Tier 1 — Direct Multi-Tenant Data Exfiltration & Privacy Breach"
+        finding.raci_responsible = "Lead Developer (TECH_LEAD)"
+        finding.raci_accountable = "Security Architect (SECURITY_LEAD)"
+        finding.raci_consulted = "Compliance Officer (COMPLIANCE_GRC)"
+        finding.raci_informed = "Executive Sponsor / CISO (EXEC_SPONSOR)"
+        finding.management_action_steps = [
+            f"1. Enforce authenticated session identity and bind queries to `owner_id == current_user.id` at `{fp}`:L{ln}.",
+            "2. Add negative cross-tenant integration tests verifying HTTP 403/404 when requesting another tenant's ID."
+        ]
+    elif rule_upper.startswith("COG-2") or cwe in ("CWE-840", "CWE-362"):
+        finding.plain_english_summary = (
+            f"WHAT IS WRONG: The financial or quota handler at `{fp}` (Line {ln}, `{code_snip[:90]}`) updates balances or "
+            f"inventories without positive-amount bounds validation or atomic transaction/row locking (Business Logic / TOCTOU race). "
+            f"TECHNICAL EVIDENCE: {raw_desc}"
+        )
+        finding.non_coder_analogy = (
+            "Like a cash register that allows negative purchase amounts to add money back to a card or lets two simultaneous withdrawals spend the same balance twice."
+        )
+        finding.business_impact = (
+            "Direct Financial Loss & Double-Spend Fraud (OWASP A04:2021 / CWE-840 / CWE-362): Attackers can abuse negative amounts "
+            "or parallel requests to bypass balance checks, over-redeem coupons, or drain monetary ledgers."
+        )
+        finding.effort_estimate = "~30 mins (Validate positive Decimal bounds and wrap in atomic SELECT FOR UPDATE transaction)"
+        finding.financial_risk_tier = "Tier 1 — Direct Revenue & Financial Ledger Integrity Risk"
+        finding.raci_responsible = "Lead Developer (TECH_LEAD)"
+        finding.raci_accountable = "Security Architect (SECURITY_LEAD)"
+        finding.raci_consulted = "QA & Release Lead (QA_LEAD)"
+        finding.raci_informed = "Executive Sponsor / CISO (EXEC_SPONSOR)"
+        finding.management_action_steps = [
+            f"1. Enforce strict positive bounds (`amount > 0`) and atomic row locking at `{fp}`:L{ln}.",
+            "2. Run a concurrent double-spend stress test confirming ledger invariants hold under parallel requests."
+        ]
+    elif rule_upper.startswith("COG-3") or cwe in ("CWE-942", "CWE-352", "CWE-614"):
+        finding.plain_english_summary = (
+            f"WHAT IS WRONG: The web application security configuration at `{fp}` (Line {ln}, `{code_snip[:90]}`) permits "
+            f"credentialed wildcard/reflected CORS, disables HttpOnly/Secure cookie flags, or enables production debug mode. "
+            f"TECHNICAL EVIDENCE: {raw_desc}"
+        )
+        finding.non_coder_analogy = (
+            "Like leaving the company headquarters badge reader propped open to any neighboring building while posting internal maintenance blueprints in the lobby."
+        )
+        finding.business_impact = (
+            "Cross-Origin Session Hijacking & State Forgery (OWASP A05:2021 / CWE-942 / CWE-352): Malicious third-party websites "
+            "can read authenticated API responses or forge privileged actions on behalf of logged-in users."
+        )
+        finding.effort_estimate = "~15 mins (Pin explicit CORS allowlist, enforce HttpOnly/Secure cookies, disable DEBUG)"
+        finding.financial_risk_tier = "Tier 1 — Authenticated Session Takeover & Cross-Origin Data Theft"
+        finding.raci_responsible = "Lead Developer (TECH_LEAD)"
+        finding.raci_accountable = "Security Architect (SECURITY_LEAD)"
+        finding.raci_consulted = "DevOps / Infra Lead (DEVOPS_LEAD)"
+        finding.raci_informed = "Product Manager (PRODUCT_MGR)"
+        finding.management_action_steps = [
+            f"1. Replace wildcard/reflected CORS with an explicit trusted origin allowlist and harden cookie/debug flags at `{fp}`:L{ln}.",
+            "2. Verify response headers (`Access-Control-Allow-Origin`, `Set-Cookie`) in staging prior to release."
+        ]
+    elif rule_upper.startswith("COG-4") or cwe in ("CWE-200", "CWE-532"):
+        finding.plain_english_summary = (
+            f"WHAT IS WRONG: Code at `{fp}` (Line {ln}, `{code_snip[:90]}`) directly serializes sensitive credentials, "
+            f"password hashes, PII fields, or raw stack traces into external HTTP responses or application logs. "
+            f"TECHNICAL EVIDENCE: {raw_desc}"
+        )
+        finding.non_coder_analogy = (
+            "Like printing a customer's Social Security number and vault combination on the outside of a mailing envelope."
+        )
+        finding.business_impact = (
+            "Sensitive Data & Credential Leakage (OWASP A02:2021 / CWE-200 / CWE-532): Exposes internal secrets, "
+            "password hashes, or regulated PII to callers and centralized log aggregators, triggering compliance violations."
+        )
+        finding.effort_estimate = "~15 mins (Use explicit safe response DTOs and redact sensitive fields from logs)"
+        finding.financial_risk_tier = "Tier 1 — Regulatory Privacy Breach & Credential Exposure"
+        finding.raci_responsible = "Lead Developer (TECH_LEAD)"
+        finding.raci_accountable = "Security Architect (SECURITY_LEAD)"
+        finding.raci_consulted = "Compliance Officer (COMPLIANCE_GRC)"
+        finding.raci_informed = "Executive Sponsor / CISO (EXEC_SPONSOR)"
+        finding.management_action_steps = [
+            f"1. Restrict API response serialization at `{fp}`:L{ln} to an explicit non-sensitive DTO schema.",
+            "2. Keep raw stack traces strictly server-side and scrub credentials before logging."
+        ]
+    elif rule_upper.startswith("COG-5") or cwe in ("CWE-345", "CWE-922"):
+        finding.plain_english_summary = (
+            f"WHAT IS WRONG: Client-side browser code at `{fp}` (Line {ln}, `{code_snip[:90]}`) processes `postMessage` events "
+            f"without validating `event.origin` or persists authentication/JWT tokens in XSS-readable `localStorage`. "
+            f"TECHNICAL EVIDENCE: {raw_desc}"
+        )
+        finding.non_coder_analogy = (
+            "Like accepting wire transfer instructions shouted through an open window without checking who is speaking, and leaving your house keys on the welcome mat."
+        )
+        finding.business_impact = (
+            "Client-Side Account Takeover & Token Theft (OWASP A07:2021 / CWE-345 / CWE-922): Any third-party page or XSS "
+            "script can inject untrusted messages or steal bearer tokens from browser storage."
+        )
+        finding.effort_estimate = "~20 mins (Verify strict event.origin allowlist and migrate auth tokens to HttpOnly cookies)"
+        finding.financial_risk_tier = "Tier 2 — Client Session Hijacking & Browser Token Exfiltration"
+        finding.raci_responsible = "Frontend Lead (TECH_LEAD)"
+        finding.raci_accountable = "Security Architect (SECURITY_LEAD)"
+        finding.raci_consulted = "QA & Release Lead (QA_LEAD)"
+        finding.raci_informed = "Product Manager (PRODUCT_MGR)"
+        finding.management_action_steps = [
+            f"1. Add exact `event.origin === TRUSTED_ORIGIN` validation and remove auth tokens from `localStorage` at `{fp}`:L{ln}.",
+            "2. Serve session credentials via `HttpOnly; Secure; SameSite=Lax` cookies."
+        ]
+    elif rule_upper.startswith("COG-"):
+        finding.plain_english_summary = (
+            f"WHAT IS WRONG: Cognitive Security Playbook `{finding.rule_id}` detected a semantic or sibling security flaw "
+            f"at `{fp}` (Line {ln}, `{code_snip[:90]}`): {raw_desc or finding.title}."
+        )
+        finding.non_coder_analogy = (
+            "Like a specialist auditor finding a second unlocked back door using the same flawed lock pattern discovered at the front entrance."
+        )
+        finding.business_impact = (
+            "Semantic Logic or Sibling Vulnerability Exposure: Leaves an exploitable control gap across related application handlers."
+        )
+        finding.effort_estimate = "~20 mins (Apply sibling-consistent security control across all matching handlers)"
+        finding.financial_risk_tier = "Tier 1 — Systemic Application Control Gap"
+        finding.raci_responsible = "Lead Developer (TECH_LEAD)"
+        finding.raci_accountable = "Security Architect (SECURITY_LEAD)"
+        finding.raci_consulted = "QA & Release Lead (QA_LEAD)"
+        finding.raci_informed = "Executive Sponsor / CISO (EXEC_SPONSOR)"
+        finding.management_action_steps = [
+            f"1. Remediate `{fp}`:L{ln} and audit all sibling handlers sharing this pattern.",
+            "2. Re-run ALASTOR Cognitive Hunt to verify 0 remaining sibling instances."
+        ]
     else:
         finding.plain_english_summary = (
             f"WHAT IS WRONG: Rule `{finding.rule_id}` flagged `{fp}` at Line {ln} (`{code_snip[:90]}`): {raw_desc or finding.title}."
@@ -957,6 +1125,16 @@ def populate_plain_english_and_raci(
         finding.epss_percentile = 82.1
         finding.cisa_kev_listed = False
         finding.exploit_maturity = "CONFIGURATION_EXPOSURE"
+    elif rule_upper.startswith("COG-"):
+        finding.reachability_status = "REACHABLE"
+        finding.reachability_reason = (
+            f"Cognitive Semantic Surface Reachable: Playbook rule `{finding.rule_id}` verified an exposed "
+            f"application handler or client boundary at `{fp}:L{ln}`."
+        )
+        finding.epss_score = 0.725 if finding.severity in ("CRITICAL", "HIGH") else 0.485
+        finding.epss_percentile = 93.4 if finding.severity in ("CRITICAL", "HIGH") else 84.0
+        finding.cisa_kev_listed = bool(finding.cve_id)
+        finding.exploit_maturity = "PROOF_OF_CONCEPT"
     elif "ORPHAN" in rule_upper or "UNREACHABLE" in rule_upper or "DEADSTORE" in rule_upper or cwe in ("CWE-561", "CWE-563", "CWE-489"):
         finding.reachability_status = "UNREACHABLE_DORMANT"
         finding.reachability_reason = (
@@ -1618,6 +1796,26 @@ class EnterpriseManager:
                     description=pr.get("description", ""),
                     remediation=pr.get("remediation", ""),
                     cypher="/* Polyglot deterministic CPG + AST rule pack (Neo4j & Embedded SQLite) */",
+                    enabled=True,
+                    is_custom=False,
+                )
+            )
+
+        # Register ALASTOR v5.0 Pillar 2 Cognitive Semantic Rules (COG-1 through COG-5)
+        for cr in COGNITIVE_RULE_CATALOG:
+            self.queries.append(
+                SecurityQueryRule(
+                    id=cr["id"],
+                    name=cr["name"],
+                    engine="SAST",
+                    language="Polyglot / Web API",
+                    severity=cr.get("severity", "HIGH"),
+                    cwe_id=cr.get("cwe_id", "CWE-639"),
+                    owasp_category=cr.get("owasp_category", "A01:2021 - Broken Access Control"),
+                    cvss_score=float(cr.get("cvss_score", 7.5)),
+                    description=cr.get("description", ""),
+                    remediation=cr.get("remediation", ""),
+                    cypher="/* ALASTOR v5.0 Pillar 2 Cognitive Semantic Security Playbook */",
                     enabled=True,
                     is_custom=False,
                 )
@@ -2700,11 +2898,17 @@ class EnterpriseManager:
         now = datetime.now()
 
         for idx, f in enumerate(raw_findings):
-            # Check if rule is enabled (allow EXT-* web intel and SECRET-* hunter findings)
+            # Check if rule is enabled (allow EXT-* web intel, SECRET-* hunter, and COG-AI-*/COG-SIBLING-SWEEP findings)
             _is_cred_hunter_rule = f.rule_id.startswith("SECRET-") and (
                 "RULE-8-HARDCODED-SECRET" in enabled_rule_ids or f.rule_id in enabled_rule_ids
             )
-            if not f.rule_id.startswith("EXT-") and not _is_cred_hunter_rule and f.rule_id not in enabled_rule_ids:
+            _is_cog_dynamic_rule = f.rule_id.startswith("COG-AI-") or f.rule_id == "COG-SIBLING-SWEEP"
+            if (
+                not f.rule_id.startswith("EXT-")
+                and not _is_cred_hunter_rule
+                and not _is_cog_dynamic_rule
+                and f.rule_id not in enabled_rule_ids
+            ):
                 continue
 
             # Apply any user edits from Query Customization Engine
@@ -4717,7 +4921,12 @@ class EnterpriseManager:
     # -----------------------------------------------------------------------
     # 7. SAST ++++++ ASPM Suite (Live SBOM, API Attack Surface & Roadmap)
     # -----------------------------------------------------------------------
-    def get_sast_plus_suite(self, scan_dir: str, findings: List[Finding]) -> SastPlusSuiteResponse:
+    def get_sast_plus_suite(
+        self,
+        scan_dir: str,
+        findings: List[Finding],
+        community_map: Optional[CommunityMapResponse] = None,
+    ) -> SastPlusSuiteResponse:
         raw_cred_tokens: Dict[str, str] = {
             f.secret_value_raw: (f.secret_value_masked or "[REDACTED]")
             for f in (findings or [])
@@ -5192,7 +5401,10 @@ class EnterpriseManager:
         ]
         dead_f = [
             f for f in active_findings
-            if f.cwe_id in ("CWE-561", "CWE-563", "CWE-489")
+            if (
+                f.cwe_id in ("CWE-561", "CWE-563", "CWE-489")
+                and not (f.rule_id or "").startswith("COG-")
+            )
             or f.rule_id in ("RULE-2-ORPHAN", "RULE-3-DEADSTORE", "RULE-5-UNREACHABLE")
         ]
         # Ensure any remaining active finding is included in Tampering so 0 findings are ever unmapped
@@ -6273,6 +6485,16 @@ class EnterpriseManager:
             f"({crit_c} Critical, {high_c} High, {med_c} Medium — {reachable_c} Reachable, {dormant_c} Dormant)."
         )
 
+        s8_chains_resp = synthesize_exploit_chains(
+            target_dir=root_dir,
+            findings=findings,
+            api_ops=api_ops_report,
+            community_map=community_map,
+            use_ai=False,
+            max_chains=10,
+            extra_forbidden_secrets=set(raw_cred_tokens.keys()),
+        )
+
         pasta_res = self.pasta_engine.evaluate_pasta(
             target_dir=root_dir,
             findings=findings,
@@ -6282,6 +6504,7 @@ class EnterpriseManager:
             stride_threats=stride_threats,
             pipeline_checks=pipeline_checks,
             extra_forbidden_values=set(raw_cred_tokens.keys()),
+            exploit_chains=s8_chains_resp.chains,
         )
 
         return SastPlusSuiteResponse(

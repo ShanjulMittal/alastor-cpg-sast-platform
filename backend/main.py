@@ -61,6 +61,15 @@ from models import (
     ScanScopeTelemetry,
     CommunityMapResponse,
     LanguageCapabilitiesResponse,
+    CognitivePlaybooksResponse,
+    CognitiveHuntRequest,
+    CognitiveHuntResponse,
+    AdversarialVerifyRequest,
+    AdversarialVerifyResponse,
+    ExploitChainRequest,
+    ExploitChainResponse,
+    PatchPanelValidateRequest,
+    PatchPanelValidateResponse,
 )
 from database.neo4j_client import Neo4jClient
 from database.batch_ingestor import BatchIngestor
@@ -72,6 +81,15 @@ from engine.enterprise_manager import EnterpriseManager
 from engine.frontier_ai_engine import FrontierAiEngine
 from engine.secret_validator_engine import get_secret_validator_engine
 from engine.api_operations_engine import get_api_operations_engine
+from engine.security_playbooks import (
+    classify_repo_kinds_and_baselines,
+    run_cognitive_hunt,
+)
+from engine.adversarial_verifier import (
+    validate_patch_with_panel,
+    verify_findings_adversarially,
+)
+from engine.exploit_chain_engine import synthesize_exploit_chains
 from engine.sar_report_generator import (
     SarReportBundle,
     build_sar_json_dict,
@@ -1356,9 +1374,13 @@ def _scan_project_locked(req: ScanRequest) -> ScanResponse:
 
         # Select active GraphStore backend (Neo4j primary or Zero-Docker Embedded SQLite fallback)
         global _cached_findings, _cached_external_findings, _cached_advisories, _last_neo4j_ingested_dir
+        global _cached_cognitive_findings, _cached_cognitive_dir
         _cached_findings = None
         _cached_external_findings = []
         _cached_advisories = []
+        if _cached_cognitive_dir and os.path.normcase(os.path.realpath(_cached_cognitive_dir)) != os.path.normcase(os.path.realpath(resolved_path)):
+            _cached_cognitive_findings = []
+            _cached_cognitive_dir = ""
         active_mode = graph_store_mgr.ensure_backend(force_probe=True)
         graph_store_mgr.clear_database()
         graph_store_mgr.init_schema()
@@ -1834,6 +1856,8 @@ _cached_findings: Optional[List[Finding]] = None
 _cached_findings_time: float = 0.0
 _cached_external_findings: List[Finding] = []
 _cached_advisories: List[ExtractedAdvisory] = []
+_cached_cognitive_findings: List[Finding] = []
+_cached_cognitive_dir: str = ""
 _last_neo4j_ingested_dir: Optional[str] = None
 _findings_lock = threading.Lock()
 
@@ -1924,6 +1948,33 @@ def get_or_compute_findings(force_refresh: bool = False) -> List[Finding]:
             seen_ids.add(ef.id)
             seen_loc.add(ef_loc)
             combined.append(ef.model_copy(deep=True))
+
+    if _cached_cognitive_findings and _cached_cognitive_dir:
+        try:
+            _norm_cog_dir = os.path.normcase(os.path.realpath(_cached_cognitive_dir))
+            _norm_cur_real = os.path.normcase(os.path.realpath(target_dir))
+        except Exception:
+            _norm_cog_dir = ""
+            _norm_cur_real = ""
+        if _norm_cog_dir and _norm_cog_dir == _norm_cur_real:
+            seen_cog_keys = {
+                (
+                    f.rule_id,
+                    (f.path_nodes[-1].get("filepath") if f.path_nodes else ""),
+                    int(f.path_nodes[-1].get("start_line") or 0) if f.path_nodes else 0,
+                )
+                for f in combined
+            }
+            for cf in _cached_cognitive_findings:
+                cf_key = (
+                    cf.rule_id,
+                    (cf.path_nodes[-1].get("filepath") if cf.path_nodes else ""),
+                    int(cf.path_nodes[-1].get("start_line") or 0) if cf.path_nodes else 0,
+                )
+                if cf.id not in seen_ids and cf_key not in seen_cog_keys:
+                    seen_ids.add(cf.id)
+                    seen_cog_keys.add(cf_key)
+                    combined.append(cf.model_copy(deep=True))
 
     return enterprise_mgr.enrich_findings(combined)
 
@@ -3927,6 +3978,7 @@ def activate_project(project_id: str, skip_warmup: bool = Query(False)):
     """
     global current_scan_dir, current_app_tree, current_community_map
     global _cached_findings, _cached_findings_time, _cached_external_findings, _cached_advisories
+    global _cached_cognitive_findings, _cached_cognitive_dir
     global _last_languages_detected, _last_scope_telemetry, _last_scanned_files, _last_cpg_nodes, _last_cpg_edges
     target = None
     for p in enterprise_mgr.projects:
@@ -3944,6 +3996,9 @@ def activate_project(project_id: str, skip_warmup: bool = Query(False)):
         _norm_act = os.path.normcase(current_scan_dir)
         _cached_external_findings = []
         _cached_advisories = []
+        if _cached_cognitive_dir and os.path.normcase(os.path.realpath(_cached_cognitive_dir)) != os.path.normcase(os.path.realpath(current_scan_dir)):
+            _cached_cognitive_findings = []
+            _cached_cognitive_dir = ""
         switched_away_from_ingested = (_last_neo4j_ingested_dir != _norm_act)
         if switched_away_from_ingested:
             current_community_map = CommunityMapResponse(graph_engine_mode=graph_store_mgr.mode)
@@ -4582,16 +4637,93 @@ def _resolve_findings_for_project_target(target_dir: str) -> List[Finding]:
     """Resolves enriched findings for either the active scan target or a cached registered project."""
     norm_req = os.path.normcase(os.path.realpath(target_dir))
     norm_cur = os.path.normcase(os.path.realpath(current_scan_dir or enterprise_mgr.platform_root))
+    base_findings: List[Finding] = []
     if norm_req == norm_cur:
         findings = get_or_compute_findings()
         if findings:
             return findings
     cached = enterprise_mgr.get_cached_scan_for_project(target_dir)
     if cached and isinstance(cached.get("latest_findings"), list):
-        return enterprise_mgr.enrich_findings(
+        base_findings = enterprise_mgr.enrich_findings(
             [Finding(**f) for f in cached["latest_findings"] if isinstance(f, dict)]
         )
-    return []
+    if _cached_cognitive_findings and _cached_cognitive_dir:
+        try:
+            norm_cog = os.path.normcase(os.path.realpath(_cached_cognitive_dir))
+        except Exception:
+            norm_cog = ""
+        if norm_cog and norm_cog == norm_req:
+            seen_ids = {f.id for f in base_findings}
+            merged = list(base_findings)
+            for cf in _cached_cognitive_findings:
+                if cf.id not in seen_ids:
+                    seen_ids.add(cf.id)
+                    merged.append(cf.model_copy(deep=True))
+            return enterprise_mgr.enrich_findings(merged)
+    return base_findings
+
+
+def _resolve_community_map_for_target(target_dir: str) -> Optional[CommunityMapResponse]:
+    """Returns the live Leiden community map when `target_dir` matches the active workspace."""
+    norm_req = os.path.normcase(os.path.realpath(target_dir))
+    norm_cur = os.path.normcase(os.path.realpath(current_scan_dir or enterprise_mgr.platform_root))
+    if norm_req != norm_cur:
+        return None
+    if current_community_map is not None and current_community_map.total_communities > 0:
+        return current_community_map
+    try:
+        stored = graph_store_mgr.get_communities()
+        if stored and stored.total_communities > 0:
+            return stored
+    except Exception:
+        pass
+    return current_community_map
+
+
+def _resolve_confined_filepath_in_target(target_dir: str, filepath: str) -> str:
+    """Strictly confines `filepath` within `target_dir`, blocking traversal, outside paths, and `.env` (`HTTP 400`)."""
+    raw_fp = (filepath or "").strip()
+    if not raw_fp or "\x00" in raw_fp or any(ord(ch) < 32 for ch in raw_fp):
+        raise HTTPException(status_code=400, detail="Invalid filepath supplied.")
+
+    norm_segments = [seg for seg in raw_fp.replace("\\", "/").split("/") if seg]
+    if any(seg == ".." for seg in norm_segments):
+        raise HTTPException(
+            status_code=400,
+            detail="Path traversal segments ('..') are not permitted in filepath.",
+        )
+    for seg in norm_segments:
+        low_seg = seg.lower()
+        if low_seg == ".env" or low_seg.startswith(".env.") or low_seg.endswith(".env"):
+            raise HTTPException(
+                status_code=400,
+                detail="Access to sensitive .env files is strictly prohibited.",
+            )
+
+    real_root = os.path.realpath(target_dir)
+    cand_path = raw_fp if os.path.isabs(raw_fp) else os.path.join(real_root, raw_fp)
+    cand_real = os.path.realpath(cand_path)
+    try:
+        common = os.path.commonpath([real_root, cand_real])
+    except ValueError as val_exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Requested filepath is outside the confined project workspace.",
+        ) from val_exc
+
+    if common != real_root or cand_real == real_root:
+        raise HTTPException(
+            status_code=400,
+            detail="Requested filepath escapes the confined project workspace.",
+        )
+
+    base_low = os.path.basename(cand_real).lower()
+    if base_low == ".env" or base_low.startswith(".env.") or base_low.endswith(".env"):
+        raise HTTPException(
+            status_code=400,
+            detail="Access to sensitive .env files is strictly prohibited.",
+        )
+    return cand_real
 
 
 def _safe_metrics_for_project_target(target_dir: str, findings: List[Finding]) -> MetricsResponse:
@@ -4627,7 +4759,8 @@ def get_sast_plus_aspm_suite(project_path: Optional[str] = Query(None)):
     """Returns the unified SAST++++++ ASPM suite: Live CycloneDX SBOM, discovered API/Callable Attack Surface, Prioritized Remediation Roadmap, and 7-Stage PASTA Assessment."""
     target_dir = _resolve_confined_project_target(project_path)
     findings = _resolve_findings_for_project_target(target_dir)
-    return enterprise_mgr.get_sast_plus_suite(target_dir, findings)
+    comm_map = _resolve_community_map_for_target(target_dir)
+    return enterprise_mgr.get_sast_plus_suite(target_dir, findings, community_map=comm_map)
 
 
 # ---------------------------------------------------------------------------
@@ -4836,7 +4969,8 @@ def get_pasta_threat_assessment(project_path: Optional[str] = Query(None)):
     """Evaluates the deterministic 7-Stage PASTA threat model, multi-hop attack trees, and Go-Live gate policy."""
     target_dir = _resolve_confined_project_target(project_path)
     findings = _resolve_findings_for_project_target(target_dir)
-    suite = enterprise_mgr.get_sast_plus_suite(target_dir, findings)
+    comm_map = _resolve_community_map_for_target(target_dir)
+    suite = enterprise_mgr.get_sast_plus_suite(target_dir, findings, community_map=comm_map)
     if suite.pasta_assessment is not None:
         return suite.pasta_assessment
     return enterprise_mgr.pasta_engine.evaluate_pasta(target_dir=target_dir, findings=findings)
@@ -4848,7 +4982,8 @@ def update_pasta_business_profile(req: PastaProfileUpdateRequest):
     target_dir = _resolve_confined_project_target(req.project_path)
     enterprise_mgr.pasta_engine.update_profile(target_dir, req)
     findings = _resolve_findings_for_project_target(target_dir)
-    suite = enterprise_mgr.get_sast_plus_suite(target_dir, findings)
+    comm_map = _resolve_community_map_for_target(target_dir)
+    suite = enterprise_mgr.get_sast_plus_suite(target_dir, findings, community_map=comm_map)
     if suite.pasta_assessment is not None:
         return suite.pasta_assessment
     return enterprise_mgr.pasta_engine.evaluate_pasta(target_dir=target_dir, findings=findings)
@@ -4860,7 +4995,8 @@ def update_pasta_golive_gate_override(req: PastaGateOverrideRequest):
     target_dir = _resolve_confined_project_target(req.project_path)
     enterprise_mgr.pasta_engine.update_gate_override(target_dir, req)
     findings = _resolve_findings_for_project_target(target_dir)
-    suite = enterprise_mgr.get_sast_plus_suite(target_dir, findings)
+    comm_map = _resolve_community_map_for_target(target_dir)
+    suite = enterprise_mgr.get_sast_plus_suite(target_dir, findings, community_map=comm_map)
     if suite.pasta_assessment is not None:
         return suite.pasta_assessment
     return enterprise_mgr.pasta_engine.evaluate_pasta(target_dir=target_dir, findings=findings)
@@ -4881,9 +5017,24 @@ def export_sar_golive_report(
 
     target_dir = _resolve_confined_project_target(project_path)
     raw_findings = _resolve_findings_for_project_target(target_dir)
-    sast_plus = enterprise_mgr.get_sast_plus_suite(target_dir, raw_findings)
+    comm_map = _resolve_community_map_for_target(target_dir)
+    api_ops_sar = api_operations_engine.analyze_workspace_api_operations(target_dir, raw_findings)
+    s8_chains_sar = synthesize_exploit_chains(
+        target_dir=target_dir,
+        findings=raw_findings,
+        api_ops=api_ops_sar,
+        community_map=comm_map,
+        use_ai=False,
+        max_chains=10,
+    )
+    sast_plus = enterprise_mgr.get_sast_plus_suite(
+        target_dir, raw_findings, community_map=comm_map
+    )
     pasta = sast_plus.pasta_assessment or enterprise_mgr.pasta_engine.evaluate_pasta(
-        target_dir=target_dir, findings=raw_findings
+        target_dir=target_dir,
+        findings=raw_findings,
+        api_ops=api_ops_sar,
+        exploit_chains=s8_chains_sar.chains,
     )
     raci = enterprise_mgr.get_raci_governance(raw_findings)
     metrics = _safe_metrics_for_project_target(target_dir, raw_findings)
@@ -4899,6 +5050,7 @@ def export_sar_golive_report(
             raci=raci,
             metrics=metrics,
             findings=raw_findings,
+            exploit_chains=s8_chains_sar.chains,
         )
     )
 
@@ -4923,6 +5075,162 @@ def export_sar_golive_report(
             },
         )
     return JSONResponse(content=build_sar_json_dict(bundle))
+
+
+# ---------------------------------------------------------------------------
+# 15. ALASTOR v5.0 Pillar 2 — Cognitive Security Endpoints (/api/cognitive/*)
+# ---------------------------------------------------------------------------
+@app.get("/api/cognitive/playbooks", response_model=CognitivePlaybooksResponse)
+def get_cognitive_playbooks(project_path: Optional[str] = Query(None)):
+    """Returns all 17 specialist playbooks, auto-detected Repo Kinds, and mandatory baseline dispositions."""
+    target_dir = _resolve_confined_project_target(project_path)
+    scanned_files, _ = scan_directory_with_telemetry(target_dir, exclude_tests=True)
+    findings = _resolve_findings_for_project_target(target_dir)
+    api_ops = api_operations_engine.analyze_workspace_api_operations(target_dir, findings)
+    return classify_repo_kinds_and_baselines(
+        target_dir=target_dir,
+        scanned_files=scanned_files,
+        active_findings=findings,
+        api_ops=api_ops,
+        ai_available=frontier_ai_engine.has_usable_credentials(),
+    )
+
+
+@app.post("/api/cognitive/hunt", response_model=CognitiveHuntResponse)
+def run_cognitive_semantic_hunt(req: CognitiveHuntRequest):
+    """Executes the 17-Lens Hybrid Cognitive Hunter + CPG Sibling Sweep and merges findings into workspace state."""
+    global _cached_cognitive_findings, _cached_cognitive_dir
+    target_dir = _resolve_confined_project_target(req.project_path)
+    active_findings = _resolve_findings_for_project_target(target_dir)
+    api_ops = api_operations_engine.analyze_workspace_api_operations(target_dir, active_findings)
+    comm_map = _resolve_community_map_for_target(target_dir)
+
+    logger.info(
+        "Running Pillar 2 Cognitive Hunt on '%s' (use_ai=%s, sibling_sweep=%s)",
+        _sanitize_log(target_dir),
+        bool(req.use_ai),
+        bool(req.include_sibling_sweep),
+    )
+
+    hunt_resp = run_cognitive_hunt(
+        target_dir=target_dir,
+        active_findings=active_findings,
+        ai_engine=frontier_ai_engine if req.use_ai else None,
+        playbook_ids=req.playbook_ids or None,
+        use_ai=req.use_ai,
+        community_map=comm_map,
+        api_ops=api_ops,
+        include_sibling_sweep=req.include_sibling_sweep,
+        max_ai_units=req.max_ai_units,
+    )
+
+    enriched_semantic = enterprise_mgr.enrich_findings(hunt_resp.findings) if hunt_resp.findings else []
+    enriched_siblings = (
+        enterprise_mgr.enrich_findings(hunt_resp.sibling_findings)
+        if hunt_resp.sibling_findings
+        else []
+    )
+    hunt_resp.findings = _redact_findings_for_active_rbac(enriched_semantic)
+    hunt_resp.sibling_findings = _redact_findings_for_active_rbac(enriched_siblings)
+
+    # Merge discovered cognitive & sibling findings into confined cognitive cache for target_dir
+    norm_target = os.path.normcase(os.path.realpath(target_dir))
+    norm_existing_cog = (
+        os.path.normcase(os.path.realpath(_cached_cognitive_dir))
+        if _cached_cognitive_dir
+        else ""
+    )
+    with _findings_lock:
+        if norm_existing_cog != norm_target:
+            _cached_cognitive_findings = []
+            _cached_cognitive_dir = target_dir
+        seen_cog_ids = {f.id for f in _cached_cognitive_findings}
+        for nf in enriched_semantic + enriched_siblings:
+            if nf.id not in seen_cog_ids:
+                seen_cog_ids.add(nf.id)
+                _cached_cognitive_findings.append(nf.model_copy(deep=True))
+
+    return hunt_resp
+
+
+@app.post("/api/cognitive/adversarial-verify", response_model=AdversarialVerifyResponse)
+def run_cognitive_adversarial_verify(req: AdversarialVerifyRequest):
+    """Runs S6 Adversarial Verification (Exclusion Rules A-F + CVSS 3.1) over confined workspace findings."""
+    target_dir = _resolve_confined_project_target(req.project_path)
+    findings = _resolve_findings_for_project_target(target_dir)
+    return verify_findings_adversarially(
+        target_dir=target_dir,
+        findings=findings,
+        ai_engine=frontier_ai_engine if req.use_ai else None,
+        finding_ids=req.finding_ids or None,
+        use_ai=req.use_ai,
+        max_batch=req.max_batch,
+    )
+
+
+def _execute_exploit_chain_synthesis(
+    project_path: Optional[str],
+    use_ai: bool = False,
+    max_chains: int = 10,
+) -> ExploitChainResponse:
+    target_dir = _resolve_confined_project_target(project_path)
+    findings = _resolve_findings_for_project_target(target_dir)
+    api_ops = api_operations_engine.analyze_workspace_api_operations(target_dir, findings)
+    comm_map = _resolve_community_map_for_target(target_dir)
+    return synthesize_exploit_chains(
+        target_dir=target_dir,
+        findings=findings,
+        api_ops=api_ops,
+        community_map=comm_map,
+        ai_engine=frontier_ai_engine if use_ai else None,
+        use_ai=use_ai,
+        max_chains=max_chains,
+    )
+
+
+@app.get("/api/cognitive/exploit-chains", response_model=ExploitChainResponse)
+def get_cognitive_exploit_chains(
+    project_path: Optional[str] = Query(None),
+    use_ai: bool = Query(False),
+    max_chains: int = Query(10),
+):
+    """Synthesizes and returns ranked S8 multi-hop exploit chains for a confined workspace."""
+    return _execute_exploit_chain_synthesis(
+        project_path=project_path,
+        use_ai=use_ai,
+        max_chains=max_chains,
+    )
+
+
+@app.post("/api/cognitive/exploit-chains", response_model=ExploitChainResponse)
+def post_cognitive_exploit_chains(req: ExploitChainRequest):
+    """Synthesizes and returns ranked S8 multi-hop exploit chains (with optional BYOK narrative enrichment)."""
+    return _execute_exploit_chain_synthesis(
+        project_path=req.project_path,
+        use_ai=req.use_ai,
+        max_chains=req.max_chains,
+    )
+
+
+@app.post("/api/cognitive/validate-patch", response_model=PatchPanelValidateResponse)
+def validate_cognitive_patch_panel(req: PatchPanelValidateRequest):
+    """Runs S11 Dual-Verified 3-Persona Patch Panel (AST + Hostile-Patch Post-Gate + CPG Severance + 3 Personas)."""
+    target_dir = _resolve_confined_project_target(req.project_path)
+    _resolve_confined_filepath_in_target(target_dir, req.filepath)
+
+    matched_finding: Optional[Finding] = None
+    if req.finding_id:
+        findings = _resolve_findings_for_project_target(target_dir)
+        matched_finding = next((f for f in findings if f.id == req.finding_id), None)
+        if matched_finding is None and _cached_findings:
+            matched_finding = next((f for f in _cached_findings if f.id == req.finding_id), None)
+
+    return validate_patch_with_panel(
+        target_dir=target_dir,
+        req=req,
+        finding=matched_finding,
+        ai_engine=frontier_ai_engine if req.use_ai else None,
+    )
 
 
 
