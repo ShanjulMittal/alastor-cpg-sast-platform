@@ -194,6 +194,20 @@ export type SecretValidationStatus =
   | "TEST_OR_PLACEHOLDER"
   | "VERIFICATION_ERROR";
 
+export type EvStatusType =
+  | "RUNTIME_EXPLOIT_CONFIRMED"
+  | "FIXED_VERIFIED"
+  | "NOT_REPRODUCED"
+  | "DRY_RUN_PLANNED";
+
+export type EvProbeFamily =
+  | "EV-IDOR-BOLA"
+  | "EV-SQLI-ERROR-DIFF"
+  | "EV-XSS-REFLECTED-CANARY"
+  | "EV-CORS-CREDENTIAL-REFLECT"
+  | "EV-OPEN-REDIRECT"
+  | "EV-PATH-TRAVERSAL-HEADERS";
+
 export interface Finding {
   id: string;
   rule_id: string;
@@ -263,6 +277,8 @@ export interface Finding {
   secret_source?: "WORKING_TREE" | "GIT_HISTORY" | null;
   secret_commit_sha?: string | null;
   secret_commit_author?: string | null;
+  ev_status?: EvStatusType | null;
+  ev_evidence_summary?: string | null;
 }
 
 export interface ExtractedAdvisory {
@@ -1690,4 +1706,154 @@ export interface PatchPanelValidateResponse {
   cpg_sink_severed: boolean;
   personas: PersonaReviewItem[];
   summary: string;
+}
+
+// ---------------------------------------------------------------------------
+// 16. Live Exploit Verification (EV) & Post-Fix ev-replay (ALASTOR v5.0 Pillar 3)
+// ---------------------------------------------------------------------------
+export interface EvTargetPolicy {
+  target_url: string;
+  allow_private_staging_host?: boolean;
+  authorized_staging_hosts?: string[];
+  safe_mode?: boolean;
+  timeout_seconds?: number;
+  max_probes?: number;
+}
+
+export interface EvPlannedProbe {
+  probe_id: string;
+  probe_family: EvProbeFamily;
+  method: string;
+  path: string;
+  target_url: string;
+  source: "CPG_AUTO" | "OPENAPI" | "POSTMAN" | "MANUAL";
+  finding_id?: string | null;
+  cwe_id?: string | null;
+  description: string;
+  safe_mode_allowed: boolean;
+}
+
+export interface EvRunRequest {
+  project_path: string;
+  target_url: string;
+  armed?: boolean;
+  safe_mode?: boolean;
+  allow_private_staging_host?: boolean;
+  authorized_staging_hosts?: string[];
+  timeout_seconds?: number;
+  max_probes?: number;
+  collection_json?: string | null;
+  user_a_auth_header?: string | null;
+  user_b_auth_header?: string | null;
+  user_b_resource_id?: string | null;
+  extra_headers?: Record<string, string>;
+  probe_families?: string[] | null;
+}
+
+export interface EvPlanResponse {
+  project_path: string;
+  target_url: string;
+  target_policy_valid: boolean;
+  target_policy_message: string;
+  discovered_routes_count: number;
+  sources_used: string[];
+  planned_probes: EvPlannedProbe[];
+  mode: "DRY_RUN_PLAN";
+}
+
+export interface EvProbeResultItem {
+  probe_id: string;
+  probe_family: string;
+  method: string;
+  url: string;
+  status: EvStatusType;
+  http_status?: number | null;
+  latency_ms: number;
+  finding_id?: string | null;
+  cwe_id?: string | null;
+  evidence_summary: string;
+  response_excerpt: string;
+  masked_request_headers: Record<string, string>;
+  replay_id?: string | null;
+  curl_poc?: string | null;
+  pytest_poc?: string | null;
+}
+
+export interface EvReplayBundleItem {
+  replay_id: string;
+  project_path: string;
+  created_at: string;
+  last_replayed_at?: string | null;
+  probe_family: string;
+  method: string;
+  path: string;
+  target_url: string;
+  query_params: Record<string, string>;
+  masked_headers: Record<string, string>;
+  body?: string | null;
+  finding_id?: string | null;
+  cwe_id?: string | null;
+  status: EvStatusType;
+  evidence_summary: string;
+  response_excerpt: string;
+  curl_poc: string;
+  pytest_poc: string;
+  expected_indicator?: string | null;
+}
+
+export interface EvRunResponse {
+  project_path: string;
+  target_url: string;
+  armed: boolean;
+  safe_mode: boolean;
+  mode: "LIVE_EXECUTION" | "DRY_RUN_PLAN";
+  total_probes: number;
+  confirmed_count: number;
+  not_reproduced_count: number;
+  planned_count: number;
+  promoted_finding_ids: string[];
+  results: EvProbeResultItem[];
+  persisted_replays: EvReplayBundleItem[];
+}
+
+export interface EvReplayRequest {
+  project_path: string;
+  target_url?: string | null;
+  replay_ids?: string[] | null;
+  allow_private_staging_host?: boolean;
+  authorized_staging_hosts?: string[];
+  timeout_seconds?: number;
+  user_a_auth_header?: string | null;
+  user_b_auth_header?: string | null;
+}
+
+export interface EvReplayResultItem {
+  replay_id: string;
+  probe_family: string;
+  finding_id?: string | null;
+  previous_status: EvStatusType;
+  new_status: "FIXED_VERIFIED" | "STILL_VULNERABLE" | "ERROR";
+  http_status?: number | null;
+  evidence_summary: string;
+  response_excerpt: string;
+}
+
+export interface EvReplayResponse {
+  project_path: string;
+  replayed_count: number;
+  fixed_verified_count: number;
+  still_vulnerable_count: number;
+  error_count: number;
+  results: EvReplayResultItem[];
+}
+
+export interface EvReplayListResponse {
+  project_path: string;
+  total: number;
+  replays: EvReplayBundleItem[];
+}
+
+export interface EvDeleteReplayResponse {
+  deleted: boolean;
+  replay_id: string;
 }

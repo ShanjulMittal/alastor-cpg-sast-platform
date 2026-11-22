@@ -31,6 +31,13 @@ import {
   ExploitChainResponse,
   PatchPanelValidateRequest,
   PatchPanelValidateResponse,
+  EvRunRequest,
+  EvPlanResponse,
+  EvRunResponse,
+  EvReplayRequest,
+  EvReplayResponse,
+  EvReplayListResponse,
+  EvDeleteReplayResponse,
 } from "@/types/cpg";
 
 export const BACKEND_URL =
@@ -543,6 +550,125 @@ export async function validatePatchPanelApi(
     {
       method: "POST",
       body: JSON.stringify(body),
+    }
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 16. ALASTOR v5.0 Pillar 3 — Live Exploit Verification & Post-Fix ev-replay
+// ---------------------------------------------------------------------------
+function buildEvProjectQuerySuffix(projectPath?: string | null): string {
+  const qs = new URLSearchParams();
+  const localPath = normalizeLocalProjectPath(projectPath);
+  if (localPath) {
+    qs.set("project_path", localPath);
+  }
+  const encoded = qs.toString();
+  return encoded ? `?${encoded}` : "";
+}
+
+function buildEvRunBody(req: EvRunRequest): EvRunRequest {
+  const localPath = normalizeLocalProjectPath(req.project_path) ?? "";
+  return {
+    project_path: localPath,
+    target_url: req.target_url,
+    ...(typeof req.armed === "boolean" ? { armed: req.armed } : {}),
+    ...(typeof req.safe_mode === "boolean" ? { safe_mode: req.safe_mode } : {}),
+    ...(typeof req.allow_private_staging_host === "boolean"
+      ? { allow_private_staging_host: req.allow_private_staging_host }
+      : {}),
+    ...(req.authorized_staging_hosts !== undefined
+      ? { authorized_staging_hosts: req.authorized_staging_hosts }
+      : {}),
+    ...(typeof req.timeout_seconds === "number"
+      ? { timeout_seconds: req.timeout_seconds }
+      : {}),
+    ...(typeof req.max_probes === "number"
+      ? { max_probes: req.max_probes }
+      : {}),
+    ...(req.collection_json !== undefined
+      ? { collection_json: req.collection_json }
+      : {}),
+    ...(req.user_a_auth_header !== undefined
+      ? { user_a_auth_header: req.user_a_auth_header }
+      : {}),
+    ...(req.user_b_auth_header !== undefined
+      ? { user_b_auth_header: req.user_b_auth_header }
+      : {}),
+    ...(req.user_b_resource_id !== undefined
+      ? { user_b_resource_id: req.user_b_resource_id }
+      : {}),
+    ...(req.extra_headers !== undefined
+      ? { extra_headers: req.extra_headers }
+      : {}),
+    ...(req.probe_families !== undefined
+      ? { probe_families: req.probe_families }
+      : {}),
+  };
+}
+
+export async function planEvProbes(req: EvRunRequest): Promise<EvPlanResponse> {
+  return apiFetchJson<EvPlanResponse>("/api/ev/plan", {
+    method: "POST",
+    body: JSON.stringify(buildEvRunBody(req)),
+  });
+}
+
+export async function runEvVerification(
+  req: EvRunRequest
+): Promise<EvRunResponse> {
+  return apiFetchJson<EvRunResponse>("/api/ev/run", {
+    method: "POST",
+    body: JSON.stringify(buildEvRunBody(req)),
+  });
+}
+
+export async function replayEvBundles(
+  req: EvReplayRequest
+): Promise<EvReplayResponse> {
+  const localPath = normalizeLocalProjectPath(req.project_path) ?? "";
+  const body: EvReplayRequest = {
+    project_path: localPath,
+    ...(req.target_url !== undefined ? { target_url: req.target_url } : {}),
+    ...(req.replay_ids !== undefined ? { replay_ids: req.replay_ids } : {}),
+    ...(typeof req.allow_private_staging_host === "boolean"
+      ? { allow_private_staging_host: req.allow_private_staging_host }
+      : {}),
+    ...(req.authorized_staging_hosts !== undefined
+      ? { authorized_staging_hosts: req.authorized_staging_hosts }
+      : {}),
+    ...(typeof req.timeout_seconds === "number"
+      ? { timeout_seconds: req.timeout_seconds }
+      : {}),
+    ...(req.user_a_auth_header !== undefined
+      ? { user_a_auth_header: req.user_a_auth_header }
+      : {}),
+    ...(req.user_b_auth_header !== undefined
+      ? { user_b_auth_header: req.user_b_auth_header }
+      : {}),
+  };
+  return apiFetchJson<EvReplayResponse>("/api/ev/replay", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function listEvReplays(
+  projectPath: string
+): Promise<EvReplayListResponse> {
+  const suffix = buildEvProjectQuerySuffix(projectPath);
+  return apiFetchJson<EvReplayListResponse>(`/api/ev/replays${suffix}`);
+}
+
+export async function deleteEvReplay(
+  projectPath: string,
+  replayId: string
+): Promise<EvDeleteReplayResponse> {
+  const suffix = buildEvProjectQuerySuffix(projectPath);
+  return apiFetchJson<EvDeleteReplayResponse>(
+    `/api/ev/replays/${encodeURIComponent(replayId)}${suffix}`,
+    {
+      method: "DELETE",
     }
   );
 }

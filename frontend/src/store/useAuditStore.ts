@@ -67,6 +67,12 @@ import {
   ExploitChainResponse,
   PatchPanelValidateRequest,
   PatchPanelValidateResponse,
+  EvPlanResponse,
+  EvReplayBundleItem,
+  EvReplayRequest,
+  EvReplayResponse,
+  EvRunRequest,
+  EvRunResponse,
 } from "@/types/cpg";
 import {
   BACKEND_URL,
@@ -99,6 +105,11 @@ import {
   fetchExploitChainsApi,
   synthesizeExploitChainsApi,
   validatePatchPanelApi,
+  planEvProbes,
+  runEvVerification,
+  replayEvBundles,
+  listEvReplays,
+  deleteEvReplay,
 } from "@/lib/api";
 
 export const UI_PREFS_STORAGE_KEY = "alastor_ui_prefs_v4";
@@ -115,6 +126,21 @@ let _cognitivePlaybooksInFlightKey = "";
 let _exploitChainsInFlight: Promise<ExploitChainResponse | null> | null = null;
 let _exploitChainsInFlightKey = "";
 let _cognitiveEpoch = 0;
+
+function resetEvSlice(prevEpoch: number) {
+  return {
+    _evEpoch: prevEpoch + 1,
+    evPlan: null,
+    evRunResult: null,
+    evReplays: [],
+    evReplayResult: null,
+    isPlanningEv: false,
+    isRunningEv: false,
+    isReplayingEv: false,
+    isLoadingEvReplays: false,
+    evError: null,
+  };
+}
 
 const VALID_APP_THEMES: AppThemeId[] = [
   "olympian-light",
@@ -317,6 +343,18 @@ interface AuditState {
   isValidatingPatchPanel: boolean;
   cognitiveErrorBanner: string | null;
   patchPanelError: string | null;
+
+  // Pillar 3: Live Exploit Verification (EV) & Post-Fix ev-replay
+  _evEpoch: number;
+  evPlan: EvPlanResponse | null;
+  evRunResult: EvRunResponse | null;
+  evReplays: EvReplayBundleItem[];
+  evReplayResult: EvReplayResponse | null;
+  isPlanningEv: boolean;
+  isRunningEv: boolean;
+  isReplayingEv: boolean;
+  isLoadingEvReplays: boolean;
+  evError: string | null;
 
   // UI Simplicity, Layout & Command Palette State
   uiDensityMode: "SIMPLE_CLEAN" | "PRO_DETAILED";
@@ -586,6 +624,16 @@ interface AuditState {
   runPatchPanelValidation: (
     payload: PatchPanelValidateRequest
   ) => Promise<PatchPanelValidateResponse | null>;
+  planEvProbesAction: (
+    req: Omit<EvRunRequest, "project_path"> & { project_path?: string }
+  ) => Promise<void>;
+  runEvVerificationAction: (
+    req: Omit<EvRunRequest, "project_path"> & { project_path?: string }
+  ) => Promise<void>;
+  replayEvBundlesAction: (req?: Partial<EvReplayRequest>) => Promise<void>;
+  loadEvReplaysAction: (projectPath?: string) => Promise<void>;
+  deleteEvReplayAction: (replayId: string) => Promise<void>;
+  clearEvError: () => void;
   triggerScan: (
     targetPath?: string,
     options?: GitRepoScanOptions
@@ -703,6 +751,17 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   isValidatingPatchPanel: false,
   cognitiveErrorBanner: null,
   patchPanelError: null,
+
+  _evEpoch: 0,
+  evPlan: null,
+  evRunResult: null,
+  evReplays: [],
+  evReplayResult: null,
+  isPlanningEv: false,
+  isRunningEv: false,
+  isReplayingEv: false,
+  isLoadingEvReplays: false,
+  evError: null,
 
   uiDensityMode: "SIMPLE_CLEAN",
   ideLayoutMode: "SPLIT_BOTH",
@@ -1902,7 +1961,15 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     persistUiPrefs(get);
   },
 
-  setProjectPath: (path: string) => set({ projectPath: path }),
+  setProjectPath: (path: string) =>
+    set((state) =>
+      state.projectPath === path
+        ? {}
+        : {
+            projectPath: path,
+            ...resetEvSlice(state._evEpoch),
+          }
+    ),
 
   setGraphViewMode: (mode: GraphViewMode) => set({ graphViewMode: mode }),
 
@@ -2532,6 +2599,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       isValidatingPatchPanel: false,
       cognitiveErrorBanner: null,
       patchPanelError: null,
+      ...resetEvSlice(state._evEpoch),
       ...(existingProj?.target_path ? { projectPath: existingProj.target_path } : {}),
     }));
 
@@ -2581,6 +2649,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           isValidatingPatchPanel: false,
           cognitiveErrorBanner: null,
           patchPanelError: null,
+          ...resetEvSlice(state._evEpoch),
         }));
         if (needsScan) {
           const hasLocalCheckout =
@@ -2624,6 +2693,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchPastaState(),
           get().fetchCognitivePlaybooksState(),
           get().fetchExploitChainsState(),
+          get().loadEvReplaysAction(proj.target_path),
         ]);
       }
     } catch (err) {
@@ -3848,6 +3918,151 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     }
   },
 
+  clearEvError: () => set({ evError: null }),
+
+  planEvProbesAction: async (req) => {
+    const epoch = get()._evEpoch;
+    const projectPath = (req.project_path ?? get().projectPath ?? "").trim();
+    set({ isPlanningEv: true, evError: null });
+    try {
+      const plan = await planEvProbes({
+        ...req,
+        project_path: projectPath,
+      });
+      if (get()._evEpoch !== epoch) return;
+      set({
+        evPlan: plan,
+        isPlanningEv: false,
+        evError: null,
+      });
+    } catch (err: any) {
+      const msg = err?.detail || err?.message || "Failed to plan EV probes.";
+      console.error("Failed to plan EV probes:", err);
+      if (get()._evEpoch === epoch) {
+        set({ isPlanningEv: false, evError: msg });
+      }
+    }
+  },
+
+  runEvVerificationAction: async (req) => {
+    const epoch = get()._evEpoch;
+    const projectPath = (req.project_path ?? get().projectPath ?? "").trim();
+    set({ isRunningEv: true, evError: null });
+    try {
+      const res = await runEvVerification({
+        ...req,
+        project_path: projectPath,
+      });
+      if (get()._evEpoch !== epoch) return;
+      set({
+        evRunResult: res,
+        isRunningEv: false,
+        evError: null,
+      });
+      if (res.armed) {
+        await get().loadEvReplaysAction(projectPath);
+        if (get()._evEpoch !== epoch) return;
+        if (res.confirmed_count > 0 || res.promoted_finding_ids.length > 0) {
+          await get().fetchFindings();
+          if (get()._evEpoch !== epoch) return;
+          void Promise.all([
+            get().fetchPastaState(),
+            get().fetchSastPlusSuite(),
+          ]);
+        }
+      }
+    } catch (err: any) {
+      const msg =
+        err?.detail || err?.message || "Live Exploit Verification run failed.";
+      console.error("Failed to run Live Exploit Verification:", err);
+      if (get()._evEpoch === epoch) {
+        set({ isRunningEv: false, evError: msg });
+      }
+    }
+  },
+
+  replayEvBundlesAction: async (req) => {
+    const epoch = get()._evEpoch;
+    const projectPath = (req?.project_path ?? get().projectPath ?? "").trim();
+    set({ isReplayingEv: true, evError: null });
+    try {
+      const res = await replayEvBundles({
+        ...req,
+        project_path: projectPath,
+      });
+      if (get()._evEpoch !== epoch) return;
+      set({
+        evReplayResult: res,
+        isReplayingEv: false,
+        evError: null,
+      });
+      await get().loadEvReplaysAction(projectPath);
+      if (get()._evEpoch !== epoch) return;
+      await get().fetchFindings();
+      if (get()._evEpoch !== epoch) return;
+      void Promise.all([
+        get().fetchPastaState(),
+        get().fetchSastPlusSuite(),
+      ]);
+    } catch (err: any) {
+      const msg = err?.detail || err?.message || "Failed to replay EV bundles.";
+      console.error("Failed to replay EV bundles:", err);
+      if (get()._evEpoch === epoch) {
+        set({ isReplayingEv: false, evError: msg });
+      }
+    }
+  },
+
+  loadEvReplaysAction: async (projectPath) => {
+    const epoch = get()._evEpoch;
+    const targetPath = (projectPath ?? get().projectPath ?? "").trim();
+    set({ isLoadingEvReplays: true });
+    try {
+      const res = await listEvReplays(targetPath);
+      if (get()._evEpoch !== epoch) return;
+      set({
+        evReplays: res.replays || [],
+        isLoadingEvReplays: false,
+      });
+    } catch (err: any) {
+      const msg =
+        err?.detail || err?.message || "Failed to load persisted EV replays.";
+      console.error("Failed to load EV replays:", err);
+      if (get()._evEpoch === epoch) {
+        set({ isLoadingEvReplays: false, evError: msg });
+      }
+    }
+  },
+
+  deleteEvReplayAction: async (replayId) => {
+    const epoch = get()._evEpoch;
+    const projectPath = (get().projectPath ?? "").trim();
+    set({ isLoadingEvReplays: true, evError: null });
+    try {
+      await deleteEvReplay(projectPath, replayId);
+      if (get()._evEpoch !== epoch) return;
+      set((state) => ({
+        evReplays: state.evReplays.filter((r) => r.replay_id !== replayId),
+        evError: null,
+      }));
+      await get().loadEvReplaysAction(projectPath);
+      if (get()._evEpoch !== epoch) return;
+      await get().fetchFindings();
+      if (get()._evEpoch !== epoch) return;
+      void Promise.all([
+        get().fetchPastaState(),
+        get().fetchSastPlusSuite(),
+      ]);
+    } catch (err: any) {
+      const msg =
+        err?.detail || err?.message || "Failed to delete EV replay bundle.";
+      console.error("Failed to delete EV replay bundle:", err);
+      if (get()._evEpoch === epoch) {
+        set({ isLoadingEvReplays: false, evError: msg });
+      }
+    }
+  },
+
   triggerScan: async (targetPath?: string, options?: GitRepoScanOptions) => {
     const path = (targetPath || get().projectPath || "").trim();
     if (!path) {
@@ -3858,7 +4073,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     _cognitivePlaybooksInFlightKey = "";
     _exploitChainsInFlight = null;
     _exploitChainsInFlightKey = "";
-    set({
+    set((state) => ({
       isScanning: true,
       gitScanErrorBanner: null,
       secretInventory: null,
@@ -3877,6 +4092,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       isValidatingPatchPanel: false,
       cognitiveErrorBanner: null,
       patchPanelError: null,
+      ...resetEvSlice(state._evEpoch),
       scanStatusMessage: `Initiating analysis for: ${path}...`,
       scanProgress: {
         is_scanning: true,
@@ -3888,7 +4104,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         percent: 2,
         message: `Connecting to compiler engine for: ${path}...`,
       },
-    });
+    }));
 
     let pollInterval: any = null;
 
@@ -3971,6 +4187,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           get().fetchPastaState(),
           get().fetchCognitivePlaybooksState(),
           get().fetchExploitChainsState(),
+          get().loadEvReplaysAction(scanData.project_path || path),
         ]);
         return { ok: true, response: scanData };
       } else {
