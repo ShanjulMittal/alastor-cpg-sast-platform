@@ -5,12 +5,161 @@ dead stores, infinite loops, and unreachable logic.
 """
 import hashlib
 import logging
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from neo4j import Query as Neo4jQuery
-from models import Finding
+from compiler.scanner import ScannedFile
+from engine.polyglot_rules import run_polyglot_rules
+from models import CPGEdge, CPGNode, Finding
 from database.neo4j_client import Neo4jClient
 
 logger = logging.getLogger("cpg-sast.engine")
+
+
+def is_sanitizer_compatible_for_sink(
+    sanitizer_domains: Optional[Sequence[str]],
+    sink_domain: Optional[str],
+) -> bool:
+    """
+    Domain-aware sanitizer compatibility guard shared by Neo4j Cypher and EmbeddedGraphStore:
+    - Empty/unset sanitizer_domains preserves backward-compatible legacy sanitizer nodes.
+    - 'UNIVERSAL' neutralizes any sink domain.
+    - None/empty sink_domain is cleared by any sanitizer.
+    - Otherwise, sink_domain must explicitly appear in sanitizer_domains (so HTML escaping NEVER clears SHELL/SQL/URL).
+    """
+    if not sanitizer_domains:
+        return True
+    normalized = {str(d).strip().upper() for d in sanitizer_domains if str(d).strip()}
+    if not normalized:
+        return True
+    if "UNIVERSAL" in normalized:
+        return True
+    if not sink_domain or not str(sink_domain).strip():
+        return True
+    return str(sink_domain).strip().upper() in normalized
+
+
+def build_cpg_finding_from_rule(
+    rule: Dict[str, Any],
+    severity: str,
+    title: str,
+    raw_nodes: Sequence[Any],
+    raw_edges: Sequence[Any],
+) -> Optional[Tuple[Finding, Tuple[str, str]]]:
+    """
+    Normalizes path_nodes/path_edges and builds a deterministic Finding with dedup key
+    `(rule_id, sorted_node_ids_csv)`. Shared by Neo4j RuleExecutor and EmbeddedGraphStore.
+    """
+    path_nodes: List[Dict[str, Any]] = []
+    seen_node_ids: Set[str] = set()
+    for n in raw_nodes:
+        if isinstance(n, list):
+            for item in n:
+                if isinstance(item, dict) and "id" in item and item["id"] not in seen_node_ids:
+                    if item.get("filepath") and int(item.get("start_line", 0)) >= 1:
+                        seen_node_ids.add(item["id"])
+                        path_nodes.append(item)
+        elif isinstance(n, dict) and "id" in n and n["id"] not in seen_node_ids:
+            if n.get("filepath") and int(n.get("start_line", 0)) >= 1:
+                seen_node_ids.add(n["id"])
+                path_nodes.append(n)
+
+    if not path_nodes:
+        return None
+
+    path_edges: List[Dict[str, Any]] = []
+    seen_edge_ids: Set[str] = set()
+    for e in raw_edges:
+        if isinstance(e, dict) and "id" in e and e["id"] not in seen_edge_ids:
+            seen_edge_ids.add(e["id"])
+            path_edges.append(e)
+
+    sorted_ids_str = ",".join(sorted(str(n["id"]) for n in path_nodes))
+    finding_id = hashlib.sha256(f"{rule['id']}:{title}:{sorted_ids_str}".encode()).hexdigest()[:16]
+    dedup_key = (str(rule["id"]), sorted_ids_str)
+
+    cwe_id = rule.get("cwe_id")
+    cwe_num = cwe_id.split("-")[1] if cwe_id and "-" in cwe_id else None
+
+    first_n = path_nodes[0]
+    sink_n = path_nodes[-1]
+    sink_fp = str(sink_n.get("filepath") or first_n.get("filepath") or "unknown")
+    sink_ln = int(sink_n.get("start_line") or 1)
+    sink_code = str(sink_n.get("code") or sink_n.get("name") or "").strip().replace("\x00", "")
+    sink_sym = str(sink_n.get("name") or sink_n.get("ast_type") or "statement").strip()
+
+    if len(path_nodes) > 1:
+        src_fp = str(first_n.get("filepath") or sink_fp)
+        src_ln = int(first_n.get("start_line") or 1)
+        src_code = str(first_n.get("code") or first_n.get("name") or "").strip().replace("\x00", "")
+        trace_steps = " → ".join(
+            f"`{n.get('filepath', sink_fp)}`:L{n.get('start_line', 1)} (`{str(n.get('code') or n.get('name') or '').strip()[:70]}`)"
+            for n in path_nodes
+        )
+        detailed_desc = (
+            f"{rule['description']} "
+            f"[Written Evidence: Untrusted input enters at `{src_fp}` (Line {src_ln}: `{src_code[:90]}`) "
+            f"and reaches vulnerable sink `{sink_sym}` at `{sink_fp}` (Line {sink_ln}: `{sink_code[:100]}`). "
+            f"Full CPG Trace: {trace_steps}]"
+        )
+    else:
+        detailed_desc = (
+            f"{rule['description']} "
+            f"[Written Evidence: Flagged symbol/statement `{sink_sym}` in `{sink_fp}` at Line {sink_ln}: "
+            f"`{sink_code[:120]}`]"
+        )
+
+    base_rem = rule.get("remediation") or "Apply defensive input validation and safe API parameterization."
+    detailed_rem = (
+        f"{base_rem} (Target Location: `{sink_fp}` at Line {sink_ln} — replace or harden `{sink_code[:90]}`)."
+    )
+
+    finding = Finding(
+        id=finding_id,
+        rule_id=rule["id"],
+        severity=severity,  # type: ignore[arg-type]
+        title=title,
+        description=detailed_desc,
+        cwe_id=cwe_id,
+        owasp_category=rule.get("owasp_category"),
+        cvss_score=rule.get("cvss_score"),
+        remediation=detailed_rem,
+        source_site="ALASTOR CPG Engine",
+        reference_url=f"https://cwe.mitre.org/data/definitions/{cwe_num}.html" if cwe_num else None,
+        path_nodes=path_nodes,
+        path_edges=path_edges,
+    )
+    return finding, dedup_key
+
+
+def merge_findings_deduplicated(
+    primary: Sequence[Finding],
+    secondary: Sequence[Finding],
+) -> List[Finding]:
+    """Merges two finding sequences without duplicating identical IDs or `(rule_id, filepath, start_line)` hits."""
+    merged: List[Finding] = []
+    seen_ids: Set[str] = set()
+    seen_rule_locs: Set[Tuple[str, str, int]] = set()
+
+    for f in (*primary, *secondary):
+        if f.id in seen_ids:
+            continue
+        sink_fp = ""
+        sink_ln = 0
+        if f.best_fix_location and f.best_fix_location.filepath:
+            sink_fp = f.best_fix_location.filepath
+            sink_ln = int(f.best_fix_location.line or 0)
+        elif f.path_nodes:
+            last_n = f.path_nodes[-1]
+            sink_fp = str(last_n.get("filepath") or "")
+            sink_ln = int(last_n.get("start_line") or 0)
+        loc_key = (f.rule_id, sink_fp, sink_ln)
+        if sink_fp and sink_ln > 0 and loc_key in seen_rule_locs:
+            continue
+        seen_ids.add(f.id)
+        if sink_fp and sink_ln > 0:
+            seen_rule_locs.add(loc_key)
+        merged.append(f)
+    return merged
 
 
 RULES = [
@@ -24,7 +173,17 @@ RULES = [
         "description": "Untrusted input source flows into sensitive execution sink without required sanitizer.",
         "cypher": """
         MATCH path = (source:CPGNode {is_source: true})-[:DFG_FLOWS_TO*1..15]->(sink:CPGNode {is_sink: true})
-        WHERE NONE(n IN nodes(path) WHERE n.is_sanitizer = true)
+        WHERE NONE(
+          n IN nodes(path)
+          WHERE n.is_sanitizer = true
+            AND (
+              n.sanitizer_domains IS NULL
+              OR size(n.sanitizer_domains) = 0
+              OR 'UNIVERSAL' IN n.sanitizer_domains
+              OR sink.sink_domain IS NULL
+              OR sink.sink_domain IN n.sanitizer_domains
+            )
+        )
         WITH source, sink, path
         ORDER BY length(path) ASC
         WITH source, sink, head(collect(path)) AS shortest_p
@@ -543,112 +702,57 @@ class RuleExecutor:
     def __init__(self, client: Neo4jClient):
         self.client = client
 
-    def run_all_rules(self) -> List[Finding]:
-        """Executes all deterministic rules against Neo4j and returns structured findings."""
+    def run_all_rules(self, enabled_rule_ids: Optional[Set[str]] = None) -> List[Finding]:
+        """Executes all enabled deterministic Cypher rules against Neo4j and returns structured findings."""
         findings: List[Finding] = []
-        seen_finding_keys = set()
+        seen_finding_keys: Set[Tuple[str, str]] = set()
 
         with self.client.driver.session() as session:
             for rule in RULES:
+                if enabled_rule_ids is not None and rule["id"] not in enabled_rule_ids:
+                    continue
                 try:
                     result = session.run(Neo4jQuery(rule["cypher"], timeout=8.0))
                     for record in result:
-                        severity = record["severity"]
-                        title = record["title"]
-                        raw_nodes = record["path_nodes"] or []
-                        raw_edges = record["path_edges"] or []
-
-                        # Filter and clean path_nodes
-                        path_nodes: List[Dict[str, Any]] = []
-                        seen_node_ids = set()
-                        for n in raw_nodes:
-                            if isinstance(n, list):
-                                for item in n:
-                                    if isinstance(item, dict) and "id" in item and item["id"] not in seen_node_ids:
-                                        if item.get("filepath") and int(item.get("start_line", 0)) >= 1:
-                                            seen_node_ids.add(item["id"])
-                                            path_nodes.append(item)
-                            elif isinstance(n, dict) and "id" in n and n["id"] not in seen_node_ids:
-                                if n.get("filepath") and int(n.get("start_line", 0)) >= 1:
-                                    seen_node_ids.add(n["id"])
-                                    path_nodes.append(n)
-
-                        if not path_nodes:
+                        built = build_cpg_finding_from_rule(
+                            rule=rule,
+                            severity=record["severity"],
+                            title=record["title"],
+                            raw_nodes=record["path_nodes"] or [],
+                            raw_edges=record["path_edges"] or [],
+                        )
+                        if built is None:
                             continue
-
-                        # Clean path_edges
-                        path_edges: List[Dict[str, Any]] = []
-                        seen_edge_ids = set()
-                        for e in raw_edges:
-                            if isinstance(e, dict) and "id" in e and e["id"] not in seen_edge_ids:
-                                seen_edge_ids.add(e["id"])
-                                path_edges.append(e)
-
-                        # Generate deterministic finding ID based on rule, title, and sorted node IDs
-                        sorted_ids_str = ",".join(sorted(n["id"] for n in path_nodes))
-                        finding_id = hashlib.sha256(f"{rule['id']}:{title}:{sorted_ids_str}".encode()).hexdigest()[:16]
-
-                        # Deduplicate findings with identical rule and nodes
-                        dedup_key = (rule["id"], sorted_ids_str)
+                        finding, dedup_key = built
                         if dedup_key in seen_finding_keys:
                             continue
                         seen_finding_keys.add(dedup_key)
-
-                        cwe_id = rule.get("cwe_id")
-                        cwe_num = cwe_id.split("-")[1] if cwe_id and "-" in cwe_id else None
-
-                        first_n = path_nodes[0]
-                        sink_n = path_nodes[-1]
-                        sink_fp = str(sink_n.get("filepath") or first_n.get("filepath") or "unknown")
-                        sink_ln = int(sink_n.get("start_line") or 1)
-                        sink_code = str(sink_n.get("code") or sink_n.get("name") or "").strip().replace("\x00", "")
-                        sink_sym = str(sink_n.get("name") or sink_n.get("ast_type") or "statement").strip()
-
-                        if len(path_nodes) > 1:
-                            src_fp = str(first_n.get("filepath") or sink_fp)
-                            src_ln = int(first_n.get("start_line") or 1)
-                            src_code = str(first_n.get("code") or first_n.get("name") or "").strip().replace("\x00", "")
-                            trace_steps = " → ".join(
-                                f"`{n.get('filepath', sink_fp)}`:L{n.get('start_line', 1)} (`{str(n.get('code') or n.get('name') or '').strip()[:70]}`)"
-                                for n in path_nodes
-                            )
-                            detailed_desc = (
-                                f"{rule['description']} "
-                                f"[Written Evidence: Untrusted input enters at `{src_fp}` (Line {src_ln}: `{src_code[:90]}`) "
-                                f"and reaches vulnerable sink `{sink_sym}` at `{sink_fp}` (Line {sink_ln}: `{sink_code[:100]}`). "
-                                f"Full CPG Trace: {trace_steps}]"
-                            )
-                        else:
-                            detailed_desc = (
-                                f"{rule['description']} "
-                                f"[Written Evidence: Flagged symbol/statement `{sink_sym}` in `{sink_fp}` at Line {sink_ln}: "
-                                f"`{sink_code[:120]}`]"
-                            )
-
-                        base_rem = rule.get("remediation") or "Apply defensive input validation and safe API parameterization."
-                        detailed_rem = (
-                            f"{base_rem} (Target Location: `{sink_fp}` at Line {sink_ln} — replace or harden `{sink_code[:90]}`)."
-                        )
-
-                        findings.append(
-                            Finding(
-                                id=finding_id,
-                                rule_id=rule["id"],
-                                severity=severity,
-                                title=title,
-                                description=detailed_desc,
-                                cwe_id=cwe_id,
-                                owasp_category=rule.get("owasp_category"),
-                                cvss_score=rule.get("cvss_score"),
-                                remediation=detailed_rem,
-                                source_site="ALASTOR CPG Engine",
-                                reference_url=f"https://cwe.mitre.org/data/definitions/{cwe_num}.html" if cwe_num else None,
-                                path_nodes=path_nodes,
-                                path_edges=path_edges
-                            )
-                        )
+                        findings.append(finding)
                 except Exception as e:
-                    logger.error(f"Error executing rule {rule['id']}: {e}", exc_info=True)
+                    logger.error("Error executing rule %s: %s", rule["id"], e, exc_info=True)
 
         return findings
+
+    def execute_all_rules(self, enabled_rule_ids: Optional[Set[str]] = None) -> List[Finding]:
+        """Alias for `run_all_rules` preserving full backward compatibility for Neo4j callers."""
+        return self.run_all_rules(enabled_rule_ids=enabled_rule_ids)
+
+    def execute_all_rules_with_polyglot(
+        self,
+        scanned_files: Optional[List[ScannedFile]] = None,
+        all_nodes: Optional[List[CPGNode]] = None,
+        all_edges: Optional[List[CPGEdge]] = None,
+        enabled_rule_ids: Optional[Set[str]] = None,
+    ) -> List[Finding]:
+        """Executes Neo4j Cypher rules and merges deterministic Polyglot rule pack hits without duplicates."""
+        cypher_findings = self.run_all_rules(enabled_rule_ids=enabled_rule_ids)
+        if not scanned_files:
+            return cypher_findings
+        polyglot_findings = run_polyglot_rules(
+            scanned_files=scanned_files,
+            all_nodes=all_nodes or [],
+            all_edges=all_edges or [],
+            enabled_rule_ids=enabled_rule_ids,
+        )
+        return merge_findings_deduplicated(cypher_findings, polyglot_findings)
 

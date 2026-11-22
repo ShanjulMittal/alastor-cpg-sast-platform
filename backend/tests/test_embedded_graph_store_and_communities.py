@@ -1,0 +1,783 @@
+"""
+TDD Suite for ALASTOR v5.0 Pillar 1 Task 3:
+- Dual-Engine GraphStore (Neo4jGraphStore + EmbeddedGraphStore SQLite WAL + GraphStoreManager failover)
+- Domain-Aware Sanitizer RULE-1-TAINT & Full Native Python Rule Parity (RULE-1..RULE-16 + Polyglot RULE-22..RULE-33)
+- Deterministic Leiden/Modularity Community Detector & ReactFlow COMMUNITY_MAP View
+"""
+from __future__ import annotations
+
+import hashlib
+import os
+import random
+import sqlite3
+import sys
+import threading
+from pathlib import Path
+from typing import List
+from unittest import mock
+
+import pytest
+
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+from compiler.ast_parser import ASTNormalizer
+from compiler.call_graph_builder import CallGraphBuilder
+from compiler.cfg_builder import CFGBuilder
+from compiler.dfg_builder import DFGBuilder
+from compiler.scanner import ScannedFile
+from database.graph_store import EmbeddedGraphStore, GraphStoreManager, Neo4jGraphStore
+from engine.community_detector import build_community_graph_view, detect_code_communities
+from engine.rule_executor import RULES, RuleExecutor, is_sanitizer_compatible_for_sink
+from models import (
+    AppTreeSummary,
+    CPGEdge,
+    CPGNode,
+    CrossFileEdge,
+    DirectoryTreeNode,
+    FilePurposeInfo,
+    Finding,
+)
+
+
+def _mk_node(
+    nid: str,
+    label: str = "Call",
+    ast_type: str = "call",
+    name: str = "fn",
+    code: str = "fn()",
+    filepath: str = "app/main.py",
+    start_line: int = 10,
+    end_line: int = 10,
+    scope_id: str = "fn_main",
+    is_source: bool = False,
+    is_sink: bool = False,
+    is_sanitizer: bool = False,
+    sanitizer_domains: List[str] | None = None,
+    sink_domain: str | None = None,
+    language: str = "python",
+) -> CPGNode:
+    return CPGNode(
+        id=nid,
+        label=label,  # type: ignore[arg-type]
+        ast_type=ast_type,
+        name=name,
+        code=code,
+        filepath=filepath,
+        start_line=start_line,
+        end_line=end_line,
+        start_col=0,
+        end_col=len(code),
+        scope_id=scope_id,
+        is_source=is_source,
+        is_sink=is_sink,
+        is_sanitizer=is_sanitizer,
+        sanitizer_domains=sanitizer_domains or [],
+        sink_domain=sink_domain,
+        language=language,
+    )
+
+
+def _mk_edge(src: str, tgt: str, etype: str = "DFG_FLOWS_TO", var_name: str | None = None) -> CPGEdge:
+    eid = hashlib.sha256(f"{src}:{tgt}:{etype}:{var_name or ''}".encode()).hexdigest()[:24]
+    return CPGEdge(id=eid, source_id=src, target_id=tgt, edge_type=etype, var_name=var_name)  # type: ignore[arg-type]
+
+
+def _mk_scanned_file(filepath: str, language: str, code: str) -> ScannedFile:
+    raw = code.encode("utf-8")
+    return ScannedFile(
+        filepath=filepath,
+        full_path=f"/virtual/{filepath}",
+        sha256=hashlib.sha256(raw).hexdigest(),
+        language=language,
+        content_bytes=raw,
+    )
+
+
+def _compile_files_in_memory(files: List[ScannedFile]):
+    all_nodes: List[CPGNode] = []
+    all_edges: List[CPGEdge] = []
+    node_map = {}
+    file_nodes = {}
+
+    for sf in files:
+        norm = ASTNormalizer(sf)
+        nodes, ast_edges = norm.parse()
+        all_nodes.extend(nodes)
+        all_edges.extend(ast_edges)
+        node_map.update(norm.node_map)
+        file_nodes[sf.filepath] = nodes
+
+    fn_params = {}
+    fn_returns = {}
+    func_by_id = {n.id: n for n in all_nodes if n.label == "Function"}
+    for n in all_nodes:
+        if n.label == "Parameter" and n.scope_id in func_by_id:
+            fn_params.setdefault(func_by_id[n.scope_id].name, []).append(n)
+        elif n.label == "Return" and n.scope_id in func_by_id:
+            fn_returns.setdefault(func_by_id[n.scope_id].name, []).append(n)
+
+    for sf in files:
+        f_nodes = file_nodes[sf.filepath]
+        all_edges.extend(CFGBuilder(sf.filepath, sf.content_bytes, sf.language, f_nodes, node_map).build())
+        all_edges.extend(
+            DFGBuilder(sf.filepath, sf.content_bytes, sf.language, f_nodes, node_map, fn_params, fn_returns).build()
+        )
+
+    all_edges.extend(CallGraphBuilder(all_nodes).resolve_calls())
+    return all_nodes, all_edges
+
+
+# ---------------------------------------------------------------------------
+# 1. Domain-Aware Sanitizer Helper & RuleExecutor Cypher + Polyglot Merge
+# ---------------------------------------------------------------------------
+
+
+class TestDomainAwareRuleExecutor:
+    def test_is_sanitizer_compatible_for_sink_matrix(self):
+        # Cross-domain sanitization must NEVER clear incompatible sinks
+        assert is_sanitizer_compatible_for_sink(["HTML"], "SHELL") is False
+        assert is_sanitizer_compatible_for_sink(["HTML"], "SQL") is False
+        assert is_sanitizer_compatible_for_sink(["HTML"], "URL") is False
+        assert is_sanitizer_compatible_for_sink(["SQL"], "SHELL") is False
+
+        # Same-domain sanitization clears matching sink
+        assert is_sanitizer_compatible_for_sink(["HTML"], "HTML") is True
+        assert is_sanitizer_compatible_for_sink(["SHELL"], "SHELL") is True
+        assert is_sanitizer_compatible_for_sink(["SQL", "PATH"], "PATH") is True
+
+        # UNIVERSAL clears every sink domain
+        assert is_sanitizer_compatible_for_sink(["UNIVERSAL"], "SHELL") is True
+        assert is_sanitizer_compatible_for_sink(["UNIVERSAL"], "SQL") is True
+        assert is_sanitizer_compatible_for_sink(["UNIVERSAL"], "URL") is True
+
+        # Backward compatibility: legacy sanitizer nodes without domains or sinks without sink_domain
+        assert is_sanitizer_compatible_for_sink([], "SHELL") is True
+        assert is_sanitizer_compatible_for_sink(["HTML"], None) is True
+
+    def test_rule1_cypher_contains_domain_aware_sanitizer_guard(self):
+        rule1 = next(r for r in RULES if r["id"] == "RULE-1-TAINT")
+        cypher = rule1["cypher"]
+        assert "sanitizer_domains" in cypher
+        assert "UNIVERSAL" in cypher
+        assert "sink.sink_domain" in cypher
+
+    def test_execute_all_rules_with_polyglot_merges_without_duplicates(self):
+        mock_client = mock.MagicMock()
+        executor = RuleExecutor(mock_client)
+
+        go_sf = _mk_scanned_file(
+            "cmd/runner.go",
+            "go",
+            'package main\nimport "os/exec"\nfunc run(userCmd string) { exec.Command("sh", "-c", userCmd) }\n',
+        )
+        fake_cypher_finding = Finding(
+            id="cypher-f-1",
+            rule_id="RULE-1-TAINT",
+            severity="CRITICAL",
+            title="Taint Vulnerability: Untrusted Input Flows to Sensitive Sink",
+            path_nodes=[{"id": "n1", "filepath": "app.py", "start_line": 5}],
+            path_edges=[],
+        )
+
+        with mock.patch.object(executor, "run_all_rules", return_value=[fake_cypher_finding]):
+            merged = executor.execute_all_rules_with_polyglot(
+                scanned_files=[go_sf],
+                all_nodes=[],
+                all_edges=[],
+            )
+            rule_ids = {f.rule_id for f in merged}
+            assert "RULE-1-TAINT" in rule_ids
+            assert "RULE-27-POLYGLOT-CMDI" in rule_ids
+
+            # Calling again with a duplicate polyglot finding returned by Cypher should deduplicate
+            poly_finding = next(f for f in merged if f.rule_id == "RULE-27-POLYGLOT-CMDI")
+            with mock.patch.object(executor, "run_all_rules", return_value=[fake_cypher_finding, poly_finding]):
+                deduped = executor.execute_all_rules_with_polyglot(
+                    scanned_files=[go_sf],
+                    all_nodes=[],
+                    all_edges=[],
+                )
+                assert sum(1 for f in deduped if f.rule_id == "RULE-27-POLYGLOT-CMDI") == 1
+
+
+# ---------------------------------------------------------------------------
+# 2. EmbeddedGraphStore SQLite WAL Persistence & Reload
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddedGraphStorePersistence:
+    def test_sqlite_wal_mode_and_persistence_across_reload(self, tmp_path):
+        db_path = str(tmp_path / ".alastor_vault" / "cpg_embedded.db")
+        store = EmbeddedGraphStore(db_path)
+        store.init_schema()
+
+        # Verify WAL mode active on SQLite file
+        conn = sqlite3.connect(db_path)
+        try:
+            journal_mode = conn.execute("PRAGMA journal_mode;").fetchone()[0]
+            assert str(journal_mode).lower() == "wal"
+        finally:
+            conn.close()
+
+        n1 = _mk_node("n1", label="Parameter", ast_type="identifier", name="cmd", code="cmd", filepath="api/run.py", start_line=4, is_source=True)
+        n2 = _mk_node("n2", label="Call", ast_type="call", name="os.system", code="os.system(cmd)", filepath="api/run.py", start_line=6, is_sink=True, sink_domain="SHELL")
+        e1 = _mk_edge("n1", "n2", "DFG_FLOWS_TO", var_name="cmd")
+
+        nc, ec = store.ingest_cpg([n1, n2], [e1])
+        assert nc == 2
+        assert ec == 1
+        assert store.get_counts() == {"nodes": 2, "edges": 1}
+
+        comm_map = detect_code_communities([n1, n2], [e1], graph_engine_mode="EMBEDDED_SQLITE")
+        store.save_communities(comm_map)
+        store.save_meta("last_scan_root", "/tmp/project")
+        store.save_meta("languages_detected", {"python": 1})
+        store.close()
+
+        # Instantiate a brand new EmbeddedGraphStore pointing at the same SQLite DB
+        reloaded = EmbeddedGraphStore(db_path)
+        try:
+            assert reloaded.mode == "EMBEDDED_SQLITE"
+            assert reloaded.get_counts() == {"nodes": 2, "edges": 1}
+            assert reloaded.get_meta("last_scan_root") == "/tmp/project"
+            assert reloaded.get_meta("languages_detected") == {"python": 1}
+            assert reloaded.get_meta("missing_key", "fallback") == "fallback"
+
+            loaded_comm = reloaded.get_communities()
+            assert loaded_comm.total_communities == comm_map.total_communities
+            assert loaded_comm.communities[0].id == comm_map.communities[0].id
+
+            # Rule evaluation must work seamlessly on reloaded in-memory graph indices
+            findings = reloaded.run_cpg_rules()
+            assert any(f.rule_id == "RULE-1-TAINT" for f in findings)
+
+            reloaded.clear_database()
+            assert reloaded.get_counts() == {"nodes": 0, "edges": 0}
+        finally:
+            reloaded.close()
+
+    def test_thread_safety_under_concurrent_access(self, tmp_path):
+        db_path = str(tmp_path / "vault" / "cpg_embedded.db")
+        store = EmbeddedGraphStore(db_path)
+        store.init_schema()
+        errors: List[Exception] = []
+
+        def worker(idx: int):
+            try:
+                node = _mk_node(f"t-{idx}", name=f"fn_{idx}", filepath=f"mod_{idx}.py", start_line=idx + 1)
+                store.ingest_cpg([node], [])
+                store.save_meta(f"k-{idx}", idx)
+                _ = store.get_counts()
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        try:
+            assert not errors
+            assert store.get_counts()["nodes"] == 8
+        finally:
+            store.close()
+
+
+# ---------------------------------------------------------------------------
+# 3. EmbeddedGraphStore Native Python Rule Parity (RULE-1..16 + Polyglot)
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddedGraphStoreRuleParity:
+    def test_rule1_domain_aware_sanitizer_html_does_not_clear_shell_while_shlex_does(self, tmp_path):
+        store = EmbeddedGraphStore(str(tmp_path / "cpg.db"))
+        try:
+            # Case A: source -> html.escape (HTML) -> os.system (SHELL) => MUST FLAG!
+            src_a = _mk_node("src_a", label="Parameter", name="user_in", code="user_in", filepath="a.py", start_line=2, is_source=True)
+            san_html = _mk_node(
+                "san_html",
+                label="Call",
+                name="html.escape",
+                code="html.escape(user_in)",
+                filepath="a.py",
+                start_line=3,
+                is_sanitizer=True,
+                sanitizer_domains=["HTML"],
+            )
+            sink_shell_a = _mk_node(
+                "sink_a",
+                label="Call",
+                name="os.system",
+                code="os.system(safe_html)",
+                filepath="a.py",
+                start_line=4,
+                is_sink=True,
+                sink_domain="SHELL",
+            )
+
+            # Case B: source -> shlex.quote (SHELL) -> os.system (SHELL) => MUST BE NEUTRALIZED!
+            src_b = _mk_node("src_b", label="Parameter", name="arg", code="arg", filepath="b.py", start_line=2, is_source=True)
+            san_shell = _mk_node(
+                "san_shell",
+                label="Call",
+                name="shlex.quote",
+                code="shlex.quote(arg)",
+                filepath="b.py",
+                start_line=3,
+                is_sanitizer=True,
+                sanitizer_domains=["SHELL"],
+            )
+            sink_shell_b = _mk_node(
+                "sink_b",
+                label="Call",
+                name="os.system",
+                code="os.system(quoted)",
+                filepath="b.py",
+                start_line=4,
+                is_sink=True,
+                sink_domain="SHELL",
+            )
+
+            # Case C: source -> int (UNIVERSAL) -> os.system (SHELL) => MUST BE NEUTRALIZED!
+            src_c = _mk_node("src_c", label="Parameter", name="num", code="num", filepath="c.py", start_line=2, is_source=True)
+            san_univ = _mk_node(
+                "san_univ",
+                label="Call",
+                name="int",
+                code="int(num)",
+                filepath="c.py",
+                start_line=3,
+                is_sanitizer=True,
+                sanitizer_domains=["UNIVERSAL"],
+            )
+            sink_shell_c = _mk_node(
+                "sink_c",
+                label="Call",
+                name="os.system",
+                code="os.system(str(n))",
+                filepath="c.py",
+                start_line=4,
+                is_sink=True,
+                sink_domain="SHELL",
+            )
+
+            nodes = [src_a, san_html, sink_shell_a, src_b, san_shell, sink_shell_b, src_c, san_univ, sink_shell_c]
+            edges = [
+                _mk_edge("src_a", "san_html", "DFG_FLOWS_TO", "user_in"),
+                _mk_edge("san_html", "sink_a", "DFG_FLOWS_TO", "safe_html"),
+                _mk_edge("src_b", "san_shell", "DFG_FLOWS_TO", "arg"),
+                _mk_edge("san_shell", "sink_b", "DFG_FLOWS_TO", "quoted"),
+                _mk_edge("src_c", "san_univ", "DFG_FLOWS_TO", "num"),
+                _mk_edge("san_univ", "sink_c", "DFG_FLOWS_TO", "n"),
+            ]
+            store.ingest_cpg(nodes, edges)
+
+            findings = store.run_cpg_rules(enabled_rule_ids={"RULE-1-TAINT"})
+            assert len(findings) == 1
+            assert findings[0].rule_id == "RULE-1-TAINT"
+            assert findings[0].path_nodes[-1]["id"] == "sink_a"
+        finally:
+            store.close()
+
+    def test_rules_2_3_4_5_structural_logic_flaws(self, tmp_path):
+        store = EmbeddedGraphStore(str(tmp_path / "cpg_struct.db"))
+        try:
+            # RULE-2-ORPHAN: uncalled auth guard `getSession` + uncalled debug gadget
+            fn_auth = _mk_node("fn_auth", label="Function", ast_type="function_definition", name="getSession", code="def getSession(req): return None", filepath="auth.py", start_line=1, end_line=5)
+            fn_called = _mk_node("fn_called", label="Function", ast_type="function_definition", name="debug_helper", code="def debug_helper(): pass", filepath="auth.py", start_line=10, end_line=12)
+            caller = _mk_node("caller_c", label="Call", name="debug_helper", code="debug_helper()", filepath="auth.py", start_line=15)
+
+            # RULE-3-DEADSTORE: Call -> Variable with no outgoing DFG and no other reference
+            ds_call = _mk_node("ds_call", label="Call", name="compute_hash", code="compute_hash(x)", filepath="dead.py", start_line=3, scope_id="fn_dead")
+            ds_var = _mk_node("ds_var", label="Variable", ast_type="identifier", name="unused_digest", code="unused_digest", filepath="dead.py", start_line=3, scope_id="fn_dead")
+
+            # RULE-4-INFINITE-LOOP: while True with CFG_LOOP_BACK and no CFG_FALSE / CFG_BREAK / Return
+            loop_hdr = _mk_node("loop_hdr", label="LoopBlock", ast_type="while_statement", name="while", code="while True:\n    work()", filepath="loop.py", start_line=2, end_line=4, scope_id="fn_loop")
+            loop_body = _mk_node("loop_body", label="Call", name="work", code="work()", filepath="loop.py", start_line=3, scope_id="fn_loop")
+
+            # RULE-5-UNREACHABLE: Function -> block -> Return, followed by Call with no incoming CFG
+            fn_unr = _mk_node("fn_unr", label="Function", ast_type="function_definition", name="do_work", code="def do_work():\n    return 1\n    cleanup()", filepath="unr.py", start_line=1, end_line=4, scope_id="mod")
+            blk_unr = _mk_node("blk_unr", label="ControlBlock", ast_type="block", name="block", code="return 1\ncleanup()", filepath="unr.py", start_line=2, end_line=4, scope_id="fn_unr")
+            ret_unr = _mk_node("ret_unr", label="Return", ast_type="return_statement", name="return", code="return 1", filepath="unr.py", start_line=2, end_line=2, scope_id="fn_unr")
+            dead_stmt = _mk_node("dead_stmt", label="Call", ast_type="call", name="cleanup", code="cleanup()", filepath="unr.py", start_line=3, end_line=3, scope_id="fn_unr")
+
+            nodes = [fn_auth, fn_called, caller, ds_call, ds_var, loop_hdr, loop_body, fn_unr, blk_unr, ret_unr, dead_stmt]
+            edges = [
+                _mk_edge("caller_c", "fn_called", "CALLS"),
+                _mk_edge("ds_call", "ds_var", "DFG_FLOWS_TO", "unused_digest"),
+                _mk_edge("loop_hdr", "loop_body", "CFG_TRUE"),
+                _mk_edge("loop_body", "loop_hdr", "CFG_LOOP_BACK"),
+                _mk_edge("fn_unr", "blk_unr", "AST_CHILD"),
+                _mk_edge("blk_unr", "ret_unr", "AST_CHILD"),
+                _mk_edge("blk_unr", "dead_stmt", "AST_CHILD"),
+            ]
+            store.ingest_cpg(nodes, edges)
+
+            findings = store.run_cpg_rules()
+            found_rules = {f.rule_id for f in findings}
+            assert "RULE-2-ORPHAN" in found_rules
+            assert "RULE-3-DEADSTORE" in found_rules
+            assert "RULE-4-INFINITE-LOOP" in found_rules
+            assert "RULE-5-UNREACHABLE" in found_rules
+
+            # Ensure called function was NOT flagged as orphan
+            orphan_titles = [f.title for f in findings if f.rule_id == "RULE-2-ORPHAN"]
+            assert any("getSession" in t for t in orphan_titles)
+            assert not any("debug_helper" in t for t in orphan_titles)
+        finally:
+            store.close()
+
+    def test_rules_6_through_16_and_polyglot_rules_27_30(self, tmp_path):
+        store = EmbeddedGraphStore(str(tmp_path / "cpg_sinks.db"))
+        try:
+            src_http = _mk_node("src_http", label="Parameter", name="user_url", code="request.args.get('url')", filepath="web.py", start_line=2, is_source=True)
+            c_shell = _mk_node("c_shell", label="Call", name="subprocess.run", code="subprocess.run(cmd, shell=True)", filepath="web.py", start_line=5)
+            c_sqli = _mk_node("c_sqli", label="Call", name="cursor.execute", code='cursor.execute(f"SELECT * FROM users WHERE name={u}")', filepath="web.py", start_line=6)
+            a_secret = _mk_node("a_secret", label="Assignment", name="db_password", code='db_password = "hardcoded_sample_val"', filepath="web.py", start_line=7)
+            c_xss = _mk_node("c_xss", label="Call", name="document.write", code="document.write(payload)", filepath="ui.js", start_line=8, language="javascript")
+            c_path = _mk_node("c_path", label="Call", name="open", code="open(user_url)", filepath="web.py", start_line=9, is_sink=True, sink_domain="PATH")
+            c_ssrf = _mk_node("c_ssrf", label="Call", name="requests.get", code="requests.get(user_url)", filepath="web.py", start_line=10)
+            c_log = _mk_node("c_log", label="Call", name="logger.info", code='logger.info(f"Visiting {user_url}")', filepath="web.py", start_line=11)
+            c_deser = _mk_node("c_deser", label="Call", name="pickle.loads", code="pickle.loads(raw)", filepath="web.py", start_line=12)
+            c_eval = _mk_node("c_eval", label="Call", name="eval", code="eval(expr)", filepath="web.py", start_line=13)
+            c_tls = _mk_node("c_tls", label="Call", name="requests.get", code="requests.get(endpoint, verify=False)", filepath="web.py", start_line=14)
+            a_prng = _mk_node("a_prng", label="Assignment", name="reset_token", code="reset_token = str(random.randint(1000, 9999))", filepath="web.py", start_line=15)
+            c_redir = _mk_node("c_redir", label="Call", name="RedirectResponse", code="RedirectResponse(user_url)", filepath="web.py", start_line=16)
+
+            nodes = [src_http, c_shell, c_sqli, a_secret, c_xss, c_path, c_ssrf, c_log, c_deser, c_eval, c_tls, a_prng, c_redir]
+            edges = [
+                _mk_edge("src_http", "c_path", "DFG_FLOWS_TO", "user_url"),
+                _mk_edge("src_http", "c_ssrf", "DFG_FLOWS_TO", "user_url"),
+                _mk_edge("src_http", "c_log", "DFG_FLOWS_TO", "user_url"),
+                _mk_edge("src_http", "c_redir", "DFG_FLOWS_TO", "user_url"),
+            ]
+            store.ingest_cpg(nodes, edges)
+
+            go_sf = _mk_scanned_file(
+                "services/exec.go",
+                "go",
+                'package services\nimport "os/exec"\nfunc Run(arg string) { exec.Command("sh", "-c", arg) }\n',
+            )
+            sol_sf = _mk_scanned_file(
+                "contracts/Vault.sol",
+                "solidity",
+                (
+                    "pragma solidity ^0.8.20;\n"
+                    "contract Vault {\n"
+                    "    mapping(address => uint256) public balances;\n"
+                    "    function withdraw() external {\n"
+                    "        uint256 amt = balances[msg.sender];\n"
+                    '        (bool ok, ) = msg.sender.call{value: amt}("");\n'
+                    "        require(ok);\n"
+                    "        balances[msg.sender] = 0;\n"
+                    "    }\n"
+                    "}\n"
+                ),
+            )
+
+            findings = store.run_cpg_rules(scanned_files=[go_sf, sol_sf])
+            rule_ids = {f.rule_id for f in findings}
+            for expected_rule in [
+                "RULE-6-SHELL-INJECTION",
+                "RULE-7-SQLI-FORMAT",
+                "RULE-8-HARDCODED-SECRET",
+                "RULE-9-DOM-XSS",
+                "RULE-10-PATH-TRAVERSAL",
+                "RULE-11-SSRF-URLOPEN",
+                "RULE-12-LOG-INJECTION",
+                "RULE-13-UNSAFE-DESERIALIZATION-CRYPTO",
+                "RULE-14-CODE-INJECTION",
+                "RULE-15-XXE-TLS-BYPASS",
+                "RULE-16-INSECURE-RANDOM-OPEN-REDIRECT",
+                "RULE-27-POLYGLOT-CMDI",
+                "RULE-30-SOLIDITY-REENTRANCY",
+            ]:
+                assert expected_rule in rule_ids, f"Missing expected rule: {expected_rule}"
+        finally:
+            store.close()
+
+    def test_end_to_end_compiled_python_taint_in_embedded_store(self, tmp_path):
+        vuln_sf = _mk_scanned_file(
+            "api/vuln_handler.py",
+            "python",
+            (
+                "import os\n"
+                "import html\n"
+                "def vuln_route(request):\n"
+                "    user_cmd = request.args.get('cmd')\n"
+                "    escaped = html.escape(user_cmd)\n"
+                "    os.system(escaped)\n"
+            ),
+        )
+        safe_sf = _mk_scanned_file(
+            "api/safe_handler.py",
+            "python",
+            (
+                "import os\n"
+                "import shlex\n"
+                "def safe_route(request):\n"
+                "    user_cmd = request.args.get('cmd')\n"
+                "    quoted = shlex.quote(user_cmd)\n"
+                "    os.system(quoted)\n"
+            ),
+        )
+        nodes, edges = _compile_files_in_memory([vuln_sf, safe_sf])
+        store = EmbeddedGraphStore(str(tmp_path / "compiled.db"))
+        try:
+            store.ingest_cpg(nodes, edges)
+            findings = store.run_cpg_rules(scanned_files=[vuln_sf, safe_sf], enabled_rule_ids={"RULE-1-TAINT"})
+            flagged_files = {f.path_nodes[-1]["filepath"] for f in findings}
+            assert "api/vuln_handler.py" in flagged_files
+            assert "api/safe_handler.py" not in flagged_files
+        finally:
+            store.close()
+
+
+# ---------------------------------------------------------------------------
+# 4. All 8 Graph View Modes in EmbeddedGraphStore
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddedGraphStoreViews:
+    def test_all_eight_graph_view_modes(self, tmp_path):
+        store = EmbeddedGraphStore(str(tmp_path / "views.db"))
+        try:
+            fn_a = _mk_node("fn_a", label="Function", ast_type="function_definition", name="handle_req", code="def handle_req(q): return helper(q)", filepath="api/routes.py", start_line=1, end_line=5)
+            p_q = _mk_node("p_q", label="Parameter", ast_type="identifier", name="q", code="q", filepath="api/routes.py", start_line=1, scope_id="fn_a", is_source=True)
+            c_help = _mk_node("c_help", label="Call", ast_type="call", name="helper", code="helper(q)", filepath="api/routes.py", start_line=2, scope_id="fn_a")
+            fn_b = _mk_node("fn_b", label="Function", ast_type="function_definition", name="helper", code="def helper(x): os.system(x)", filepath="core/exec.py", start_line=1, end_line=4)
+            c_sink = _mk_node("c_sink", label="Call", ast_type="call", name="os.system", code="os.system(x)", filepath="core/exec.py", start_line=2, scope_id="fn_b", is_sink=True, sink_domain="SHELL")
+
+            nodes = [fn_a, p_q, c_help, fn_b, c_sink]
+            edges = [
+                _mk_edge("fn_a", "c_help", "AST_CHILD"),
+                _mk_edge("p_q", "c_help", "DFG_FLOWS_TO", "q"),
+                _mk_edge("c_help", "fn_b", "CALLS"),
+                _mk_edge("c_help", "c_sink", "DFG_FLOWS_TO", "x"),
+                _mk_edge("fn_a", "c_help", "CFG_NEXT"),
+                _mk_edge("c_help", "c_sink", "CFG_NEXT"),
+            ]
+            store.ingest_cpg(nodes, edges)
+
+            comm_map = detect_code_communities(nodes, edges, graph_engine_mode="EMBEDDED_SQLITE")
+            store.save_communities(comm_map)
+            findings = store.run_cpg_rules(enabled_rule_ids={"RULE-1-TAINT"})
+            assert findings
+
+            required_node_keys = {
+                "id", "label", "name", "filepath", "start_line", "end_line",
+                "ast_type", "code", "is_source", "is_sink", "is_sanitizer",
+            }
+
+            for mode in [
+                "FINDING_PATH",
+                "CALL_GRAPH",
+                "ENTRYPOINTS",
+                "DFG",
+                "CFG",
+                "SPIDER",
+                "FULL_CPG",
+                "COMMUNITY_MAP",
+            ]:
+                view = store.query_graph_view(
+                    view_mode=mode,
+                    finding_id=findings[0].id if mode == "FINDING_PATH" else None,
+                    filepath="api/routes.py" if mode in ("DFG", "CFG", "CALL_GRAPH") else None,
+                    findings=findings,
+                )
+                assert isinstance(view, dict), f"View {mode} must return dict"
+                assert len(view["nodes"]) >= 1, f"View {mode} returned empty nodes"
+                for nd in view["nodes"]:
+                    assert required_node_keys.issubset(nd.keys()), f"View {mode} missing keys in {nd}"
+                if mode == "COMMUNITY_MAP":
+                    assert view["view_mode"] == "COMMUNITY_MAP"
+                    assert "summary" in view
+                else:
+                    assert isinstance(view["edges"], list)
+                    assert len(view["edges"]) >= 1, f"View {mode} returned empty edges"
+        finally:
+            store.close()
+
+
+# ---------------------------------------------------------------------------
+# 5. GraphStoreManager Automatic Failover & Engine Selection
+# ---------------------------------------------------------------------------
+
+
+class TestGraphStoreManagerFailover:
+    def test_auto_mode_falls_back_to_embedded_when_neo4j_offline(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ALASTOR_GRAPH_ENGINE", "auto")
+        offline_neo4j = mock.MagicMock()
+        offline_neo4j.verify_connectivity_and_apoc.side_effect = ConnectionRefusedError("Bolt offline")
+
+        mgr = GraphStoreManager(neo4j_client=offline_neo4j, vault_dir=str(tmp_path / ".alastor_vault"))
+        try:
+            active_mode = mgr.ensure_backend(force_probe=True)
+            assert active_mode == "EMBEDDED_SQLITE"
+            assert mgr.mode == "EMBEDDED_SQLITE"
+            offline_neo4j.verify_connectivity_and_apoc.assert_called_once()
+
+            # Facade operations must work cleanly on the embedded fallback
+            mgr.init_schema()
+            n1 = _mk_node("m1", filepath="svc.py", is_source=True)
+            n2 = _mk_node("m2", filepath="svc.py", is_sink=True, sink_domain="SHELL")
+            e1 = _mk_edge("m1", "m2", "DFG_FLOWS_TO", "x")
+            assert mgr.ingest_cpg([n1, n2], [e1]) == (2, 1)
+            assert mgr.get_counts() == {"nodes": 2, "edges": 1}
+            assert any(f.rule_id == "RULE-1-TAINT" for f in mgr.run_cpg_rules())
+        finally:
+            mgr.close()
+
+    def test_embedded_mode_never_probes_neo4j(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ALASTOR_GRAPH_ENGINE", "embedded")
+        neo4j_mock = mock.MagicMock()
+
+        mgr = GraphStoreManager(neo4j_client=neo4j_mock, vault_dir=str(tmp_path / ".alastor_vault"))
+        try:
+            assert mgr.ensure_backend(force_probe=True) == "EMBEDDED_SQLITE"
+            assert mgr.mode == "EMBEDDED_SQLITE"
+            neo4j_mock.verify_connectivity_and_apoc.assert_not_called()
+        finally:
+            mgr.close()
+
+    def test_auto_mode_uses_neo4j_when_healthy(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ALASTOR_GRAPH_ENGINE", "auto")
+        healthy_neo4j = mock.MagicMock()
+        healthy_neo4j.verify_connectivity_and_apoc.return_value = True
+
+        mgr = GraphStoreManager(neo4j_client=healthy_neo4j, vault_dir=str(tmp_path / ".alastor_vault"))
+        try:
+            assert mgr.ensure_backend(force_probe=True) == "NEO4J_APOC"
+            assert mgr.mode == "NEO4J_APOC"
+            assert isinstance(mgr._active_store, Neo4jGraphStore)
+
+            # Communities persist via embedded_cache even in Neo4j mode
+            cm = detect_code_communities([_mk_node("x1", filepath="a.py")], [], graph_engine_mode="NEO4J_APOC")
+            mgr.save_communities(cm)
+            loaded = mgr.get_communities()
+            assert loaded.total_communities == 1
+        finally:
+            mgr.close()
+
+    def test_forced_neo4j_mode_raises_when_offline(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ALASTOR_GRAPH_ENGINE", "neo4j")
+        offline_neo4j = mock.MagicMock()
+        offline_neo4j.verify_connectivity_and_apoc.side_effect = RuntimeError("Neo4j unreachable")
+
+        mgr = GraphStoreManager(neo4j_client=offline_neo4j, vault_dir=str(tmp_path / ".alastor_vault"))
+        try:
+            with pytest.raises(RuntimeError, match="Neo4j unreachable"):
+                mgr.ensure_backend(force_probe=True)
+        finally:
+            mgr.close()
+
+
+# ---------------------------------------------------------------------------
+# 6. Deterministic Leiden Community Detector & Polyglot Bridge Detection
+# ---------------------------------------------------------------------------
+
+
+class TestDeterministicCommunityDetector:
+    def _build_polyglot_fixture(self):
+        # Cluster 1: Python API routes + service (strongly coupled)
+        py_r = _mk_node("py_r", label="Function", name="post_transfer", code="@app.post('/transfer')\ndef post_transfer(): pass", filepath="api_routes/transfer.py", start_line=1, is_source=True, language="python")
+        py_s = _mk_node("py_s", label="Function", name="validate_transfer", code="def validate_transfer(): pass", filepath="api_routes/validator.py", start_line=1, language="python")
+        py_m = _mk_node("py_m", label="Call", name="os.system", code="os.system(cmd)", filepath="api_routes/bridge.py", start_line=5, is_sink=True, sink_domain="SHELL", language="python")
+
+        # Cluster 2: Solidity smart contracts (strongly coupled)
+        sol_v = _mk_node("sol_v", label="Function", name="withdraw", code="function withdraw() external {}", filepath="smart_contracts/Vault.sol", start_line=10, is_sink=True, sink_domain="REENTRANCY", language="solidity")
+        sol_t = _mk_node("sol_t", label="Function", name="transfer", code="function transfer() external {}", filepath="smart_contracts/Token.sol", start_line=10, language="solidity")
+        sol_g = _mk_node("sol_g", label="Function", name="checkOwner", code="function checkOwner() internal {}", filepath="smart_contracts/Guard.sol", start_line=5, language="solidity")
+
+        # Cluster 3: Disconnected Go utility module (no edges to Python or Solidity)
+        go_u = _mk_node("go_u", label="Function", name="FormatLog", code="func FormatLog() {}", filepath="go_workers/logger.go", start_line=3, language="go")
+
+        nodes = [py_r, py_s, py_m, sol_v, sol_t, sol_g, go_u]
+        edges = [
+            # Strong intra-Python cluster edges
+            _mk_edge("py_r", "py_s", "CALLS"),
+            _mk_edge("py_s", "py_m", "CALLS"),
+            _mk_edge("py_r", "py_m", "DFG_FLOWS_TO", "payload"),
+            # Strong intra-Solidity cluster edges
+            _mk_edge("sol_v", "sol_t", "CALLS"),
+            _mk_edge("sol_t", "sol_g", "CALLS"),
+            _mk_edge("sol_v", "sol_g", "DFG_FLOWS_TO", "sender"),
+            # Cross-language polyglot bridge (Python -> Solidity)
+            _mk_edge("py_m", "sol_v", "CALLS"),
+        ]
+        findings = [
+            Finding(
+                id="f-crit-sol",
+                rule_id="RULE-30-SOLIDITY-REENTRANCY",
+                severity="CRITICAL",
+                title="Solidity Reentrancy",
+                path_nodes=[{"id": "sol_v", "filepath": "smart_contracts/Vault.sol", "start_line": 10}],
+                path_edges=[],
+            )
+        ]
+        return nodes, edges, findings
+
+    def test_determinism_across_shuffled_runs_and_polyglot_bridges(self):
+        nodes, edges, findings = self._build_polyglot_fixture()
+
+        res1 = detect_code_communities(nodes, edges, findings=findings, graph_engine_mode="EMBEDDED_SQLITE")
+
+        # Shuffle input lists to guarantee order-independent determinism
+        rng = random.Random(42)
+        shuffled_nodes = list(nodes)
+        shuffled_edges = list(edges)
+        rng.shuffle(shuffled_nodes)
+        rng.shuffle(shuffled_edges)
+
+        res2 = detect_code_communities(shuffled_nodes, shuffled_edges, findings=findings, graph_engine_mode="EMBEDDED_SQLITE")
+
+        assert res1.model_dump() == res2.model_dump()
+        assert res1.total_communities == 3
+        assert res1.polyglot_bridges_count >= 1
+        assert any(e.is_polyglot_bridge for e in res1.cross_community_edges)
+
+        # Verify disconnected Go worker is in its own isolated community
+        go_comm = next(c for c in res1.communities if "go_workers/logger.go" in c.filepaths)
+        assert go_comm.filepaths == ["go_workers/logger.go"]
+        assert go_comm.primary_language == "go"
+        assert go_comm.risk_tier == "LOW"
+
+        # Verify Solidity community has CRITICAL risk tier due to CRITICAL finding
+        sol_comm = next(c for c in res1.communities if "smart_contracts/Vault.sol" in c.filepaths)
+        assert sol_comm.primary_language == "solidity"
+        assert sol_comm.finding_count == 1
+        assert sol_comm.risk_tier == "CRITICAL"
+
+        # Verify Python community has entrypoint + sink -> HIGH risk tier
+        py_comm = next(c for c in res1.communities if "api_routes/transfer.py" in c.filepaths)
+        assert py_comm.primary_language == "python"
+        assert py_comm.entrypoint_count >= 1
+        assert py_comm.sink_count >= 1
+        assert py_comm.risk_tier == "HIGH"
+
+    def test_build_community_graph_view_reactflow_contract(self):
+        nodes, edges, findings = self._build_polyglot_fixture()
+        comm_map = detect_code_communities(nodes, edges, findings=findings, graph_engine_mode="EMBEDDED_SQLITE")
+        view = build_community_graph_view(comm_map)
+
+        assert view["view_mode"] == "COMMUNITY_MAP"
+        assert len(view["nodes"]) == comm_map.total_communities
+        assert len(view["edges"]) == len(comm_map.cross_community_edges)
+        assert view["summary"]["total_communities"] == comm_map.total_communities
+        assert view["summary"]["polyglot_bridges_count"] == comm_map.polyglot_bridges_count
+        assert view["summary"]["graph_engine_mode"] == "EMBEDDED_SQLITE"
+
+        first_node = view["nodes"][0]
+        assert first_node["label"] == "CommunityCluster"
+        assert first_node["ast_type"] == "community_cluster"
+        assert "risk_tier" in first_node
+        assert "filepaths" in first_node
+        assert "languages" in first_node
+
+        bridge_edges = [e for e in view["edges"] if e["is_polyglot_bridge"]]
+        assert len(bridge_edges) >= 1
+        assert bridge_edges[0]["type"] == "POLYGLOT_BRIDGE"
+        assert "(Polyglot)" in bridge_edges[0]["label"]
