@@ -1651,6 +1651,177 @@ class PastaAssessmentResponse(BaseModel):
     make_it_live_checklist: List[str] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# 15. Cognitive Security Models (ALASTOR v5.0 Pillar 2)
+# ---------------------------------------------------------------------------
+PlaybookKind = Literal["LENS", "METHOD"]
+BaselineDisposition = Literal["COVERED_CLEAN", "FINDING_DETECTED", "UNDISPOSED_GAP"]
+CognitiveExecutionMode = Literal["DETERMINISTIC", "HYBRID_AI"]
+AdversarialVerdictType = Literal["TRUE_POSITIVE", "FALSE_POSITIVE", "NEEDS_REVIEW"]
+PatchPanelVerdictType = Literal["APPROVED", "REVISIONS_REQUIRED", "REJECTED"]
+PersonaVerdictType = Literal["APPROVE", "CONCERN", "REJECT"]
+
+
+class PlaybookDefinitionItem(BaseModel):
+    id: str
+    name: str
+    kind: PlaybookKind
+    description: str
+    cwe_ids: List[str] = Field(default_factory=list)
+    trigger_signals: List[str] = Field(default_factory=list)
+    hard_gate_criteria: str = ""
+    false_positive_traps: List[str] = Field(default_factory=list)
+    real_mitigations: List[str] = Field(default_factory=list)
+    supports_deterministic_probe: bool = False
+    auto_triggered: bool = False
+
+
+class RepoBaselineItem(BaseModel):
+    id: str
+    repo_kind: str
+    title: str
+    cwe_or_owasp: str
+    status: BaselineDisposition = "UNDISPOSED_GAP"
+    linked_finding_ids: List[str] = Field(default_factory=list)
+    rationale: str = ""
+
+
+class CognitivePlaybooksResponse(BaseModel):
+    project_path: str = ""
+    repo_kinds: List[str] = Field(default_factory=list)
+    total_playbooks: int = 17
+    playbooks: List[PlaybookDefinitionItem] = Field(default_factory=list)
+    baseline_items: List[RepoBaselineItem] = Field(default_factory=list)
+    covered_count: int = 0
+    detected_count: int = 0
+    undisposed_gap_count: int = 0
+    ai_available: bool = False
+
+
+class CognitiveHuntRequest(BaseModel):
+    project_path: Optional[str] = None
+    playbook_ids: List[str] = Field(default_factory=list)
+    use_ai: bool = False
+    include_sibling_sweep: bool = True
+    max_ai_units: int = 4
+
+
+class CognitiveHuntResponse(BaseModel):
+    project_path: str = ""
+    execution_mode: CognitiveExecutionMode = "DETERMINISTIC"
+    executed_playbooks: List[str] = Field(default_factory=list)
+    repo_kinds: List[str] = Field(default_factory=list)
+    findings: List[Finding] = Field(default_factory=list)
+    sibling_findings: List[Finding] = Field(default_factory=list)
+    baseline_items: List[RepoBaselineItem] = Field(default_factory=list)
+    undisposed_gap_count: int = 0
+    hostile_files_stripped: int = 0
+    ai_cache_hits: int = 0
+    summary: str = ""
+
+
+class AdversarialVerifyRequest(BaseModel):
+    project_path: Optional[str] = None
+    finding_ids: List[str] = Field(default_factory=list)
+    use_ai: bool = False
+    max_batch: int = 15
+
+
+class AdversarialFindingVerdict(BaseModel):
+    finding_id: str
+    verdict: AdversarialVerdictType
+    confidence: int = 80
+    cvss_vector: str = ""
+    cvss_score: float = 0.0
+    exclusion_rule: Optional[str] = None
+    rationale: str = ""
+    verification_mode: CognitiveExecutionMode = "DETERMINISTIC"
+    cached: bool = False
+
+
+class AdversarialVerifyResponse(BaseModel):
+    execution_mode: CognitiveExecutionMode = "DETERMINISTIC"
+    total_verified: int = 0
+    true_positives: int = 0
+    false_positives: int = 0
+    needs_review: int = 0
+    verdicts: List[AdversarialFindingVerdict] = Field(default_factory=list)
+    summary: str = ""
+
+
+class ExploitChainHop(BaseModel):
+    step_number: int
+    hop_type: Literal["ENTRYPOINT", "LEAKED_SECRET", "VULNERABILITY", "COMMUNITY_BRIDGE", "CROWN_JEWEL"]
+    title: str
+    filepath: str = ""
+    line: int = 1
+    cwe_or_rule: str = ""
+    community_id: Optional[str] = None
+    linked_finding_id: Optional[str] = None
+    detail: str = ""
+
+
+class ExploitChainItem(BaseModel):
+    id: str
+    title: str
+    severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"] = "HIGH"
+    chain_cvss: float = 7.5
+    blast_radius_communities: List[str] = Field(default_factory=list)
+    hops: List[ExploitChainHop] = Field(default_factory=list)
+    linked_finding_ids: List[str] = Field(default_factory=list)
+    break_the_chain_fix: str = ""
+    narrative: str = ""
+    nodes: List[Dict[str, Any]] = Field(default_factory=list)
+    edges: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ExploitChainRequest(BaseModel):
+    project_path: Optional[str] = None
+    use_ai: bool = False
+    max_chains: int = 10
+
+
+class ExploitChainResponse(BaseModel):
+    project_path: str = ""
+    execution_mode: CognitiveExecutionMode = "DETERMINISTIC"
+    total_chains: int = 0
+    critical_chains: int = 0
+    chains: List[ExploitChainItem] = Field(default_factory=list)
+    synced_to_pasta: bool = True
+    summary: str = ""
+
+
+class PersonaReviewItem(BaseModel):
+    persona_id: Literal["security_architect", "penetration_tester", "cross_repo_analyzer"]
+    persona_label: str
+    verdict: PersonaVerdictType
+    score: int = 80
+    findings: List[str] = Field(default_factory=list)
+    summary: str = ""
+
+
+class PatchPanelValidateRequest(BaseModel):
+    project_path: Optional[str] = None
+    finding_id: Optional[str] = None
+    filepath: str
+    original_code: str
+    proposed_code: str
+    cwe_id: Optional[str] = None
+    use_ai: bool = False
+
+
+class PatchPanelValidateResponse(BaseModel):
+    overall_verdict: PatchPanelVerdictType
+    execution_mode: CognitiveExecutionMode = "DETERMINISTIC"
+    syntax_ok: bool = True
+    syntax_error: Optional[str] = None
+    hostile_patch_blocked: bool = False
+    hostile_patch_reasons: List[str] = Field(default_factory=list)
+    cpg_sink_severed: bool = True
+    personas: List[PersonaReviewItem] = Field(default_factory=list)
+    summary: str = ""
+
+
 SastPlusSuiteResponse.model_rebuild()
 
 

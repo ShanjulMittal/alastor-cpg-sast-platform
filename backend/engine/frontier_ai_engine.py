@@ -295,6 +295,71 @@ def _extract_json_object(raw_text: str) -> Dict[str, Any]:
     raise ValueError("Model response did not contain a valid JSON object.")
 
 
+_HOSTILE_INSTRUCTION_BASENAMES = frozenset({
+    "claude.md",
+    "agents.md",
+    ".cursorrules",
+    ".windsurfrules",
+    "copilot-instructions.md",
+    "gemini.md",
+    ".clinerules",
+})
+
+_PROMPT_INJECTION_BLOCK_PATTERNS: Tuple[re.Pattern[str], ...] = (
+    re.compile(r"<\s*(?:system|instructions|developer|assistant)\b[^>]*>.*?<\s*/\s*(?:system|instructions|developer|assistant)\s*>", re.IGNORECASE | re.DOTALL),
+    re.compile(r"<\s*(?:system|instructions|developer|assistant)\b[^>]*>", re.IGNORECASE),
+)
+
+_PROMPT_INJECTION_LINE_PATTERNS: Tuple[re.Pattern[str], ...] = (
+    re.compile(r"ignore\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+(?:instructions|prompts|rules|directives)", re.IGNORECASE),
+    re.compile(r"disregard\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions|prompts|rules|directives)", re.IGNORECASE),
+    re.compile(r"override\s+(?:the\s+)?(?:system|security|audit)\s+(?:prompt|instructions|rules)", re.IGNORECASE),
+    re.compile(r"\bsystem\s+prompt\s*:", re.IGNORECASE),
+    re.compile(r"mark\s+(?:all|every|these)\s+(?:findings?|issues?|vulnerabilities)\s+as\s+(?:false[\s_-]?positives?|safe|benign|not[\s_-]?exploitable)", re.IGNORECASE),
+    re.compile(r"report\s+(?:zero|no|0)\s+(?:vulnerabilities|findings?|issues?)", re.IGNORECASE),
+    re.compile(r"begin\s+system\s+prompt|end\s+system\s+prompt", re.IGNORECASE),
+)
+
+
+def is_hostile_instruction_file(filepath: str) -> bool:
+    """
+    Returns True if `filepath` points to a target-repository agent/editor instruction file
+    (e.g., CLAUDE.md, AGENTS.md, .cursorrules, .windsurfrules, .github/copilot-instructions.md,
+    GEMINI.md) that could carry indirect prompt-injection payloads.
+    """
+    norm = (filepath or "").replace("\\", "/").strip().lower()
+    if not norm:
+        return False
+    basename = norm.rsplit("/", 1)[-1]
+    if basename in _HOSTILE_INSTRUCTION_BASENAMES:
+        return True
+    if norm.endswith("/.github/copilot-instructions.md") or norm == ".github/copilot-instructions.md":
+        return True
+    if "/.cursor/rules/" in norm or norm.startswith(".cursor/rules/"):
+        return True
+    return False
+
+
+def strip_hostile_target_instructions(text: str) -> str:
+    """
+    Neutralizes prompt-injection override blocks and directives embedded in untrusted
+    target source files before sending micro-slices to any LLM provider.
+    """
+    if not text:
+        return ""
+    sanitized = str(text)
+    for rx in _PROMPT_INJECTION_BLOCK_PATTERNS:
+        sanitized = rx.sub("[PROMPT_INJECTION_STRIPPED]", sanitized)
+
+    cleaned_lines: List[str] = []
+    for line in sanitized.splitlines():
+        if any(rx.search(line) for rx in _PROMPT_INJECTION_LINE_PATTERNS):
+            cleaned_lines.append("[PROMPT_INJECTION_STRIPPED]")
+        else:
+            cleaned_lines.append(line)
+    return "\n".join(cleaned_lines)
+
+
 def _read_confined_workspace_file(
     raw_filepath: str,
     allowed_roots: List[str],
@@ -607,6 +672,70 @@ class FrontierAiEngine:
                 if (parsed.hostname or "").lower().rstrip(".") in {"localhost", "127.0.0.1"}:
                     return True
             return False
+
+    def has_usable_credentials(self) -> bool:
+        """Public accessor indicating whether BYOK credentials (or local loopback provider) are configured."""
+        return self._has_usable_credentials()
+
+    def dispatch_structured_json(
+        self,
+        workflow: str,
+        system_prompt: str,
+        user_prompt: str,
+        cache_material: str,
+        max_output_tokens: int = 1800,
+    ) -> Tuple[Optional[Dict[str, Any]], bool, Optional[str]]:
+        """
+        Shared thread-safe BYOK structured JSON dispatch helper for Pillar 2 cognitive workflows.
+        - Strips hostile prompt-injection directives from `user_prompt`.
+        - Uses SHA-256 verdict cache (`_build_cache_key` / `_cache_get` / `_cache_put`).
+        - Parses JSON cleanly (including markdown ```json fences) and never raises unhandled exceptions.
+        Returns `(parsed_dict_or_none, cache_hit, error_message_or_none)`.
+        """
+        _ = max(128, int(max_output_tokens or 1800))
+        sanitized_user = strip_hostile_target_instructions(user_prompt)
+        sanitized_material = strip_hostile_target_instructions(cache_material or sanitized_user)
+        est_tokens = max(1, len(sanitized_user) // 4)
+
+        try:
+            cache_key = self._build_cache_key(workflow, sanitized_material)
+            cached = self._cache_get(cache_key)
+            if isinstance(cached, dict):
+                self._record_call_telemetry(
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    full_file_tokens_est=est_tokens,
+                    call_cache_hits=1,
+                )
+                return dict(cached), True, None
+
+            if not self._has_usable_credentials():
+                return (
+                    None,
+                    False,
+                    "MISSING_API_KEY: No usable BYOK AI credentials configured.",
+                )
+
+            raw_res = self._dispatch_provider_call(
+                system_prompt,
+                sanitized_user,
+                expect_json=True,
+            )
+            parsed = _extract_json_object(str(raw_res.get("text") or ""))
+            self._cache_put(cache_key, parsed)
+            self._record_call_telemetry(
+                prompt_tokens=int(raw_res.get("prompt_tokens") or 0),
+                completion_tokens=int(raw_res.get("completion_tokens") or 0),
+                full_file_tokens_est=est_tokens,
+                call_cache_hits=0,
+            )
+            return parsed, False, None
+        except _AiDispatchError as err:
+            return None, False, f"{err.error_code}: {err.user_message}"
+        except (ValueError, json.JSONDecodeError) as err:
+            return None, False, f"INVALID_MODEL_RESPONSE: {str(err)[:160]}"
+        except Exception as err:
+            return None, False, f"DISPATCH_ERROR: {str(err)[:160]}"
 
     def _build_cache_key(self, workflow: str, material: str) -> str:
         with self._lock:
@@ -1569,4 +1698,6 @@ __all__ = [
     "CPGNode",
     "Finding",
     "FrontierAiEngine",
+    "is_hostile_instruction_file",
+    "strip_hostile_target_instructions",
 ]
