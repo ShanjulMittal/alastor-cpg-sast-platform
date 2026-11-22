@@ -40,10 +40,12 @@ from models import (
     UserAccountsStateResponse
 )
 from engine.rule_executor import RULES
+from engine.polyglot_rules import POLYGLOT_RULE_CATALOG
 from engine.osv_lockfile_scanner import run_live_osv_lockfile_scan, run_cicd_workflow_security_scan
 from engine.api_operations_engine import analyze_workspace_api_operations
 from engine.pasta_threat_engine import PastaThreatEngine
 from compiler.ast_parser import SANITIZER_PATTERNS
+from compiler.language_registry import LANGUAGE_SPECS, resolve_language_for_filename
 
 logger = logging.getLogger("cpg-sast.enterprise")
 
@@ -105,11 +107,23 @@ def infer_language_from_filepath(filepath: str, rule_id: str = "") -> str:
         return "Java"
     if fp.endswith(".go"):
         return "Go"
-    if fp.endswith((".c", ".cpp", ".h", ".hpp")):
+    if fp.endswith((".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp")):
         return "C/C++"
     if fp.endswith(".cs"):
         return "C#"
-    if "JAVA" in (rule_id or "").upper():
+    resolved_lang = resolve_language_for_filename(base) if base else None
+    if resolved_lang and resolved_lang in LANGUAGE_SPECS:
+        return LANGUAGE_SPECS[resolved_lang].display_name
+    rule_u = (rule_id or "").upper()
+    if "SOLIDITY" in rule_u:
+        return "Solidity"
+    if "RUST" in rule_u:
+        return "Rust"
+    if "CPP" in rule_u:
+        return "C/C++"
+    if "TEMPLATE" in rule_u:
+        return "Web Template"
+    if "JAVA" in rule_u:
         return "Java"
     return "Python"
 
@@ -175,9 +189,11 @@ def compute_best_fix_location(finding: Finding) -> BestFixLocation:
 
     is_js = fp.lower().endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"))
 
-    if "TAINT" in rule_upper or "SHELL" in rule_upper or cwe == "CWE-78":
+    if "TAINT" in rule_upper or "SHELL" in rule_upper or "CMDI" in rule_upper or cwe == "CWE-78":
         if is_js:
             rec_fix = "cp.execFile('cmd.exe', ['/c', 'start', safeValidatedUrl]);"
+        elif fp.lower().endswith(".go"):
+            rec_fix = 'exec.Command("/usr/bin/env", "tool", validatedArg)  // Pass constant binary + validated args, never sh -c'
         else:
             rec_fix = "formatted_cmd = shlex.quote(user_cmd.strip())  # Or pass argument list to subprocess.run([...], shell=False)"
         explanation = (
@@ -190,11 +206,54 @@ def compute_best_fix_location(finding: Finding) -> BestFixLocation:
             f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Replacing string interpolation with bound SQL "
             f"parameters (`?`) at this call site eliminates SQL injection across all callers."
         )
+    elif "TEMPLATE-UNESCAPED" in rule_upper or cwe == "CWE-1336":
+        rec_fix = "{{ user_value }}  <!-- Remove |safe / raw filter and rely on contextual auto-escaping -->"
+        explanation = (
+            f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Restoring contextual template auto-escaping "
+            f"or strictly sanitizing rich HTML before rendering eliminates XSS and Server-Side Template Injection."
+        )
+    elif "MISSING-CSRF" in rule_upper or cwe == "CWE-352":
+        rec_fix = '<form method="post" action="..."><input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />'
+        explanation = (
+            f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Adding the framework anti-CSRF token inside "
+            f"this state-changing POST form blocks cross-site forged submissions."
+        )
     elif "DOM-XSS" in rule_upper or cwe == "CWE-79":
         rec_fix = "element.textContent = String(untrustedValue ?? ''); // Or DOMPurify.sanitize(untrustedValue)"
         explanation = (
             f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Enforcing DOMPurify or safe textContent rendering "
             f"at this DOM sink neutralizes client-side script execution."
+        )
+    elif "CPP-BUFFER" in rule_upper or "CPP-FORMAT" in rule_upper or "CPP-UAF" in rule_upper or "RUST-UNSAFE" in rule_upper or cwe in ("CWE-120", "CWE-787", "CWE-134", "CWE-416", "CWE-242"):
+        if cwe == "CWE-134" or "FORMAT" in rule_upper:
+            rec_fix = 'printf("%s", user_msg);  // Always pass a compile-time constant format literal'
+        elif cwe == "CWE-416" or "UAF" in rule_upper:
+            rec_fix = "free(ptr); ptr = NULL;  // Reset pointer immediately or use RAII std::unique_ptr"
+        elif cwe == "CWE-242" or "RUST" in rule_upper:
+            rec_fix = "// Replace unsafe raw pointer/transmute with safe Rust slice bounds & TryFrom conversions"
+        else:
+            rec_fix = 'snprintf(dst, sizeof(dst), "%s", src);  // Replace unbounded copy with explicit destination size'
+        explanation = (
+            f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Enforcing explicit bounds checking, constant "
+            f"format strings, or safe memory lifetime semantics neutralizes native memory corruption."
+        )
+    elif "SOLIDITY-REENTRANCY" in rule_upper or cwe == "CWE-841":
+        rec_fix = 'balances[msg.sender] = 0; (bool ok, ) = msg.sender.call{value: amount}(""); require(ok); // + nonReentrant'
+        explanation = (
+            f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Applying Checks-Effects-Interactions (updating "
+            f"storage state before external `.call`) and `nonReentrant` prevents recursive fund drainage."
+        )
+    elif "SOLIDITY-TX-ORIGIN" in rule_upper or cwe == "CWE-284":
+        rec_fix = 'require(msg.sender == owner, "Unauthorized"); // Never use tx.origin or unguarded delegatecall'
+        explanation = (
+            f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Enforcing `msg.sender` access control and "
+            f"restricting `delegatecall` targets eliminates phishing authorization bypass and contract takeover."
+        )
+    elif "XXE" in rule_upper or cwe == "CWE-611":
+        rec_fix = 'factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);'
+        explanation = (
+            f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Disabling external DTDs and entity expansion "
+            f"on this XML parser prevents local file disclosure and SSRF."
         )
     elif "PATH-TRAVERSAL" in rule_upper or cwe == "CWE-22":
         if is_js:
@@ -217,7 +276,7 @@ def compute_best_fix_location(finding: Finding) -> BestFixLocation:
             f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Stripping CR/LF and control characters prior to "
             f"logging prevents forged SIEM/audit log entries."
         )
-    elif "DESERIALIZATION" in rule_upper or "CRYPTO" in rule_upper or cwe in ("CWE-502", "CWE-327"):
+    elif "DESERIALIZATION" in rule_upper or "DESER" in rule_upper or "CRYPTO" in rule_upper or cwe in ("CWE-502", "CWE-327"):
         if "yaml.load" in code_snip:
             rec_fix = "parsed_doc = yaml.safe_load(raw_yaml_payload)"
         elif "pickle." in code_snip or "marshal." in code_snip:
@@ -354,7 +413,7 @@ def populate_plain_english_and_raci(
     ).replace("\x00", "").strip()
     raw_desc = (finding.description or "").replace("\x00", "").strip()
 
-    if "TAINT" in rule_upper or "SHELL" in rule_upper or cwe == "CWE-78":
+    if "TAINT" in rule_upper or "SHELL" in rule_upper or "CMDI" in rule_upper or cwe == "CWE-78":
         finding.plain_english_summary = (
             f"WHAT IS WRONG: Untrusted user input enters the application and flows into an operating system shell command "
             f"at `{fp}` (Line {ln}, statement: `{code_snip[:90]}`) without sanitization. "
@@ -403,6 +462,52 @@ def populate_plain_english_and_raci(
             f"1. Instruct engineering to convert the database query at `{fp}`:L{ln} (`{code_snip[:70]}`) to use bound parameters (`?`).",
             "2. Verify with QA that normal search and login workflows still function properly.",
             "3. Document the fix for PCI-DSS Requirement 6.2 / OWASP A03 compliance evidence."
+        ]
+    elif "TEMPLATE-UNESCAPED" in rule_upper or cwe == "CWE-1336":
+        finding.plain_english_summary = (
+            f"WHAT IS WRONG: The web template at `{fp}` (Line {ln}, `{code_snip[:90]}`) disables HTML auto-escaping "
+            f"(e.g., `|safe`, `raw`, `<%-`, `@Html.Raw`) or evaluates dynamic template expressions, exposing users to XSS or Server-Side Template Injection. "
+            f"TECHNICAL EVIDENCE: {raw_desc}"
+        )
+        finding.non_coder_analogy = (
+            "Like a printing press that removes its safety guard and executes any hidden instructions typed inside a customer's shipping address."
+        )
+        finding.business_impact = (
+            "Account Takeover & Server-Side Code Execution (OWASP A03:2021 / CWE-79 & CWE-1336): Attackers can hijack user "
+            "sessions in browsers or execute arbitrary server expressions via template injection."
+        )
+        finding.effort_estimate = "~15 mins (Restore default auto-escaping or sanitize HTML via DOMPurify/bleach)"
+        finding.financial_risk_tier = "Tier 1 — Customer Session Hijacking & Template Injection Risk"
+        finding.raci_responsible = "Lead Developer (TECH_LEAD)"
+        finding.raci_accountable = "Security Architect (SECURITY_LEAD)"
+        finding.raci_consulted = "QA & Release Lead (QA_LEAD)"
+        finding.raci_informed = "Product Manager (PRODUCT_MGR)"
+        finding.management_action_steps = [
+            f"1. Remove unescaped rendering filters (`|safe`, `{{{{{{`, `<%-`, `@Html.Raw`) in `{fp}` at Line {ln}.",
+            "2. If rich HTML is strictly required, sanitize the value with DOMPurify/bleach prior to rendering.",
+            "3. Re-run ALASTOR to verify all template expressions rely on contextual auto-escaping."
+        ]
+    elif "MISSING-CSRF" in rule_upper or cwe == "CWE-352":
+        finding.plain_english_summary = (
+            f"WHAT IS WRONG: A state-changing HTML POST form in `{fp}` (Line {ln}, `{code_snip[:90]}`) does not include an anti-CSRF "
+            f"synchronizer token, allowing external malicious websites to trigger unauthorized user actions. TECHNICAL EVIDENCE: {raw_desc}"
+        )
+        finding.non_coder_analogy = (
+            "Like a bank transfer form that accepts any signed envelope mailed in without verifying the customer's one-time security stamp."
+        )
+        finding.business_impact = (
+            "Cross-Site Request Forgery (OWASP A01:2021 / CWE-352): Attackers can trick authenticated users or administrators "
+            "into changing account settings, initiating transfers, or modifying records without consent."
+        )
+        finding.effort_estimate = "~10 mins (Insert framework CSRF token directive inside the POST form)"
+        finding.financial_risk_tier = "Tier 2 — Unauthorized State-Change & Account Abuse Risk"
+        finding.raci_responsible = "Lead Developer (TECH_LEAD)"
+        finding.raci_accountable = "Security Architect (SECURITY_LEAD)"
+        finding.raci_consulted = "QA & Release Lead (QA_LEAD)"
+        finding.raci_informed = "Product Manager (PRODUCT_MGR)"
+        finding.management_action_steps = [
+            f"1. Add the framework anti-CSRF token (e.g., `{{{{ csrf_token() }}}}`, `@csrf`, `{{% csrf_token %}}`) inside the `<form method='post'>` at `{fp}`:L{ln}.",
+            "2. Confirm server-side CSRF middleware enforces strict token validation on all mutating routes."
         ]
     elif "DOM-XSS" in rule_upper or cwe == "CWE-79":
         finding.plain_english_summary = (
@@ -619,7 +724,7 @@ def populate_plain_english_and_raci(
             f"1. Restrict `{fp}`:L{ln} to `https://` only and validate resolved DNS IPs against RFC1918/loopback/link-local blocks.",
             "2. Replace `urllib.request.urlopen` with `requests` so `file://` local file handlers are disabled."
         ]
-    elif "DESERIALIZATION" in rule_upper or "CRYPTO" in rule_upper or cwe in ("CWE-502", "CWE-327"):
+    elif "DESERIALIZATION" in rule_upper or "DESER" in rule_upper or "CRYPTO" in rule_upper or cwe in ("CWE-502", "CWE-327"):
         finding.plain_english_summary = (
             f"WHAT IS WRONG: Unsafe object deserialization or weak cryptographic primitive detected at `{fp}` "
             f"(Line {ln}, `{code_snip[:90]}`). TECHNICAL EVIDENCE: {raw_desc}"
@@ -640,6 +745,97 @@ def populate_plain_english_and_raci(
         finding.management_action_steps = [
             f"1. Replace the unsafe call at `{fp}`:L{ln} using the Best Fixed Location (BFL) patch.",
             "2. Re-run ALASTOR scan to verify compliance with OWASP A02/A08."
+        ]
+    elif "CPP-BUFFER" in rule_upper or "CPP-FORMAT" in rule_upper or "CPP-UAF" in rule_upper or "RUST-UNSAFE" in rule_upper or cwe in ("CWE-120", "CWE-787", "CWE-134", "CWE-416", "CWE-242"):
+        finding.plain_english_summary = (
+            f"WHAT IS WRONG: Native systems code at `{fp}` (Line {ln}, `{code_snip[:90]}`) performs an unsafe memory operation "
+            f"(unbounded buffer copy, non-literal format string, use-after-free/double-free, or unchecked Rust `unsafe` FFI/pointer access). "
+            f"TECHNICAL EVIDENCE: {raw_desc}"
+        )
+        finding.non_coder_analogy = (
+            "Like pouring an unknown amount of water into a fixed-size cup sitting directly above the building's main circuit breaker—overflowing memory corrupts adjacent controls."
+        )
+        finding.business_impact = (
+            "Critical Memory Corruption & Remote Code Execution (CWE-120 / CWE-787 / CWE-134 / CWE-416 / CWE-242): Attackers "
+            "can crash production services, leak sensitive process memory, or hijack native execution flow."
+        )
+        finding.effort_estimate = "~30–45 mins (Switch to length-bounded APIs, constant format strings, RAII, or safe Rust)"
+        finding.financial_risk_tier = "Tier 1 — Critical Native Memory Corruption & RCE Exposure"
+        finding.raci_responsible = "Systems / Lead Developer (TECH_LEAD)"
+        finding.raci_accountable = "Security Architect (SECURITY_LEAD)"
+        finding.raci_consulted = "QA & Release Lead (QA_LEAD)"
+        finding.raci_informed = "Executive Sponsor / CISO (EXEC_SPONSOR)"
+        finding.management_action_steps = [
+            f"1. Patch `{fp}` at Line {ln} (`{code_snip[:70]}`) using bounded memory copies (`snprintf`/`strlcpy`), constant format literals, NULL-after-free/RAII, or safe Rust slices.",
+            "2. Enable AddressSanitizer/UBSan in CI builds and re-run ALASTOR to verify zero native memory hazards."
+        ]
+    elif "SOLIDITY-REENTRANCY" in rule_upper or cwe == "CWE-841":
+        finding.plain_english_summary = (
+            f"WHAT IS WRONG: The Solidity smart contract at `{fp}` (Line {ln}, `{code_snip[:90]}`) transfers external ETH/value "
+            f"via `.call{{value: ...}}` before updating on-chain balances without a `nonReentrant` lock (Checks-Effects-Interactions violation). "
+            f"TECHNICAL EVIDENCE: {raw_desc}"
+        )
+        finding.non_coder_analogy = (
+            "Like an ATM that dispenses cash before deducting your account balance, letting a fast attacker loop the withdrawal until the vault is empty."
+        )
+        finding.business_impact = (
+            "Catastrophic On-Chain Treasury Drainage (SWC-107 / CWE-841): An attacker contract can recursively re-enter the "
+            "withdrawal function and drain 100% of locked protocol funds in a single irreversible blockchain transaction."
+        )
+        finding.effort_estimate = "~20 mins (Move state updates before `.call` and attach OpenZeppelin `nonReentrant`)"
+        finding.financial_risk_tier = "Tier 1 — Direct Irreversible Smart-Contract Treasury Loss"
+        finding.raci_responsible = "Smart Contract Lead (TECH_LEAD)"
+        finding.raci_accountable = "Security Architect (SECURITY_LEAD)"
+        finding.raci_consulted = "QA & Release Lead (QA_LEAD)"
+        finding.raci_informed = "Executive Sponsor / CISO (EXEC_SPONSOR)"
+        finding.management_action_steps = [
+            f"1. Hold mainnet deployment until `{fp}`:L{ln} updates contract state BEFORE external `.call` transfers (Checks-Effects-Interactions).",
+            "2. Inherit OpenZeppelin `ReentrancyGuard` and mark external value-transfer functions `nonReentrant`.",
+            "3. Add a Foundry/Hardhat adversarial reentrancy test and verify zero ALASTOR findings."
+        ]
+    elif "SOLIDITY-TX-ORIGIN" in rule_upper or cwe == "CWE-284":
+        finding.plain_english_summary = (
+            f"WHAT IS WRONG: The smart contract at `{fp}` (Line {ln}, `{code_snip[:90]}`) uses phishing-vulnerable `tx.origin` "
+            f"for authorization or exposes an unguarded `delegatecall` / `selfdestruct` operation. TECHNICAL EVIDENCE: {raw_desc}"
+        )
+        finding.non_coder_analogy = (
+            "Like handing over master building ownership to anyone who hands a forged letter through a tricked courier, or letting a stranger rewrite the vault's lock mechanism."
+        )
+        finding.business_impact = (
+            "Smart Contract Privilege Escalation & Takeover (SWC-115 / SWC-112 / CWE-284): Attackers can phish contract owners "
+            "via intermediary contracts, overwrite storage slots via `delegatecall`, or permanently destroy contract funds."
+        )
+        finding.effort_estimate = "~15–20 mins (Replace `tx.origin` with `msg.sender` and lock down `delegatecall`)"
+        finding.financial_risk_tier = "Tier 1 — Smart Contract Admin Takeover & Irreversible Asset Loss"
+        finding.raci_responsible = "Smart Contract Lead (TECH_LEAD)"
+        finding.raci_accountable = "Security Architect (SECURITY_LEAD)"
+        finding.raci_consulted = "Compliance Officer (COMPLIANCE_GRC)"
+        finding.raci_informed = "Executive Sponsor / CISO (EXEC_SPONSOR)"
+        finding.management_action_steps = [
+            f"1. Replace `tx.origin` with `msg.sender` or restrict `delegatecall` to immutable trusted implementations at `{fp}`:L{ln}.",
+            "2. Remove deprecated `selfdestruct`/`suicide` calls and re-verify access-control invariants."
+        ]
+    elif "XXE" in rule_upper or cwe == "CWE-611":
+        finding.plain_english_summary = (
+            f"WHAT IS WRONG: The XML parser at `{fp}` (Line {ln}, `{code_snip[:90]}`) does not disable external entity resolution "
+            f"and DTD processing (XXE), allowing crafted XML documents to read server files or forge internal requests. TECHNICAL EVIDENCE: {raw_desc}"
+        )
+        finding.non_coder_analogy = (
+            "Like a document scanner that automatically follows any footnote saying 'attach the contents of /etc/passwd here' before returning the scan."
+        )
+        finding.business_impact = (
+            "Local File Disclosure & Internal Network SSRF (OWASP A05:2021 / CWE-611): Attackers can exfiltrate server secrets, "
+            "cloud metadata credentials, or exhaust memory via Billion Laughs entity expansion."
+        )
+        finding.effort_estimate = "~15 mins (Disable DTDs and external entities on XML parser factory)"
+        finding.financial_risk_tier = "Tier 1 — Confidential Server File Disclosure & SSRF Risk"
+        finding.raci_responsible = "Lead Developer (TECH_LEAD)"
+        finding.raci_accountable = "Security Architect (SECURITY_LEAD)"
+        finding.raci_consulted = "QA & Release Lead (QA_LEAD)"
+        finding.raci_informed = "Compliance Officer (COMPLIANCE_GRC)"
+        finding.management_action_steps = [
+            f"1. Configure the XML parser at `{fp}`:L{ln} to prohibit DTDs and external general/parameter entities.",
+            "2. Add an XXE negative unit test and confirm ALASTOR reports zero CWE-611 issues."
         ]
     else:
         finding.plain_english_summary = (
@@ -715,7 +911,7 @@ def populate_plain_english_and_raci(
         finding.epss_percentile = 38.5
         finding.cisa_kev_listed = False
         finding.exploit_maturity = "DORMANT_CODE_PATH"
-    elif "TAINT" in rule_upper or "SHELL" in rule_upper or "SQLI" in rule_upper or cwe in ("CWE-78", "CWE-89"):
+    elif "TAINT" in rule_upper or "SHELL" in rule_upper or "CMDI" in rule_upper or "SQLI" in rule_upper or cwe in ("CWE-78", "CWE-89"):
         finding.reachability_status = "REACHABLE"
         finding.reachability_reason = (
             f"Direct Entrypoint-to-Sink Reachable: CPG inter-procedural data-flow analysis verified an active execution path "
@@ -723,6 +919,16 @@ def populate_plain_english_and_raci(
         )
         finding.epss_score = 0.894 if cwe == "CWE-78" else 0.842
         finding.epss_percentile = 98.2 if cwe == "CWE-78" else 96.5
+        finding.cisa_kev_listed = bool(finding.cve_id)
+        finding.exploit_maturity = "ACTIVE_IN_THE_WILD" if finding.cve_id else "PROOF_OF_CONCEPT"
+    elif "SOLIDITY-" in rule_upper or "CPP-BUFFER" in rule_upper or "CPP-UAF" in rule_upper or "DESER" in rule_upper or cwe in ("CWE-841", "CWE-284", "CWE-120", "CWE-416", "CWE-502"):
+        finding.reachability_status = "REACHABLE"
+        finding.reachability_reason = (
+            f"High-Impact Direct Sink Reachable: Statement `{code_snip[:65]}` at `{fp}:L{ln}` exposes a critical memory, "
+            f"deserialization, or on-chain contract sink on an active execution path."
+        )
+        finding.epss_score = 0.815
+        finding.epss_percentile = 95.8
         finding.cisa_kev_listed = bool(finding.cve_id)
         finding.exploit_maturity = "ACTIVE_IN_THE_WILD" if finding.cve_id else "PROOF_OF_CONCEPT"
     else:
@@ -923,6 +1129,12 @@ class EnterpriseManager:
                     "RULE-8-HARDCODED-SECRET", "RULE-9-DOM-XSS", "RULE-10-PATH-TRAVERSAL",
                     "RULE-11-SSRF-URLOPEN", "RULE-13-UNSAFE-DESERIALIZATION-CRYPTO",
                     "RULE-14-CODE-INJECTION", "RULE-15-XXE-TLS-BYPASS",
+                    "RULE-22-CPP-BUFFER-OVERFLOW", "RULE-23-CPP-FORMAT-STRING",
+                    "RULE-24-CPP-UAF-DOUBLE-FREE", "RULE-25-RUST-UNSAFE-FFI",
+                    "RULE-26-POLYGLOT-SQLI", "RULE-27-POLYGLOT-CMDI",
+                    "RULE-28-POLYGLOT-DESER", "RULE-29-POLYGLOT-XXE",
+                    "RULE-30-SOLIDITY-REENTRANCY", "RULE-31-SOLIDITY-TX-ORIGIN-DELEGATE",
+                    "RULE-32-TEMPLATE-UNESCAPED-XSS-SSTI",
                     "SCA-2-LIVE-CVE-LOCKFILE", "IAC-1-COMPOSE-SECRET", "IAC-3-CICD-WORKFLOW-SECURITY"
                 ]
             ),
@@ -957,7 +1169,8 @@ class EnterpriseManager:
                     "RULE-1-TAINT", "RULE-2-ORPHAN", "RULE-6-SHELL-INJECTION",
                     "RULE-7-SQLI-FORMAT", "RULE-9-DOM-XSS", "RULE-10-PATH-TRAVERSAL",
                     "RULE-11-SSRF-URLOPEN", "RULE-12-LOG-INJECTION", "RULE-13-UNSAFE-DESERIALIZATION-CRYPTO",
-                    "RULE-14-CODE-INJECTION", "RULE-15-XXE-TLS-BYPASS", "RULE-16-INSECURE-RANDOM-OPEN-REDIRECT"
+                    "RULE-14-CODE-INJECTION", "RULE-15-XXE-TLS-BYPASS", "RULE-16-INSECURE-RANDOM-OPEN-REDIRECT",
+                    *[r["id"] for r in POLYGLOT_RULE_CATALOG],
                 ]
             ),
         ]
@@ -1322,6 +1535,35 @@ class EnterpriseManager:
                     cypher=r.get("cypher", "").strip(),
                     enabled=True,
                     is_custom=False
+                )
+            )
+
+        # Register ALASTOR v5.0 Polyglot Deterministic Rule Packs (RULE-22 through RULE-33)
+        for pr in POLYGLOT_RULE_CATALOG:
+            lang_keys = list(pr.get("languages") or [])
+            display_langs = [
+                LANGUAGE_SPECS[k].display_name if k in LANGUAGE_SPECS else k.upper()
+                for k in lang_keys
+            ]
+            if len(display_langs) > 4:
+                lang_label = " / ".join(display_langs[:4]) + f" (+{len(display_langs) - 4})"
+            else:
+                lang_label = " / ".join(display_langs) if display_langs else "Polyglot"
+            self.queries.append(
+                SecurityQueryRule(
+                    id=pr["id"],
+                    name=pr["name"],
+                    engine="SAST",
+                    language=lang_label,
+                    severity=pr.get("severity", "HIGH"),
+                    cwe_id=pr.get("cwe_id", "CWE-78"),
+                    owasp_category=pr.get("owasp_category", "A03:2021 - Injection"),
+                    cvss_score=float(pr.get("cvss_score", 7.5)),
+                    description=pr.get("description", ""),
+                    remediation=pr.get("remediation", ""),
+                    cypher="/* Polyglot deterministic CPG + AST rule pack (Neo4j & Embedded SQLite) */",
+                    enabled=True,
+                    is_custom=False,
                 )
             )
 
@@ -4864,10 +5106,17 @@ class EnterpriseManager:
 
         taint_f = [
             f for f in active_findings
-            if f.cwe_id in ("CWE-78", "CWE-89", "CWE-79", "CWE-94", "CWE-502", "CWE-22", "CWE-918", "CWE-117", "CWE-327")
+            if f.cwe_id in (
+                "CWE-78", "CWE-89", "CWE-79", "CWE-94", "CWE-502", "CWE-22", "CWE-918", "CWE-117", "CWE-327",
+                "CWE-120", "CWE-787", "CWE-134", "CWE-416", "CWE-242", "CWE-611", "CWE-841", "CWE-284", "CWE-1336", "CWE-352",
+            )
             or f.rule_id in (
                 "RULE-1-TAINT", "RULE-6-SHELL-INJECTION", "RULE-7-SQLI-FORMAT", "RULE-9-DOM-XSS",
-                "RULE-10-PATH-TRAVERSAL", "RULE-11-SSRF-URLOPEN", "RULE-12-LOG-INJECTION", "RULE-13-UNSAFE-DESERIALIZATION-CRYPTO"
+                "RULE-10-PATH-TRAVERSAL", "RULE-11-SSRF-URLOPEN", "RULE-12-LOG-INJECTION", "RULE-13-UNSAFE-DESERIALIZATION-CRYPTO",
+                "RULE-22-CPP-BUFFER-OVERFLOW", "RULE-23-CPP-FORMAT-STRING", "RULE-24-CPP-UAF-DOUBLE-FREE",
+                "RULE-25-RUST-UNSAFE-FFI", "RULE-26-POLYGLOT-SQLI", "RULE-27-POLYGLOT-CMDI",
+                "RULE-28-POLYGLOT-DESER", "RULE-29-POLYGLOT-XXE", "RULE-30-SOLIDITY-REENTRANCY",
+                "RULE-31-SOLIDITY-TX-ORIGIN-DELEGATE", "RULE-32-TEMPLATE-UNESCAPED-XSS-SSTI", "RULE-33-TEMPLATE-MISSING-CSRF",
             )
         ]
         sca_f = [

@@ -1031,3 +1031,305 @@ class TestDeterministicCommunityDetector:
         assert len(bridge_edges) >= 1
         assert bridge_edges[0]["type"] == "POLYGLOT_BRIDGE"
         assert "(Polyglot)" in bridge_edges[0]["label"]
+
+
+# ---------------------------------------------------------------------------
+# 7. FastAPI Route Wiring, Offline Zero-Docker Failover & Enterprise Rules
+# ---------------------------------------------------------------------------
+
+
+class TestFastApiDualEngineAndEnterpriseRules:
+    def test_fastapi_languages_capabilities_and_health_engine_mode(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import main as main_mod
+
+        monkeypatch.setenv("ALASTOR_GRAPH_ENGINE", "embedded")
+        isolated_mgr = GraphStoreManager(
+            neo4j_client=main_mod.neo4j_client,
+            vault_dir=str(tmp_path / ".alastor_vault"),
+        )
+        isolated_mgr.ensure_backend(force_probe=True)
+        monkeypatch.setattr(main_mod, "graph_store_mgr", isolated_mgr)
+
+        try:
+            client = TestClient(main_mod.app)
+
+            cap_resp = client.get("/api/languages/capabilities")
+            assert cap_resp.status_code == 200
+            cap_data = cap_resp.json()
+            assert cap_data["total_languages"] >= 18
+            assert cap_data["ready_parsers"] >= 18
+            lang_keys = {item["language"] for item in cap_data["languages"]}
+            for expected in ("python", "javascript", "typescript", "go", "java", "rust", "cpp", "solidity", "web_template"):
+                assert expected in lang_keys
+
+            health_resp = client.get("/api/health")
+            assert health_resp.status_code == 200
+            health_data = health_resp.json()
+            assert health_data["status"] == "HEALTHY"
+            assert health_data["graph_engine_mode"] == "EMBEDDED_SQLITE"
+            assert health_data["neo4j"] == "OFFLINE_EMBEDDED_FALLBACK"
+        finally:
+            isolated_mgr.close()
+
+    def test_fastapi_offline_embedded_scan_communities_metrics_and_graph_views(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import main as main_mod
+        from engine.enterprise_manager import EnterpriseManager
+
+        # Build a realistic 4-language polyglot workspace (.py, .go, .sol, .jinja2)
+        workspace = tmp_path / "polyglot_repo"
+        (workspace / "api").mkdir(parents=True)
+        (workspace / "services").mkdir(parents=True)
+        (workspace / "contracts").mkdir(parents=True)
+        (workspace / "templates").mkdir(parents=True)
+
+        (workspace / "api" / "runner.py").write_text(
+            "import os\n"
+            "def execute_shell(cmd):\n"
+            "    if cmd:\n"
+            "        os.system(cmd)\n"
+            "    return True\n\n"
+            "def handle_request(request):\n"
+            "    user_cmd = request.args.get('cmd')\n"
+            "    return execute_shell(user_cmd)\n",
+            encoding="utf-8",
+        )
+        (workspace / "services" / "worker.go").write_text(
+            'package services\n'
+            'import "os/exec"\n'
+            'func RunJob(userCmd string) error {\n'
+            '    cmd := exec.Command("sh", "-c", userCmd)\n'
+            '    return cmd.Run()\n'
+            '}\n',
+            encoding="utf-8",
+        )
+        (workspace / "contracts" / "TreasuryVault.sol").write_text(
+            "pragma solidity ^0.8.20;\n"
+            "contract TreasuryVault {\n"
+            "    mapping(address => uint256) public balances;\n"
+            "    function withdraw() external {\n"
+            "        uint256 amount = balances[msg.sender];\n"
+            '        (bool ok, ) = msg.sender.call{value: amount}("");\n'
+            "        require(ok);\n"
+            "        balances[msg.sender] = 0;\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (workspace / "templates" / "profile.jinja2").write_text(
+            "<html>\n"
+            "<body>\n"
+            "  <div class='bio'>{{ user_bio | safe }}</div>\n"
+            "  <form method='post' action='/profile/update'>\n"
+            "    <input type='text' name='bio' />\n"
+            "    <button type='submit'>Save</button>\n"
+            "  </form>\n"
+            "</body>\n"
+            "</html>\n",
+            encoding="utf-8",
+        )
+
+        # Force Zero-Docker Embedded mode + simulate offline Neo4j
+        monkeypatch.setenv("ALASTOR_GRAPH_ENGINE", "embedded")
+        monkeypatch.setattr(
+            main_mod.neo4j_client,
+            "verify_connectivity_and_apoc",
+            mock.MagicMock(side_effect=ConnectionRefusedError("Neo4j Docker stopped")),
+        )
+
+        # Isolate all mutable globals + EnterpriseManager so test never pollutes disk or other tests
+        isolated_mgr = GraphStoreManager(
+            neo4j_client=main_mod.neo4j_client,
+            vault_dir=str(tmp_path / ".alastor_vault"),
+        )
+        isolated_em = EnterpriseManager()
+        monkeypatch.setattr(isolated_em, "_save_persisted_state", lambda: None)
+        monkeypatch.setattr(isolated_em, "_save_scan_cache", lambda: None)
+        monkeypatch.setattr(main_mod, "enterprise_mgr", isolated_em)
+        monkeypatch.setattr(main_mod, "graph_store_mgr", isolated_mgr)
+        monkeypatch.setattr(main_mod, "current_scan_dir", str(workspace))
+        monkeypatch.setattr(main_mod, "current_app_tree", None)
+        monkeypatch.setattr(main_mod, "current_community_map", None)
+        monkeypatch.setattr(main_mod, "_cached_findings", None)
+        monkeypatch.setattr(main_mod, "_cached_external_findings", [])
+        monkeypatch.setattr(main_mod, "_cached_advisories", [])
+        monkeypatch.setattr(main_mod, "_last_neo4j_ingested_dir", None)
+        monkeypatch.setattr(main_mod, "_last_scope_telemetry", None)
+        monkeypatch.setattr(main_mod, "_last_languages_detected", {})
+        monkeypatch.setattr(main_mod, "_last_scanned_files", [])
+        monkeypatch.setattr(main_mod, "_last_cpg_nodes", [])
+        monkeypatch.setattr(main_mod, "_last_cpg_edges", [])
+
+        try:
+            client = TestClient(main_mod.app)
+
+            # 1. POST /api/scan in Offline Embedded SQLite mode
+            scan_resp = client.post("/api/scan", json={"target_path": str(workspace)})
+            assert scan_resp.status_code == 200, scan_resp.text
+            scan_body = scan_resp.json()
+            assert scan_body["status"] == "SUCCESS"
+            assert scan_body["graph_engine_mode"] == "EMBEDDED_SQLITE"
+            assert scan_body["nodes_created"] > 0
+            assert scan_body["edges_created"] > 0
+            assert scan_body["communities_count"] >= 1
+            for lang_k in ("python", "go", "solidity", "web_template"):
+                assert scan_body["languages_detected"].get(lang_k, 0) >= 1
+            assert scan_body["scope_telemetry"] is not None
+            assert scan_body["scope_telemetry"]["total_discovered"] >= 4
+
+            # 2. GET /api/findings returns enriched polyglot findings
+            findings_resp = client.get("/api/findings")
+            assert findings_resp.status_code == 200
+            findings_body = findings_resp.json()
+            found_rule_ids = {f["rule_id"] for f in findings_body}
+            for req_rule in (
+                "RULE-1-TAINT",
+                "RULE-27-POLYGLOT-CMDI",
+                "RULE-30-SOLIDITY-REENTRANCY",
+                "RULE-32-TEMPLATE-UNESCAPED-XSS-SSTI",
+                "RULE-33-TEMPLATE-MISSING-CSRF",
+            ):
+                assert req_rule in found_rule_ids, f"Missing {req_rule}; got {sorted(found_rule_ids)}"
+            for f_item in findings_body:
+                assert f_item.get("plain_english_summary"), f"Missing plain_english_summary on {f_item['rule_id']}"
+                assert f_item.get("raci_responsible"), f"Missing raci_responsible on {f_item['rule_id']}"
+
+            # 3. GET /api/metrics returns HTTP 200 with EMBEDDED_SQLITE + polyglot telemetry
+            metrics_resp = client.get("/api/metrics")
+            assert metrics_resp.status_code == 200
+            metrics_body = metrics_resp.json()
+            assert metrics_body["graph_engine_mode"] == "EMBEDDED_SQLITE"
+            assert metrics_body["total_nodes"] > 0
+            assert metrics_body["total_edges"] > 0
+            assert metrics_body["communities_count"] >= 1
+            assert metrics_body["scope_telemetry"] is not None
+            assert metrics_body["languages_detected"].get("solidity", 0) >= 1
+
+            # 4. GET /api/graph/communities returns Leiden community & bridge map
+            comm_resp = client.get("/api/graph/communities")
+            assert comm_resp.status_code == 200
+            comm_body = comm_resp.json()
+            assert comm_body["graph_engine_mode"] == "EMBEDDED_SQLITE"
+            assert comm_body["total_communities"] >= 1
+            assert len(comm_body["communities"]) == comm_body["total_communities"]
+
+            # 5. GET /api/graph across COMMUNITY_MAP, ENTRYPOINT_GRAPH, DFG_ONLY, CFG_ONLY, CALL_GRAPH, SPIDER, APP_TREE, FULL_CPG, FINDING_PATH
+            for vm in ("COMMUNITY_MAP", "ENTRYPOINT_GRAPH", "DFG_ONLY", "CFG_ONLY", "CALL_GRAPH", "APP_TREE", "SPIDER", "FULL_CPG"):
+                g_resp = client.get("/api/graph", params={"view_mode": vm})
+                assert g_resp.status_code == 200, f"view_mode={vm} failed: {g_resp.text}"
+                g_body = g_resp.json()
+                assert len(g_body["nodes"]) >= 1, f"view_mode={vm} returned 0 nodes"
+
+            fp_resp = client.get("/api/graph", params={"view_mode": "FINDING_PATH", "finding_id": findings_body[0]["id"]})
+            assert fp_resp.status_code == 200
+            assert len(fp_resp.json()["nodes"]) >= 1
+
+            loc_resp = client.get("/api/node-at-location", params={"filepath": "api/runner.py", "line": 4})
+            assert loc_resp.status_code == 200
+            assert loc_resp.json()["node"] is not None
+        finally:
+            isolated_mgr.close()
+
+    def test_fastapi_startup_auto_failover_when_neo4j_offline(self, tmp_path, monkeypatch):
+        import main as main_mod
+
+        monkeypatch.setenv("ALASTOR_GRAPH_ENGINE", "auto")
+        offline_neo4j = mock.MagicMock()
+        offline_neo4j.verify_connectivity_and_apoc.side_effect = ConnectionRefusedError("Bolt port 7687 closed")
+
+        isolated_mgr = GraphStoreManager(
+            neo4j_client=offline_neo4j,
+            vault_dir=str(tmp_path / ".alastor_vault"),
+        )
+        # Pre-seed a community map to confirm startup_event restores it
+        seeded_cm = detect_code_communities([_mk_node("s1", filepath="svc/app.py")], [], graph_engine_mode="EMBEDDED_SQLITE")
+        isolated_mgr.ensure_backend(force_probe=True)
+        isolated_mgr.save_communities(seeded_cm)
+        # Reset _active_store so startup_event triggers a fresh auto probe
+        isolated_mgr._active_store = None
+
+        monkeypatch.setattr(main_mod, "graph_store_mgr", isolated_mgr)
+        monkeypatch.setattr(main_mod, "current_scan_dir", str(tmp_path))
+        monkeypatch.setattr(main_mod, "current_community_map", None)
+
+        try:
+            main_mod.startup_event()
+            assert isolated_mgr.mode == "EMBEDDED_SQLITE"
+            assert main_mod.current_community_map is not None
+            assert main_mod.current_community_map.total_communities == 1
+        finally:
+            isolated_mgr.close()
+
+    def test_enterprise_rule_catalog_includes_all_12_polyglot_rules(self):
+        from engine.enterprise_manager import EnterpriseManager
+        from engine.polyglot_rules import POLYGLOT_RULE_CATALOG
+
+        em = EnterpriseManager()
+        query_ids = {q.id for q in em.queries}
+        settings_q_ids = {q.id for q in em.get_settings_response().queries}
+
+        sample_file_by_lang = {
+            "c": "native/buffer.c",
+            "cpp": "native/mem.cpp",
+            "rust": "crates/ffi/src/lib.rs",
+            "go": "services/query.go",
+            "java": "src/main/java/App.java",
+            "solidity": "contracts/Vault.sol",
+            "web_template": "templates/index.jinja2",
+        }
+
+        raw_findings: List[Finding] = []
+        for idx, spec in enumerate(POLYGLOT_RULE_CATALOG):
+            rid = spec["id"]
+            assert rid in query_ids, f"{rid} missing from EnterpriseManager.queries"
+            assert rid in settings_q_ids, f"{rid} missing from get_settings().queries"
+            first_lang = spec["languages"][0]
+            fp = sample_file_by_lang.get(first_lang, "app/sample.py")
+            raw_findings.append(
+                Finding(
+                    id=f"poly-test-{idx:02d}",
+                    rule_id=rid,
+                    severity=spec["severity"],
+                    title=spec["name"],
+                    description=spec["description"],
+                    cwe_id=spec["cwe_id"],
+                    owasp_category=spec["owasp_category"],
+                    cvss_score=float(spec["cvss_score"]),
+                    remediation=spec["remediation"],
+                    path_nodes=[
+                        {
+                            "id": f"pn-{idx}",
+                            "label": "Call",
+                            "name": "sink_call",
+                            "code": "vulnerable_sink(user_input)",
+                            "filepath": fp,
+                            "start_line": 12 + idx,
+                            "end_line": 12 + idx,
+                            "start_col": 4,
+                            "end_col": 32,
+                            "is_source": False,
+                            "is_sink": True,
+                            "is_sanitizer": False,
+                        }
+                    ],
+                    path_edges=[],
+                    scan_engine="SAST",
+                )
+            )
+
+        enriched = em.enrich_findings(raw_findings)
+        assert len(enriched) == len(POLYGLOT_RULE_CATALOG) == 12
+        for ef in enriched:
+            assert ef.plain_english_summary and len(ef.plain_english_summary) > 20
+            assert ef.non_coder_analogy and len(ef.non_coder_analogy) > 15
+            assert "electrical panel" not in ef.non_coder_analogy, f"{ef.rule_id} fell through to generic analogy"
+            assert ef.business_impact and len(ef.business_impact) > 15
+            assert ef.management_action_steps and len(ef.management_action_steps) >= 1
+            assert ef.raci_responsible
+            assert ef.raci_accountable
+            assert ef.best_fix_location is not None
+            # Verify no out-of-Literal mutations occurred during enrichment
+            validated = Finding.model_validate(ef.model_dump())
+            assert validated.rule_id == ef.rule_id
+

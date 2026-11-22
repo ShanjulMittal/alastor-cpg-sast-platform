@@ -57,10 +57,16 @@ from models import (
     PastaAssessmentResponse,
     PastaGateOverrideRequest,
     PastaProfileUpdateRequest,
+    GraphEngineMode,
+    ScanScopeTelemetry,
+    CommunityMapResponse,
+    LanguageCapabilitiesResponse,
 )
 from database.neo4j_client import Neo4jClient
 from database.batch_ingestor import BatchIngestor
+from database.graph_store import GraphStoreManager
 from engine.rule_executor import RuleExecutor
+from engine.community_detector import detect_code_communities, build_community_graph_view
 from engine.vuln_extractor import VulnExtractorEngine
 from engine.enterprise_manager import EnterpriseManager
 from engine.frontier_ai_engine import FrontierAiEngine
@@ -80,7 +86,8 @@ from engine.remediation_patcher import (
     synthesize_single_node_context_graph,
     undo_workspace_patch,
 )
-from compiler.scanner import scan_directory, CODE_EXTENSIONS, IGNORE_DIRS
+from compiler.scanner import ScannedFile, scan_directory, scan_directory_with_telemetry, CODE_EXTENSIONS, IGNORE_DIRS
+from compiler.language_registry import list_language_capabilities
 from compiler.ast_parser import ASTNormalizer
 from compiler.cfg_builder import CFGBuilder
 from compiler.dfg_builder import DFGBuilder
@@ -157,6 +164,16 @@ secret_validator_engine = get_secret_validator_engine(enterprise_mgr.platform_ro
 api_operations_engine = get_api_operations_engine()
 current_scan_dir: str = enterprise_mgr.platform_root
 current_app_tree: Optional[AppTreeSummary] = None
+graph_store_mgr = GraphStoreManager.get_instance(
+    neo4j_client=neo4j_client,
+    vault_dir=os.path.join(enterprise_mgr.platform_root, ".alastor_vault"),
+)
+_last_scope_telemetry: Optional[ScanScopeTelemetry] = None
+_last_languages_detected: Dict[str, int] = {}
+_last_scanned_files: List[ScannedFile] = []
+_last_cpg_nodes: List[CPGNode] = []
+_last_cpg_edges: List[CPGEdge] = []
+current_community_map: Optional[CommunityMapResponse] = None
 
 
 def _sanitize_log(value: Any) -> str:
@@ -885,19 +902,43 @@ def _resolve_remote_url_target(
 
 
 def startup_event():
-    """Initializes Neo4j connection, verifies APOC, applies graph constraints, and restores cached scan state."""
-    global current_scan_dir, current_app_tree, _cached_findings, _cached_findings_time, _last_neo4j_ingested_dir
+    """Initializes dual-engine GraphStore (Neo4j primary or Zero-Docker Embedded SQLite fallback) and restores cached scan state."""
+    global current_scan_dir, current_app_tree, current_community_map
+    global _cached_findings, _cached_findings_time, _last_neo4j_ingested_dir
+    global _last_languages_detected, _last_scope_telemetry
     _default_root_norm = os.path.normcase(os.path.abspath(enterprise_mgr.platform_root))
     _caller_overrode_scan_dir = (
         not current_scan_dir
         or os.path.normcase(os.path.abspath(current_scan_dir)) != _default_root_norm
     )
     try:
-        neo4j_client.verify_connectivity_and_apoc()
-        neo4j_client.init_schema()
-        logger.info("Database initialized successfully.")
+        active_mode = graph_store_mgr.ensure_backend(force_probe=True)
+        graph_store_mgr.init_schema()
+        logger.info("GraphStore initialized successfully in mode: %s", active_mode)
+
+        # Restore persisted Leiden community map and telemetry metadata regardless of mode
+        try:
+            restored_cm = graph_store_mgr.get_communities()
+            if restored_cm.graph_engine_mode != active_mode:
+                restored_cm = restored_cm.model_copy(update={"graph_engine_mode": active_mode})
+            current_community_map = restored_cm
+        except Exception as cm_exc:
+            logger.warning("Could not restore persisted community map: %s", _sanitize_log(cm_exc))
+            current_community_map = CommunityMapResponse(graph_engine_mode=active_mode)
+
+        try:
+            saved_langs = graph_store_mgr.get_meta("languages_detected")
+            if isinstance(saved_langs, dict):
+                _last_languages_detected = {str(k): int(v) for k, v in saved_langs.items()}
+            saved_scope = graph_store_mgr.get_meta("scope_telemetry")
+            if isinstance(saved_scope, dict):
+                _last_scope_telemetry = ScanScopeTelemetry.model_validate(saved_scope)
+        except Exception:
+            pass
+
         if _caller_overrode_scan_dir:
             return
+
         # Find the most recently scanned project in scan_history_cache.json if available
         _latest_ts = ""
         for _entry in enterprise_mgr.project_scan_cache.values():
@@ -906,6 +947,10 @@ def startup_event():
             if _ep and os.path.exists(_ep) and _ts > _latest_ts:
                 _latest_ts = _ts
                 current_scan_dir = os.path.abspath(_ep)
+        if not _latest_ts:
+            saved_root = graph_store_mgr.get_meta("last_scan_root")
+            if isinstance(saved_root, str) and saved_root and os.path.exists(saved_root):
+                current_scan_dir = os.path.abspath(saved_root)
         if current_scan_dir:
             _last_neo4j_ingested_dir = os.path.normcase(os.path.abspath(current_scan_dir))
             enterprise_mgr.set_active_scan_target(current_scan_dir)
@@ -920,6 +965,10 @@ def startup_event():
                         current_app_tree = AppTreeAnalyzer(current_scan_dir).analyze()
                 except Exception:
                     pass
+            if current_app_tree is None:
+                persisted_tree = graph_store_mgr._embedded_store.get_app_tree()
+                if persisted_tree is not None:
+                    current_app_tree = persisted_tree
             if cached.get("latest_findings") is not None:
                 try:
                     _cached_findings = [Finding(**f) for f in cached["latest_findings"]]
@@ -928,7 +977,8 @@ def startup_event():
                     pass
             enterprise_mgr._sync_active_project_metrics(get_or_compute_findings())
         elif os.path.exists(current_scan_dir):
-            current_app_tree = AppTreeAnalyzer(current_scan_dir).analyze()
+            persisted_tree = graph_store_mgr._embedded_store.get_app_tree()
+            current_app_tree = persisted_tree or AppTreeAnalyzer(current_scan_dir).analyze()
             initial_findings = get_or_compute_findings(force_refresh=True)
             enterprise_mgr.record_scan_snapshot(
                 resolved_path=current_scan_dir,
@@ -940,16 +990,31 @@ def startup_event():
                 tech_stack=current_app_tree.detected_tech_stack,
             )
     except Exception as e:
-        logger.error(f"Failed to initialize Neo4j: {e}", exc_info=True)
+        logger.error("Failed to initialize GraphStore: %s", _sanitize_log(e), exc_info=True)
 
 
 def shutdown_event():
+    try:
+        graph_store_mgr.close()
+    except Exception:
+        pass
     neo4j_client.close()
 
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "HEALTHY", "neo4j": "CONNECTED"}
+    active_mode = graph_store_mgr.mode
+    return {
+        "status": "HEALTHY",
+        "neo4j": "CONNECTED" if active_mode == "NEO4J_APOC" else "OFFLINE_EMBEDDED_FALLBACK",
+        "graph_engine_mode": active_mode,
+    }
+
+
+@app.get("/api/languages/capabilities", response_model=LanguageCapabilitiesResponse)
+def get_language_capabilities():
+    """Returns all 18 supported polyglot language families, loaded Tree-sitter parser readiness, extensions, and rule counts."""
+    return list_language_capabilities()
 
 
 @app.get("/api/fs/browse", response_model=FsBrowseResponse)
@@ -1183,8 +1248,10 @@ def scan_project(req: ScanRequest):
 
 
 def _scan_project_locked(req: ScanRequest) -> ScanResponse:
-    """Lock-serialized implementation of `scan_project` preventing concurrent Neo4j ingestion races."""
-    global current_scan_dir, current_app_tree
+    """Lock-serialized implementation of `scan_project` preventing concurrent GraphStore ingestion races."""
+    global current_scan_dir, current_app_tree, current_community_map
+    global _last_scope_telemetry, _last_languages_detected, _last_scanned_files
+    global _last_cpg_nodes, _last_cpg_edges
     target_path = req.target_path.strip()
     norm_remote_cand = _normalize_user_git_input(target_path)
     base_scan_dir = os.getenv("CPG_SCAN_BASE", os.getcwd())
@@ -1280,18 +1347,21 @@ def _scan_project_locked(req: ScanRequest) -> ScanResponse:
         tree_analyzer = AppTreeAnalyzer(resolved_path)
         current_app_tree = tree_analyzer.analyze()
 
-        # Pass B: Discover CPG-compatible source files (.py, .js, .jsx, .ts, .tsx)
-        scanned_files = scan_directory(resolved_path)
+        # Pass B: Discover CPG-compatible polyglot source files across all 18 language families
+        scanned_files, scope_telemetry = scan_directory_with_telemetry(resolved_path)
+        _last_scope_telemetry = scope_telemetry
+        _last_languages_detected = dict(scope_telemetry.languages_breakdown)
+        _last_scanned_files = scanned_files
         total_discovered = current_app_tree.total_files
 
-        # Ingest into Neo4j
+        # Select active GraphStore backend (Neo4j primary or Zero-Docker Embedded SQLite fallback)
         global _cached_findings, _cached_external_findings, _cached_advisories, _last_neo4j_ingested_dir
         _cached_findings = None
         _cached_external_findings = []
         _cached_advisories = []
-        neo4j_client.clear_database()
-        neo4j_client.init_schema()
-        ingestor = BatchIngestor(neo4j_client)
+        active_mode = graph_store_mgr.ensure_backend(force_probe=True)
+        graph_store_mgr.clear_database()
+        graph_store_mgr.init_schema()
 
         update_progress(
             is_scanning=True,
@@ -1301,7 +1371,7 @@ def _scan_project_locked(req: ScanRequest) -> ScanResponse:
             files_done=0,
             total_files=total_discovered,
             percent=12,
-            message=f"Ingesting {total_discovered} files & architecture into graph database..."
+            message=f"Ingesting {total_discovered} files & architecture into {active_mode} graph store..."
         )
 
         def app_tree_callback(msg: str, cur: int, tot: int):
@@ -1316,11 +1386,24 @@ def _scan_project_locked(req: ScanRequest) -> ScanResponse:
                 message=f"{msg} ({cur}/{tot})"
             )
 
-        tree_nodes_created, tree_edges_created = ingestor.ingest_app_tree(
-            current_app_tree, progress_callback=app_tree_callback
-        )
+        if active_mode == "NEO4J_APOC":
+            ingestor = BatchIngestor(neo4j_client)
+            tree_nodes_created, tree_edges_created = ingestor.ingest_app_tree(
+                current_app_tree, progress_callback=app_tree_callback
+            )
+            graph_store_mgr._embedded_store.ingest_app_tree(current_app_tree)
+        else:
+            graph_store_mgr.ingest_app_tree(current_app_tree)
+            tree_nodes_created = current_app_tree.total_files + current_app_tree.total_directories
+            tree_edges_created = max(0, tree_nodes_created - 1) + len(current_app_tree.cross_file_edges or [])
+            app_tree_callback(
+                "Persisted architecture tree into embedded SQLite",
+                total_discovered,
+                max(1, total_discovered),
+            )
         logger.info(
-            "App tree ingested into Neo4j: %d nodes, %d edges",
+            "App tree ingested (%s): %d nodes, %d edges",
+            active_mode,
             tree_nodes_created,
             tree_edges_created,
         )
@@ -1328,13 +1411,29 @@ def _scan_project_locked(req: ScanRequest) -> ScanResponse:
         # If no CPG source files exist, we still succeed with complete Application Tree + SCA/IaC/Secret mapping!
         if not scanned_files:
             logger.info("Scanned %d application files (0 AST code files).", int(current_app_tree.total_files))
+            _last_cpg_nodes = []
+            _last_cpg_edges = []
             _last_neo4j_ingested_dir = os.path.normcase(os.path.abspath(resolved_path))
             _cached_external_findings = []
             _cached_advisories = []
+            graph_store_mgr.save_meta("last_scan_root", resolved_path)
+            graph_store_mgr.save_meta("languages_detected", _last_languages_detected)
+            graph_store_mgr.save_meta(
+                "scope_telemetry",
+                _last_scope_telemetry.model_dump() if _last_scope_telemetry else None,
+            )
             enterprise_mgr.set_active_scan_target(
                 resolved_path, current_app_tree.detected_tech_stack, repo_meta=remote_repo_meta
             )
             scanned_findings = get_or_compute_findings(force_refresh=True)
+            current_community_map = detect_code_communities(
+                [],
+                [],
+                current_app_tree,
+                scanned_findings,
+                graph_engine_mode=graph_store_mgr.mode,
+            )
+            graph_store_mgr.save_communities(current_community_map)
             enterprise_mgr.record_scan_snapshot(
                 resolved_path=resolved_path,
                 findings=scanned_findings,
@@ -1369,6 +1468,10 @@ def _scan_project_locked(req: ScanRequest) -> ScanResponse:
                 branch=(remote_repo_meta or {}).get("branch"),
                 is_private_repo=(remote_repo_meta or {}).get("is_private"),
                 display_name=(remote_repo_meta or {}).get("display_name"),
+                graph_engine_mode=graph_store_mgr.mode,
+                languages_detected=dict(_last_languages_detected),
+                scope_telemetry=_last_scope_telemetry,
+                communities_count=current_community_map.total_communities,
             )
 
         num_code_files = len(scanned_files)
@@ -1564,23 +1667,26 @@ def _scan_project_locked(req: ScanRequest) -> ScanResponse:
         except Exception as e:
             logger.warning(f"Skipping Call Graph resolution: {e}")
 
-        # Pass 5: Ingest CPG into Neo4j
+        # Pass 5: Ingest CPG into active GraphStore (Neo4j primary or Embedded SQLite fallback)
+        _last_cpg_nodes = all_nodes
+        _last_cpg_edges = all_edges
+        ingest_label = "Neo4j Ingestion" if active_mode == "NEO4J_APOC" else "Embedded SQLite CPG Ingestion"
         update_progress(
             is_scanning=True,
             phase="CPG_INGEST",
-            current_pass="Pass 7/7: Neo4j Ingestion",
+            current_pass=f"Pass 7/7: {ingest_label}",
             current_file="",
             files_done=0,
             total_files=len(all_nodes) + len(all_edges),
             percent=88,
-            message=f"Batch ingesting {len(all_nodes)} CPG nodes and {len(all_edges)} relationships..."
+            message=f"Batch ingesting {len(all_nodes)} CPG nodes and {len(all_edges)} relationships into {active_mode}..."
         )
 
         def cpg_callback(msg: str, cur: int, tot: int):
             update_progress(
                 is_scanning=True,
                 phase="CPG_INGEST",
-                current_pass="Pass 7/7: Neo4j Ingestion",
+                current_pass=f"Pass 7/7: {ingest_label}",
                 current_file="",
                 files_done=cur,
                 total_files=tot,
@@ -1588,18 +1694,35 @@ def _scan_project_locked(req: ScanRequest) -> ScanResponse:
                 message=f"{msg} ({cur}/{tot})"
             )
 
-        cpg_nodes_created, cpg_edges_created = ingestor.ingest(
+        cpg_nodes_created, cpg_edges_created = graph_store_mgr.ingest_cpg(
             all_nodes, all_edges, progress_callback=cpg_callback
         )
         _last_neo4j_ingested_dir = os.path.normcase(os.path.abspath(resolved_path))
         _cached_external_findings = []
         _cached_advisories = []
+        graph_store_mgr.save_meta("last_scan_root", resolved_path)
+        graph_store_mgr.save_meta("languages_detected", _last_languages_detected)
+        graph_store_mgr.save_meta(
+            "scope_telemetry",
+            _last_scope_telemetry.model_dump() if _last_scope_telemetry else None,
+        )
 
         # Synchronize the active application in enterprise_mgr.projects and refresh findings/metrics
         enterprise_mgr.set_active_scan_target(
             resolved_path, current_app_tree.detected_tech_stack, repo_meta=remote_repo_meta
         )
         scanned_findings = get_or_compute_findings(force_refresh=True)
+
+        # Compute & persist deterministic Leiden architectural communities and polyglot bridges
+        current_community_map = detect_code_communities(
+            all_nodes,
+            all_edges,
+            current_app_tree,
+            scanned_findings,
+            graph_engine_mode=graph_store_mgr.mode,
+        )
+        graph_store_mgr.save_communities(current_community_map)
+
         enterprise_mgr.record_scan_snapshot(
             resolved_path=resolved_path,
             findings=scanned_findings,
@@ -1620,7 +1743,7 @@ def _scan_project_locked(req: ScanRequest) -> ScanResponse:
             files_done=num_code_files,
             total_files=num_code_files,
             percent=100,
-            message=f"Scan complete! {cpg_nodes_created} CPG nodes, {cpg_edges_created} edges mapped."
+            message=f"Scan complete! {cpg_nodes_created} CPG nodes, {cpg_edges_created} edges, {current_community_map.total_communities} communities mapped."
         )
 
         return ScanResponse(
@@ -1637,6 +1760,10 @@ def _scan_project_locked(req: ScanRequest) -> ScanResponse:
             branch=(remote_repo_meta or {}).get("branch"),
             is_private_repo=(remote_repo_meta or {}).get("is_private"),
             display_name=(remote_repo_meta or {}).get("display_name"),
+            graph_engine_mode=graph_store_mgr.mode,
+            languages_detected=dict(_last_languages_detected),
+            scope_telemetry=_last_scope_telemetry,
+            communities_count=current_community_map.total_communities,
         )
     except Exception as exc:
         update_progress(
@@ -1702,8 +1829,29 @@ def get_or_compute_findings(force_refresh: bool = False) -> List[Finding]:
                 root_check = os.path.dirname(target_dir) if os.path.isfile(target_dir) else target_dir
                 sast_findings: List[Finding] = []
                 if _last_neo4j_ingested_dir is None or _last_neo4j_ingested_dir == _norm_target_dir:
-                    executor = RuleExecutor(neo4j_client)
-                    raw_sast = executor.run_all_rules()
+                    if graph_store_mgr.mode == "EMBEDDED_SQLITE":
+                        raw_sast = graph_store_mgr.run_cpg_rules(
+                            scanned_files=_last_scanned_files or None,
+                        )
+                    else:
+                        try:
+                            executor = RuleExecutor(neo4j_client)
+                            raw_sast = executor.execute_all_rules_with_polyglot(
+                                scanned_files=_last_scanned_files or None,
+                                all_nodes=_last_cpg_nodes or None,
+                                all_edges=_last_cpg_edges or None,
+                            )
+                        except Exception as neo_rule_err:
+                            if os.environ.get("ALASTOR_GRAPH_ENGINE", "auto").strip().lower() == "neo4j":
+                                raise
+                            logger.warning(
+                                "Neo4j rule execution degraded (%s); falling back to Embedded SQLite CPG rules.",
+                                _sanitize_log(neo_rule_err),
+                            )
+                            graph_store_mgr.ensure_backend(force_probe=True)
+                            raw_sast = graph_store_mgr.run_cpg_rules(
+                                scanned_files=_last_scanned_files or None,
+                            )
                     for sf in raw_sast:
                         fp = sf.path_nodes[-1].get("filepath", "") if sf.path_nodes else ""
                         if fp and os.path.exists(os.path.join(root_check, fp)):
@@ -2290,7 +2438,7 @@ def export_security_report(format: str = Query("markdown", description="markdown
 
 @app.get("/api/metrics", response_model=MetricsResponse)
 def get_metrics():
-    """Computes overall summary metrics for the TopMetricsBar."""
+    """Computes overall summary metrics for the TopMetricsBar in both Neo4j and Embedded SQLite modes."""
     global current_app_tree
     _norm_cur = os.path.normcase(os.path.abspath(current_scan_dir)) if current_scan_dir else ""
     _cached_m = enterprise_mgr.get_cached_scan_for_project(current_scan_dir) if current_scan_dir else None
@@ -2298,9 +2446,9 @@ def get_metrics():
         node_count = int(_cached_m.get("nodes_created", 0))
         edge_count = int(_cached_m.get("edges_created", 0))
     else:
-        with neo4j_client.driver.session() as session:
-            node_count = session.run("MATCH (n:CPGNode) RETURN count(n) AS c").single()["c"]
-            edge_count = session.run("MATCH ()-[r]->() RETURN count(r) AS c").single()["c"]
+        counts = graph_store_mgr.get_counts()
+        node_count = int(counts.get("nodes", 0))
+        edge_count = int(counts.get("edges", 0))
 
     findings = get_or_compute_findings()
     crit = sum(1 for f in findings if f.severity == "CRITICAL")
@@ -2311,6 +2459,11 @@ def get_metrics():
     categories = current_app_tree.category_counts if current_app_tree else {}
     tech_stack = current_app_tree.detected_tech_stack if current_app_tree else []
     total_files = current_app_tree.total_files if current_app_tree else 0
+    comm_count = (
+        current_community_map.total_communities
+        if current_community_map is not None
+        else graph_store_mgr.get_communities().total_communities
+    )
 
     return MetricsResponse(
         total_nodes=node_count,
@@ -2322,7 +2475,11 @@ def get_metrics():
         low_count=low,
         total_app_files=total_files,
         categories=categories,
-        tech_stack=tech_stack
+        tech_stack=tech_stack,
+        graph_engine_mode=graph_store_mgr.mode,
+        languages_detected=dict(_last_languages_detected),
+        scope_telemetry=_last_scope_telemetry,
+        communities_count=comm_count,
     )
 
 
@@ -2776,10 +2933,26 @@ def remediate_batch_apply(req: BatchRemediateRequest):
 
 @app.get("/api/node-at-location")
 def get_node_at_location(filepath: str = Query(...), line: int = Query(...)):
-    """Finds the most specific CPG node matching filepath and line number."""
+    """Finds the most specific CPG node matching filepath and line number in both Neo4j and Embedded SQLite modes."""
+    if graph_store_mgr.mode == "EMBEDDED_SQLITE":
+        emb = graph_store_mgr._embedded_store
+        emb._ensure_loaded()
+        norm_req = filepath.replace("\\", "/").lstrip("/")
+        candidates = []
+        for n in emb._nodes.values():
+            n_fp = (n.filepath or "").replace("\\", "/").lstrip("/")
+            if not n_fp:
+                continue
+            if (n_fp.endswith(norm_req) or norm_req.endswith(n_fp)) and n.start_line <= line <= n.end_line:
+                candidates.append(n)
+        if candidates:
+            candidates.sort(key=lambda n: (n.end_line - n.start_line, n.end_col - n.start_col))
+            return {"node": candidates[0].model_dump()}
+        return {"node": None}
+
     query = """
     MATCH (n:CPGNode)
-    WHERE n.filepath ENDS WITH $filepath OR $filepath ENDS WITH n.filepath
+    WHERE (n.filepath ENDS WITH $filepath OR $filepath ENDS WITH n.filepath)
       AND n.start_line <= $line <= n.end_line
     RETURN properties(n) AS node
     ORDER BY (n.end_line - n.start_line) ASC, (n.end_col - n.start_col) ASC
@@ -2901,14 +3074,29 @@ def _synthesize_app_tree_nodes_and_edges(
     return nodes_map, edges_map
 
 
+@app.get("/api/graph/communities", response_model=CommunityMapResponse)
+def get_graph_communities():
+    """Returns the active scan's deterministic Leiden architectural community & polyglot bridge map."""
+    cm = current_community_map or graph_store_mgr.get_communities()
+    if cm.graph_engine_mode != graph_store_mgr.mode:
+        cm = cm.model_copy(update={"graph_engine_mode": graph_store_mgr.mode})
+    return cm
+
+
 @app.get("/api/graph")
 def get_graph(
-    view_mode: str = Query("FINDING_PATH", description="FULL_CPG, DFG_ONLY, CFG_ONLY, CALL_GRAPH, ENTRYPOINT_GRAPH, FINDING_PATH, APP_TREE"),
+    view_mode: str = Query("FINDING_PATH", description="FULL_CPG, DFG_ONLY, CFG_ONLY, CALL_GRAPH, ENTRYPOINT_GRAPH, FINDING_PATH, APP_TREE, SPIDER, COMMUNITY_MAP"),
     finding_id: Optional[str] = Query(None),
     filepath: Optional[str] = Query(None)
 ):
     """Returns nodes and edges filtered by view mode with bounded limits for sub-50ms ReactFlow canvas rendering."""
     global current_app_tree
+    if view_mode == "COMMUNITY_MAP":
+        cm = current_community_map or graph_store_mgr.get_communities()
+        if cm.graph_engine_mode != graph_store_mgr.mode:
+            cm = cm.model_copy(update={"graph_engine_mode": graph_store_mgr.mode})
+        return build_community_graph_view(cm)
+
     if view_mode == "FINDING_PATH":
         if not finding_id:
             return {"nodes": [], "edges": []}
@@ -3195,11 +3383,24 @@ def get_graph(
 
         return {"nodes": _ep_nodes, "edges": _humanize_graph_edges(_ep_edges)}
 
+    if view_mode == "SPIDER":
+        spider_view = graph_store_mgr.query_graph_view(
+            view_mode="SPIDER",
+            finding_id=finding_id,
+            filepath=filepath,
+            app_tree=current_app_tree,
+        )
+        return {
+            "view_mode": "SPIDER",
+            "nodes": spider_view.get("nodes") or [],
+            "edges": _humanize_graph_edges(spider_view.get("edges") or []),
+        }
+
     if view_mode == "APP_TREE":
         raw_nodes: List[Any] = []
         raw_edges: List[Any] = []
         try:
-            if neo4j_client.driver is not None:
+            if graph_store_mgr.mode == "NEO4J_APOC" and neo4j_client.driver is not None:
                 with neo4j_client.driver.session() as session:
                     q = """
                     MATCH (s) WHERE s:AppDirectory OR s:AppFile
@@ -3282,54 +3483,72 @@ def get_graph(
     else:
         rel_filter = ""
 
-    try:
-        if neo4j_client.driver is not None:
-            with neo4j_client.driver.session() as session:
-                def _run_cpg_graph_query(_w_stmt: str, _q_params: Dict[str, Any]):
-                    if view_mode == "CALL_GRAPH":
-                        _cg_q = f"""
-                        MATCH (s:CPGNode)-[r:CALLS]->(t:CPGNode)
+    _use_embedded_graph_query = (
+        graph_store_mgr.mode == "EMBEDDED_SQLITE"
+        and (
+            os.environ.get("ALASTOR_GRAPH_ENGINE", "auto").strip().lower() == "embedded"
+            or neo4j_client.driver is None
+            or hasattr(neo4j_client.driver, "verify_connectivity")
+        )
+    )
+    if _use_embedded_graph_query:
+        embedded_view = graph_store_mgr.query_graph_view(
+            view_mode=view_mode,
+            finding_id=finding_id,
+            filepath=filepath,
+            app_tree=current_app_tree,
+        )
+        raw_nodes = embedded_view.get("nodes") or []
+        raw_edges = embedded_view.get("edges") or []
+    else:
+        try:
+            if neo4j_client.driver is not None:
+                with neo4j_client.driver.session() as session:
+                    def _run_cpg_graph_query(_w_stmt: str, _q_params: Dict[str, Any]):
+                        if view_mode == "CALL_GRAPH":
+                            _cg_q = f"""
+                            MATCH (s:CPGNode)-[r:CALLS]->(t:CPGNode)
+                            {_w_stmt}
+                            OPTIONAL MATCH (callerFn:Function)-[:AST_CHILD*1..4]->(s)
+                            WITH callerFn, s, r, t LIMIT 100
+                            WITH collect(DISTINCT properties(s)) AS s_nodes,
+                                 collect(DISTINCT properties(t)) AS t_nodes,
+                                 [cf IN collect(DISTINCT callerFn) WHERE cf IS NOT NULL | properties(cf)] AS cf_nodes,
+                                 collect(DISTINCT {{id: toString(coalesce(r.id, elementId(r))), source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS call_edges,
+                                 [ce IN collect(DISTINCT CASE WHEN callerFn IS NOT NULL THEN {{id: 'def-' + callerFn.id + '-' + s.id, source: callerFn.id, target: s.id, type: 'DEFINES', var_name: 'calls'}} ELSE NULL END) WHERE ce IS NOT NULL] AS def_edges
+                            RETURN (s_nodes + t_nodes + cf_nodes) AS all_nodes,
+                                   (call_edges + def_edges) AS all_edges
+                            """
+                            return session.run(_cg_q, **_q_params).single()
+                        if rel_filter:
+                            _std_q = f"""
+                            MATCH (s:CPGNode)-[r{rel_filter}]->(t:CPGNode)
+                            {_w_stmt}
+                            WITH s, r, t LIMIT 240
+                            RETURN collect(DISTINCT properties(s)) + collect(DISTINCT properties(t)) AS all_nodes,
+                                   collect(DISTINCT {{id: toString(coalesce(r.id, elementId(r))), source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS all_edges
+                            """
+                            return session.run(_std_q, **_q_params).single()
+                        _full_q = f"""
+                        MATCH (s:CPGNode)-[r]->(t:CPGNode)
                         {_w_stmt}
-                        OPTIONAL MATCH (callerFn:Function)-[:AST_CHILD*1..4]->(s)
-                        WITH callerFn, s, r, t LIMIT 100
-                        WITH collect(DISTINCT properties(s)) AS s_nodes,
-                             collect(DISTINCT properties(t)) AS t_nodes,
-                             [cf IN collect(DISTINCT callerFn) WHERE cf IS NOT NULL | properties(cf)] AS cf_nodes,
-                             collect(DISTINCT {{id: toString(coalesce(r.id, elementId(r))), source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS call_edges,
-                             [ce IN collect(DISTINCT CASE WHEN callerFn IS NOT NULL THEN {{id: 'def-' + callerFn.id + '-' + s.id, source: callerFn.id, target: s.id, type: 'DEFINES', var_name: 'calls'}} ELSE NULL END) WHERE ce IS NOT NULL] AS def_edges
-                        RETURN (s_nodes + t_nodes + cf_nodes) AS all_nodes,
-                               (call_edges + def_edges) AS all_edges
-                        """
-                        return session.run(_cg_q, **_q_params).single()
-                    if rel_filter:
-                        _std_q = f"""
-                        MATCH (s:CPGNode)-[r{rel_filter}]->(t:CPGNode)
-                        {_w_stmt}
-                        WITH s, r, t LIMIT 240
+                        WITH s, r, t LIMIT 180
                         RETURN collect(DISTINCT properties(s)) + collect(DISTINCT properties(t)) AS all_nodes,
                                collect(DISTINCT {{id: toString(coalesce(r.id, elementId(r))), source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS all_edges
                         """
-                        return session.run(_std_q, **_q_params).single()
-                    _full_q = f"""
-                    MATCH (s:CPGNode)-[r]->(t:CPGNode)
-                    {_w_stmt}
-                    WITH s, r, t LIMIT 180
-                    RETURN collect(DISTINCT properties(s)) + collect(DISTINCT properties(t)) AS all_nodes,
-                           collect(DISTINCT {{id: toString(coalesce(r.id, elementId(r))), source: s.id, target: t.id, type: type(r), var_name: r.var_name}}) AS all_edges
-                    """
-                    return session.run(_full_q, **_q_params).single()
+                        return session.run(_full_q, **_q_params).single()
 
-                result = _run_cpg_graph_query(where_stmt, params)
-                raw_nodes = result["all_nodes"] if result else []
-                raw_edges = result["all_edges"] if result else []
-
-                # If active file is a manifest/config or has 0 edges for this view_mode, fall back to Project-Wide graph!
-                if not raw_edges and where_stmt:
-                    result = _run_cpg_graph_query("", {})
+                    result = _run_cpg_graph_query(where_stmt, params)
                     raw_nodes = result["all_nodes"] if result else []
                     raw_edges = result["all_edges"] if result else []
-    except Exception as neo_cpg_err:
-        logger.warning("CPG graph query degraded (%s): %s", _sanitize_log(view_mode), _sanitize_log(neo_cpg_err))
+
+                    # If active file is a manifest/config or has 0 edges for this view_mode, fall back to Project-Wide graph!
+                    if not raw_edges and where_stmt:
+                        result = _run_cpg_graph_query("", {})
+                        raw_nodes = result["all_nodes"] if result else []
+                        raw_edges = result["all_edges"] if result else []
+        except Exception as neo_cpg_err:
+            logger.warning("CPG graph query degraded (%s): %s", _sanitize_log(view_mode), _sanitize_log(neo_cpg_err))
 
     # Deduplicate nodes & normalize non-empty edge IDs
     unique_nodes: Dict[str, Dict[str, Any]] = {}
@@ -3850,10 +4069,11 @@ def toggle_security_query_rule(rule_id: str):
 
 @app.post("/api/settings/sanitizers", response_model=CustomSanitizerRule)
 def add_custom_sanitizer_rule(req: AddCustomSanitizerRequest):
-    """Registers a custom sanitizer function and dynamically marks matching CPG nodes in Neo4j."""
+    """Registers a custom sanitizer function and dynamically marks matching CPG nodes in the active GraphStore."""
     global _cached_findings
     try:
-        san = enterprise_mgr.add_custom_sanitizer(req, neo4j_client=neo4j_client)
+        active_neo4j = neo4j_client if graph_store_mgr.mode == "NEO4J_APOC" else None
+        san = enterprise_mgr.add_custom_sanitizer(req, neo4j_client=active_neo4j)
         _cached_findings = None
         get_or_compute_findings(force_refresh=True)
         return san
@@ -3863,9 +4083,10 @@ def add_custom_sanitizer_rule(req: AddCustomSanitizerRequest):
 
 @app.post("/api/settings/sanitizers/{san_id}/toggle", response_model=CustomSanitizerRule)
 def toggle_custom_sanitizer_rule(san_id: str):
-    """Toggles a custom sanitizer active/inactive and updates Neo4j CPG nodes."""
+    """Toggles a custom sanitizer active/inactive and updates active GraphStore CPG nodes."""
     global _cached_findings
-    san = enterprise_mgr.toggle_custom_sanitizer(san_id, neo4j_client=neo4j_client)
+    active_neo4j = neo4j_client if graph_store_mgr.mode == "NEO4J_APOC" else None
+    san = enterprise_mgr.toggle_custom_sanitizer(san_id, neo4j_client=active_neo4j)
     if not san:
         raise HTTPException(status_code=404, detail=f"Sanitizer not found: {san_id}")
     _cached_findings = None
@@ -4302,6 +4523,7 @@ def _safe_metrics_for_project_target(target_dir: str, findings: List[Finding]) -
         medium_count=med,
         low_count=low,
         total_app_files=int(cached_m.get("files_scanned") or 0),
+        graph_engine_mode=graph_store_mgr.mode,
     )
 
 
