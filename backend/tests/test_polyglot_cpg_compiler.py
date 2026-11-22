@@ -1631,5 +1631,76 @@ function renderAccum(elBad, elGood, user, a) {
         assert is_san is False
         assert sink_domain == "PATH"
 
+    def test_swift_and_solidity_if_else_branch_isolation_in_helpers(self):
+        from compiler.ast_parser import ASTNormalizer
+        from compiler.dfg_builder import DFGBuilder
+
+        swift_code = b"""
+func h1(u: String, a: Bool) -> String {
+    var out = u
+    if a {
+        out = escapeHtml(u)
+        return out
+    } else {
+        return out
+    }
+}
+
+func h2(u: String, a: Bool) -> String {
+    if a {
+        return u
+    } else {
+        let x = 1
+    }
+    return escapeHtml(u)
+}
+"""
+        sf_sw = _make_scanned_file("App/Helper.swift", swift_code, "swift")
+        norm_sw = ASTNormalizer(sf_sw)
+        ns_sw, _ = norm_sw.parse()
+        dfg_sw = DFGBuilder(sf_sw.filepath, sf_sw.content_bytes, "swift", ns_sw, norm_sw.node_map, {}, {})
+        dfg_sw.build()
+        assert "h1" not in dfg_sw.sanitizer_helpers
+        assert "h2" not in dfg_sw.sanitizer_helpers
+
+        sol_code = b"""
+pragma solidity ^0.8.0;
+contract Helper {
+    function clean(string memory x) public pure returns (string memory) {
+        return "ok";
+    }
+    function h(string memory u, bool a) public pure returns (string memory) {
+        string memory out = u;
+        if (a) {
+            out = clean(u);
+        } else {
+            out = u;
+        }
+        return out;
+    }
+}
+"""
+        sf_sol = _make_scanned_file("contracts/Helper.sol", sol_code, "solidity")
+        norm_sol = ASTNormalizer(sf_sol)
+        ns_sol, _ = norm_sol.parse()
+        dfg_sol = DFGBuilder(sf_sol.filepath, sf_sol.content_bytes, "solidity", ns_sol, norm_sol.node_map, {}, {})
+        dfg_sol.build()
+        assert "h" not in dfg_sol.sanitizer_helpers
+
+    def test_augmented_assign_does_not_mark_lhs_node_as_sanitizer_when_unsanitized(self):
+        js_code = b"""
+function f(user, a) {
+  let s = user.bio;
+  s += esc(a);
+  return s;
+}
+"""
+        sf = _make_scanned_file("ui/aug_node.js", js_code, "javascript")
+        nodes, _ = _compile_four_passes([sf])
+        s_nodes = [n for n in nodes if n.label == "Variable" and n.name == "s" and n.start_line == 4]
+        assert len(s_nodes) >= 1
+        assert all(n.is_sanitizer is False for n in s_nodes)
+
+
 
 

@@ -346,28 +346,47 @@ class DFGBuilder:
 
         # Flow-sensitive conditional branching: walk all elif/else alternatives and intersect on merge
         if ts_node.type in ("if_statement", "if_expression", "if"):
-            conseq = ts_node.child_by_field_name("consequence") or ts_node.child_by_field_name("body")
+            conseq = ts_node.child_by_field_name("consequence")
             alts = list(ts_node.children_by_field_name("alternative"))
+            body_children = list(ts_node.children_by_field_name("body"))
+            if conseq is None and body_children:
+                conseq = body_children[0]
+                if len(body_children) >= 2:
+                    alts.extend(body_children[1:])
+
             if not alts:
                 alts = [
                     ch for ch in ts_node.children
-                    if ch.type in ("elif_clause", "else_if_clause", "else_clause", "elsif", "else")
+                    if ch.is_named
+                    and ch.named_child_count > 0
+                    and ch.type in ("elif_clause", "else_if_clause", "else_clause", "elsif", "else")
                 ]
 
             before_san = {k: set(v) for k, v in local_san.items()}
 
             if conseq is None and not alts:
                 # Grammars like Swift `if_statement` have no `consequence`/`alternative` fields:
-                # walk children with a copy of local_san so returns are evaluated, then intersect with before_san.
-                branch_san = {k: set(v) for k, v in before_san.items()}
+                # walk each named child with its own isolated copy of `before_san` so assignments
+                # in one branch never leak into sibling branches, then intersect with `before_san`.
+                branch_states: List[Dict[str, Set[str]]] = [before_san]
                 for ch in ts_node.children:
-                    self._walk_helper_body(ch, branch_san, return_domains_list)
-                merged_keys = set(before_san.keys()) & set(branch_san.keys())
+                    if not ch.is_named:
+                        continue
+                    ch_san = {k: set(v) for k, v in before_san.items()}
+                    self._walk_helper_body(ch, ch_san, return_domains_list)
+                    branch_states.append(ch_san)
+                merged_keys = set(branch_states[0].keys())
+                for st in branch_states[1:]:
+                    merged_keys &= set(st.keys())
                 local_san.clear()
                 for k in merged_keys:
-                    doms = _combine_domains(before_san[k], branch_san[k])
-                    if doms:
-                        local_san[k] = doms
+                    acc = set(branch_states[0][k])
+                    for st in branch_states[1:]:
+                        acc = _combine_domains(acc, st[k])
+                        if not acc:
+                            break
+                    if acc:
+                        local_san[k] = acc
                 return
 
             branch_states: List[Dict[str, Set[str]]] = []
@@ -908,9 +927,11 @@ class DFGBuilder:
                     assign_cpg.is_sink = False
 
         # Propagate or kill sanitized_vars for normal variable LHS (not DOM property sinks)
+        is_aug_assign = assign_ts.type in _AUGMENTED_ASSIGN_TYPES
+        effective_domains: Set[str] = set()
         if not is_dom_html_sink:
             scope_san = self.sanitized_vars.setdefault(scope_id, {})
-            if assign_ts.type in _AUGMENTED_ASSIGN_TYPES:
+            if is_aug_assign:
                 prior = scope_san.get(target_var_name, set())
                 effective_domains = _combine_domains(prior, rhs_domains)
             else:
@@ -926,7 +947,8 @@ class DFGBuilder:
 
         # Emit DFG edges
         if (right_cpg and right_cpg.is_sanitizer) or (assign_cpg and assign_cpg.is_sanitizer):
-            target_cpg.is_sanitizer = True
+            if not is_aug_assign or effective_domains:
+                target_cpg.is_sanitizer = True
             if source_cpg and right_cpg and source_cpg.id != right_cpg.id:
                 self.emit_dfg_edge(source_cpg.id, right_cpg.id, var_name=target_var_name)
             for use_cpg in uses:
