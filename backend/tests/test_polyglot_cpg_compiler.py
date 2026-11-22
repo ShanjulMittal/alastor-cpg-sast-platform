@@ -659,3 +659,660 @@ class TestHostileRepoScopeWalker:
 
         with mock.patch("compiler.scanner.os.path.realpath", side_effect=OSError("bad reparse point")):
             assert _is_confined(str(repo), str(fake_file_link)) is False
+
+
+# ---------------------------------------------------------------------------
+# Task 2 TDD Suite: Unified 18-Language 4-Pass CPG Compiler,
+# Domain-Aware Sanitizer Tracking & 12 Polyglot Rule Packs (RULE-22..RULE-33)
+# ---------------------------------------------------------------------------
+
+POLYGLOT_FULL_SAMPLES = {
+    "python": (
+        "app.py",
+        b"def helper(x):\n    y = x\n    if y:\n        return y\n    for i in range(3):\n        print(y)\n    return ''\n\ndef main():\n    helper('a')\n",
+    ),
+    "javascript": (
+        "app.js",
+        b"function helper(x) {\n  const y = x;\n  if (y) { return y; }\n  for (let i = 0; i < 3; i++) { console.log(y); }\n  return '';\n}\nfunction main() { helper('a'); }\n",
+    ),
+    "typescript": (
+        "app.ts",
+        b"function helper(x: string): string {\n  const y: string = x;\n  if (y) { return y; }\n  for (let i = 0; i < 3; i++) { console.log(y); }\n  return '';\n}\nfunction main() { helper('a'); }\n",
+    ),
+    "tsx": (
+        "App.tsx",
+        b"function helper(x: string): string {\n  const y = x;\n  if (y) { return y; }\n  return '';\n}\nexport function App() { const v = helper('a'); return <div>{v}</div>; }\n",
+    ),
+    "go": (
+        "main.go",
+        b'package main\nfunc helper(x string) string {\n\ty := x\n\tif y != "" {\n\t\treturn y\n\t}\n\tfor i := 0; i < 3; i++ {\n\t\tprintln(y)\n\t}\n\treturn ""\n}\nfunc main() {\n\thelper("a")\n}\n',
+    ),
+    "java": (
+        "App.java",
+        b'class App {\n  String helper(String x) {\n    String y = x;\n    if (y != null) { return y; }\n    for (int i = 0; i < 3; i++) { System.out.println(y); }\n    return "";\n  }\n  void main() { helper("a"); }\n}\n',
+    ),
+    "kotlin": (
+        "App.kt",
+        b'fun helper(x: String): String {\n  val y = x\n  if (y.isNotEmpty()) { return y }\n  for (i in 1..3) { println(y) }\n  return ""\n}\nfun main() { helper("a") }\n',
+    ),
+    "csharp": (
+        "App.cs",
+        b'class App {\n  string Helper(string x) {\n    var y = x;\n    if (y != null) { return y; }\n    for (int i = 0; i < 3; i++) { Console.WriteLine(y); }\n    return "";\n  }\n  void Main() { Helper("a"); }\n}\n',
+    ),
+    "scala": (
+        "App.scala",
+        b'object App {\n  def helper(x: String): String = {\n    val y = x\n    if (y != null) return y\n    while (false) { println(y) }\n    y\n  }\n  def main(): Unit = { helper("a") }\n}\n',
+    ),
+    "c": (
+        "util.c",
+        b'int helper(char *x) {\n  char *y = x;\n  if (y) { return 1; }\n  for (int i = 0; i < 3; i++) { puts(y); }\n  return 0;\n}\nint main(void) { return helper("a"); }\n',
+    ),
+    "cpp": (
+        "util.cpp",
+        b'int helper(const char *x) {\n  const char *y = x;\n  if (y) { return 1; }\n  while (0) { puts(y); }\n  return 0;\n}\nint main() { return helper("a"); }\n',
+    ),
+    "rust": (
+        "lib.rs",
+        b'fn helper(x: &str) -> &str {\n  let y = x;\n  if !y.is_empty() { return y; }\n  while false { println!("{}", y); }\n  y\n}\nfn main() { helper("a"); }\n',
+    ),
+    "ruby": (
+        "app.rb",
+        b'def helper(x)\n  y = x\n  if y\n    return y\n  end\n  while false\n    puts(y)\n  end\n  y\nend\nhelper("a")\n',
+    ),
+    "php": (
+        "app.php",
+        b'<?php\nfunction helper($x) {\n  $y = $x;\n  if ($y) { return $y; }\n  for ($i = 0; $i < 3; $i++) { echo $y; }\n  return "";\n}\nhelper("a");\n?>\n',
+    ),
+    "swift": (
+        "App.swift",
+        b'func helper(x: String) -> String {\n  let y = x\n  if !y.isEmpty { return y }\n  while false { print(y) }\n  return ""\n}\nfunc main() { helper(x: "a") }\n',
+    ),
+    "dart": (
+        "main.dart",
+        b'String helper(String x) {\n  var y = x;\n  if (y.isNotEmpty) { return y; }\n  for (var i = 0; i < 3; i++) { print(y); }\n  return "";\n}\nvoid main() { helper("a"); }\n',
+    ),
+    "solidity": (
+        "Vault.sol",
+        b"pragma solidity ^0.8.0;\ncontract Vault {\n  function helper(uint x) public returns (uint) {\n    uint y = x;\n    if (y > 0) { return y; }\n    for (uint i = 0; i < 3; i++) { y += i; }\n    return y;\n  }\n  function run() public { helper(1); }\n}\n",
+    ),
+    "web_template": (
+        "page.html",
+        b'<html><body><form method="post"><input name="u" value="{{ user }}"></form><div><%- rawHtml %></div></body></html>\n',
+    ),
+}
+
+
+def _make_scanned_file(filepath: str, content_bytes: bytes, language: str) -> ScannedFile:
+    import hashlib
+    return ScannedFile(
+        filepath=filepath,
+        full_path=f"/virtual/{filepath}",
+        sha256=hashlib.sha256(content_bytes).hexdigest(),
+        language=language,
+        content_bytes=content_bytes,
+    )
+
+
+def _compile_four_passes(scanned_files):
+    from compiler.ast_parser import ASTNormalizer
+    from compiler.cfg_builder import CFGBuilder
+    from compiler.dfg_builder import DFGBuilder
+    from compiler.call_graph_builder import CallGraphBuilder
+
+    all_nodes = []
+    all_edges = []
+    node_map = {}
+    file_nodes = {}
+
+    for sf in scanned_files:
+        norm = ASTNormalizer(sf)
+        nodes, edges = norm.parse()
+        all_nodes.extend(nodes)
+        all_edges.extend(edges)
+        node_map.update(norm.node_map)
+        file_nodes[sf.filepath] = nodes
+
+    fn_params = {}
+    fn_returns = {}
+    func_by_id = {n.id: n for n in all_nodes if n.label == "Function"}
+    for n in all_nodes:
+        if n.label == "Parameter" and n.scope_id in func_by_id:
+            fn_params.setdefault(func_by_id[n.scope_id].name, []).append(n)
+        elif n.label == "Return" and n.scope_id in func_by_id:
+            fn_returns.setdefault(func_by_id[n.scope_id].name, []).append(n)
+
+    for sf in scanned_files:
+        f_nodes = file_nodes[sf.filepath]
+        cfg = CFGBuilder(sf.filepath, sf.content_bytes, sf.language, f_nodes, node_map)
+        all_edges.extend(cfg.build())
+
+    for sf in scanned_files:
+        f_nodes = file_nodes[sf.filepath]
+        dfg = DFGBuilder(sf.filepath, sf.content_bytes, sf.language, f_nodes, node_map, fn_params, fn_returns)
+        all_edges.extend(dfg.build())
+
+    cg = CallGraphBuilder(all_nodes)
+    all_edges.extend(cg.resolve_calls())
+    return all_nodes, all_edges
+
+
+class TestUnifiedPolyglotCPGCompiler:
+    def test_backward_compatible_exports_preserved(self):
+        from compiler.ast_parser import (
+            py_parser,
+            js_parser,
+            ts_parser,
+            tsx_parser,
+            compute_node_id,
+            compute_edge_id,
+            classify_taint,
+            ASTNormalizer,
+        )
+        assert py_parser is not None
+        assert js_parser is not None
+        assert ts_parser is not None
+        assert tsx_parser is not None
+        assert len(compute_node_id("a.py", "call", 0, 5)) == 24
+        assert len(compute_edge_id("a", "b", "CFG_NEXT")) == 24
+        is_src, is_sink, is_san = classify_taint("os.system(cmd)", "call", "os.system(cmd)")
+        assert is_sink is True and is_src is False and is_san is False
+        sf = _make_scanned_file("a.py", b"def f(): return 1\n", "python")
+        n1, e1 = ASTNormalizer(sf).normalize()
+        n2, e2 = ASTNormalizer(sf).parse()
+        assert [n.id for n in n1] == [n.id for n in n2]
+        assert [e.id for e in e1] == [e.id for e in e2]
+
+    @pytest.mark.parametrize("lang_key", sorted(EXPECTED_18_LANGUAGES))
+    def test_four_pass_cpg_compilation_for_each_of_18_languages(self, lang_key: str):
+        filepath, content = POLYGLOT_FULL_SAMPLES[lang_key]
+        sf = _make_scanned_file(filepath, content, lang_key)
+        nodes, edges = _compile_four_passes([sf])
+
+        assert len(nodes) >= 3
+        assert all(n.language == lang_key for n in nodes), f"Expected all nodes to carry language={lang_key}"
+        edge_types = {e.edge_type for e in edges}
+        assert "AST_CHILD" in edge_types
+
+        if lang_key == "web_template":
+            assert any("{{" in n.code or "<%-" in n.code for n in nodes)
+            assert any(e.edge_type in ("CFG_NEXT", "DFG_FLOWS_TO") for e in edges)
+        else:
+            func_nodes = [n for n in nodes if n.label == "Function"]
+            assert len(func_nodes) >= 1, f"No Function node for {lang_key}"
+            assert "CFG_NEXT" in edge_types, f"No CFG_NEXT edges for {lang_key}"
+            assert "DFG_FLOWS_TO" in edge_types, f"No DFG_FLOWS_TO edges for {lang_key}"
+            assert "CALLS" in edge_types, f"No CALLS edges for {lang_key}"
+
+    def test_polyglot_call_graph_separators_and_resolution_priority(self):
+        from compiler.call_graph_builder import CallGraphBuilder
+
+        f_local = CPGNode(
+            id="fn_local", label="Function", ast_type="function_declaration", name="Run",
+            code="func Run()", filepath="pkg/a.go", start_line=1, end_line=2,
+            start_col=0, end_col=10, scope_id="g", language="go",
+        )
+        f_samedir_go = CPGNode(
+            id="fn_samedir_go", label="Function", ast_type="function_declaration", name="Clean",
+            code="func Clean()", filepath="pkg/util.go", start_line=1, end_line=2,
+            start_col=0, end_col=10, scope_id="g", language="go",
+        )
+        f_otherdir_go = CPGNode(
+            id="fn_otherdir_go", label="Function", ast_type="function_declaration", name="Clean",
+            code="func Clean()", filepath="other/util.go", start_line=1, end_line=2,
+            start_col=0, end_col=10, scope_id="g", language="go",
+        )
+        f_cpp = CPGNode(
+            id="fn_cpp", label="Function", ast_type="function_definition", name="exec",
+            code="void exec()", filepath="native/svc.cpp", start_line=1, end_line=2,
+            start_col=0, end_col=10, scope_id="g", language="cpp",
+        )
+        f_rust = CPGNode(
+            id="fn_rust", label="Function", ast_type="function_item", name="sanitize",
+            code="fn sanitize()", filepath="crates/lib.rs", start_line=1, end_line=2,
+            start_col=0, end_col=10, scope_id="g", language="rust",
+        )
+
+        c_go_local = CPGNode(
+            id="c1", label="Call", ast_type="call_expression", name="pkg.Run",
+            code="pkg.Run()", filepath="pkg/a.go", start_line=5, end_line=5,
+            start_col=0, end_col=9, scope_id="g", language="go",
+        )
+        c_go_samedir = CPGNode(
+            id="c2", label="Call", ast_type="call_expression", name="util.Clean",
+            code="util.Clean()", filepath="pkg/a.go", start_line=6, end_line=6,
+            start_col=0, end_col=12, scope_id="g", language="go",
+        )
+        c_cpp_arrow = CPGNode(
+            id="c3", label="Call", ast_type="call_expression", name="svc->exec",
+            code="svc->exec()", filepath="native/main.cpp", start_line=4, end_line=4,
+            start_col=0, end_col=11, scope_id="g", language="cpp",
+        )
+        c_rust_scope = CPGNode(
+            id="c4", label="Call", ast_type="call_expression", name="Utils::sanitize",
+            code="Utils::sanitize()", filepath="crates/main.rs", start_line=4, end_line=4,
+            start_col=0, end_col=17, scope_id="g", language="rust",
+        )
+
+        edges = CallGraphBuilder([
+            f_local, f_samedir_go, f_otherdir_go, f_cpp, f_rust,
+            c_go_local, c_go_samedir, c_cpp_arrow, c_rust_scope,
+        ]).resolve_calls()
+        by_src = {e.source_id: e.target_id for e in edges}
+        assert by_src["c1"] == "fn_local"
+        assert by_src["c2"] == "fn_samedir_go"
+        assert by_src["c3"] == "fn_cpp"
+        assert by_src["c4"] == "fn_rust"
+
+    def test_graceful_degradation_on_malformed_bytes_and_unknown_language(self):
+        from compiler.ast_parser import ASTNormalizer
+        from compiler.cfg_builder import CFGBuilder
+        from compiler.dfg_builder import DFGBuilder
+
+        bad_sf = _make_scanned_file("broken.xyz", b"\xff\xfe\x00\x01{{{{", "unknown_lang")
+        norm = ASTNormalizer(bad_sf)
+        nodes, edges = norm.parse()
+        assert len(nodes) >= 1
+        assert CFGBuilder(bad_sf.filepath, bad_sf.content_bytes, bad_sf.language, nodes, norm.node_map).build() == []
+        assert DFGBuilder(bad_sf.filepath, bad_sf.content_bytes, bad_sf.language, nodes, norm.node_map, {}, {}).build() == []
+
+
+class TestDomainAwareSanitizerPropagation:
+    def test_no_hardcoded_app_specific_xss_allowlists_in_ast_parser(self):
+        ast_parser_src = (BACKEND_DIR / "compiler" / "ast_parser.py").read_text(encoding="utf-8")
+        forbidden_tokens = [
+            "detailsHtml",
+            "warnHtml",
+            "unverHtml",
+            "selfSearchLinks",
+            "HOT_TYPES.test(",
+            "breachCount",
+            "done.has(",
+            "s.links.join",
+            "i === 0",
+        ]
+        for tok in forbidden_tokens:
+            assert tok not in ast_parser_src, f"Hardcoded app-specific allowlist token {tok!r} must be removed"
+
+    def test_sanitized_variable_and_helper_clear_html_sink_in_dfg_pass(self):
+        js_code = b"""
+function buildSafeCard(user) {
+  const title = esc(user.name);
+  return `<div class="card"><h3>${title}</h3><span>${user.items.length}</span></div>`;
+}
+function buildUnsafeCard(user) {
+  return `<div class="card">${user.bio}</div>`;
+}
+function render(el1, el2, el3, el4, user) {
+  const safeFragment = `<p>${escapeHtml(user.name)}</p>`;
+  el1.innerHTML = safeFragment;
+
+  let accum = "";
+  accum += `<li>${esc(user.role)}</li>`;
+  el2.innerHTML = accum;
+
+  el3.innerHTML = buildSafeCard(user);
+  el4.innerHTML = buildUnsafeCard(user);
+}
+"""
+        sf = _make_scanned_file("ui/render.js", js_code, "javascript")
+        nodes, _ = _compile_four_passes([sf])
+
+        inner_sinks = {
+            n.name: n for n in nodes
+            if n.label == "Assignment" and n.name.endswith(".innerHTML")
+        }
+        assert inner_sinks["el1.innerHTML"].is_sink is False
+        assert inner_sinks["el2.innerHTML"].is_sink is False
+        assert inner_sinks["el3.innerHTML"].is_sink is False
+        assert inner_sinks["el4.innerHTML"].is_sink is True
+        assert inner_sinks["el4.innerHTML"].sink_domain == "HTML"
+
+    def test_href_esc_url_scheme_bypass_remains_sink_with_url_domain(self):
+        js_code = b"""
+function renderLinks(elDirect, elIndirect, elSafeUrl, item) {
+  elDirect.innerHTML = `<a href="${esc(item.url)}">${esc(item.title)}</a>`;
+  const linkMarkup = `<a href="${escapeHtml(item.url)}">Go</a>`;
+  elIndirect.innerHTML = linkMarkup;
+  elSafeUrl.innerHTML = `<a href="https://example.com/?q=${encodeURIComponent(item.q)}">${esc(item.title)}</a>`;
+}
+"""
+        sf = _make_scanned_file("ui/links.js", js_code, "javascript")
+        nodes, _ = _compile_four_passes([sf])
+        inner_sinks = {
+            n.name: n for n in nodes
+            if n.label == "Assignment" and n.name.endswith(".innerHTML")
+        }
+        assert inner_sinks["elDirect.innerHTML"].is_sink is True
+        assert inner_sinks["elDirect.innerHTML"].sink_domain == "URL"
+        assert inner_sinks["elIndirect.innerHTML"].is_sink is True
+        assert inner_sinks["elSafeUrl.innerHTML"].is_sink is False
+
+    def test_cross_domain_sanitizer_isolation_html_vs_shell_and_universal(self):
+        py_code = b"""
+import html, os, shlex
+
+def handle(request):
+    raw = request.args["q"]
+    html_only = html.escape(raw)
+    shell_safe = shlex.quote(raw)
+    num_safe = int(raw)
+    os.system(html_only)
+    os.system(shell_safe)
+    return num_safe
+"""
+        sf = _make_scanned_file("api/handler.py", py_code, "python")
+        nodes, _ = _compile_four_passes([sf])
+
+        by_var = {n.name: n for n in nodes if n.label == "Variable" and n.is_sanitizer}
+        assert "HTML" in by_var["html_only"].sanitizer_domains
+        assert "SHELL" not in by_var["html_only"].sanitizer_domains
+        assert "SHELL" in by_var["shell_safe"].sanitizer_domains
+        assert "UNIVERSAL" in by_var["num_safe"].sanitizer_domains
+
+        os_calls = [n for n in nodes if n.label == "Call" and n.name == "os.system"]
+        assert len(os_calls) == 2
+        assert all(c.is_sink and c.sink_domain == "SHELL" for c in os_calls)
+
+
+class TestPolyglotRulePacks:
+    def _run_rules_on_source(self, filepath: str, language: str, code: str, enabled_rule_ids=None):
+        from engine.polyglot_rules import run_polyglot_rules
+
+        sf = _make_scanned_file(filepath, code.encode("utf-8"), language)
+        nodes, edges = _compile_four_passes([sf])
+        return run_polyglot_rules([sf], nodes, edges, enabled_rule_ids=enabled_rule_ids)
+
+    def test_catalog_contains_all_12_rules(self):
+        from engine.polyglot_rules import POLYGLOT_RULE_CATALOG
+
+        ids = [r["id"] for r in POLYGLOT_RULE_CATALOG]
+        assert ids == [
+            "RULE-22-CPP-BUFFER-OVERFLOW",
+            "RULE-23-CPP-FORMAT-STRING",
+            "RULE-24-CPP-UAF-DOUBLE-FREE",
+            "RULE-25-RUST-UNSAFE-FFI",
+            "RULE-26-POLYGLOT-SQLI",
+            "RULE-27-POLYGLOT-CMDI",
+            "RULE-28-POLYGLOT-DESER",
+            "RULE-29-POLYGLOT-XXE",
+            "RULE-30-SOLIDITY-REENTRANCY",
+            "RULE-31-SOLIDITY-TX-ORIGIN-DELEGATE",
+            "RULE-32-TEMPLATE-UNESCAPED-XSS-SSTI",
+            "RULE-33-TEMPLATE-MISSING-CSRF",
+        ]
+
+    def test_rule_22_cpp_buffer_overflow(self):
+        vuln = """
+#include <string.h>
+void copy_bad(const char *input, size_t len) {
+    char buf[64];
+    strcpy(buf, input);
+    memcpy(buf, input, len);
+}
+"""
+        safe = """
+#include <stdio.h>
+#include <string.h>
+void copy_good(const char *input) {
+    char buf[64];
+    strncpy(buf, input, sizeof(buf) - 1);
+    snprintf(buf, sizeof(buf), "%s", input);
+}
+"""
+        f_vuln = self._run_rules_on_source("src/buf.c", "c", vuln)
+        assert any(f.rule_id == "RULE-22-CPP-BUFFER-OVERFLOW" and f.cwe_id == "CWE-120" and f.severity == "CRITICAL" for f in f_vuln)
+        f_safe = self._run_rules_on_source("src/safe_buf.c", "c", safe)
+        assert not any(f.rule_id == "RULE-22-CPP-BUFFER-OVERFLOW" for f in f_safe)
+
+    def test_rule_23_cpp_format_string(self):
+        vuln = """
+#include <stdio.h>
+void log_bad(const char *msg) {
+    printf(msg);
+    fprintf(stderr, msg);
+}
+"""
+        safe = """
+#include <stdio.h>
+void log_good(const char *msg) {
+    printf("%s\\n", msg);
+    fprintf(stderr, "err: %s\\n", msg);
+}
+"""
+        f_vuln = self._run_rules_on_source("src/fmt.cpp", "cpp", vuln)
+        assert any(f.rule_id == "RULE-23-CPP-FORMAT-STRING" and f.cwe_id == "CWE-134" and f.severity == "HIGH" for f in f_vuln)
+        f_safe = self._run_rules_on_source("src/fmt_ok.cpp", "cpp", safe)
+        assert not any(f.rule_id == "RULE-23-CPP-FORMAT-STRING" for f in f_safe)
+
+    def test_rule_24_cpp_uaf_double_free(self):
+        vuln = """
+#include <stdlib.h>
+#include <stdio.h>
+void bad_uaf(void) {
+    char *ptr = (char *)malloc(32);
+    free(ptr);
+    printf("%s", ptr);
+}
+void bad_df(void) {
+    char *buf = (char *)malloc(16);
+    free(buf);
+    free(buf);
+}
+"""
+        safe = """
+#include <stdlib.h>
+void good_mem(void) {
+    char *ptr = (char *)malloc(32);
+    free(ptr);
+    ptr = NULL;
+    char *buf = (char *)malloc(16);
+    free(buf);
+    buf = (char *)malloc(32);
+    free(buf);
+}
+"""
+        f_vuln = self._run_rules_on_source("src/mem.c", "c", vuln)
+        uaf_hits = [f for f in f_vuln if f.rule_id == "RULE-24-CPP-UAF-DOUBLE-FREE"]
+        assert len(uaf_hits) >= 2
+        assert all(f.cwe_id == "CWE-416" and f.severity == "CRITICAL" for f in uaf_hits)
+        f_safe = self._run_rules_on_source("src/mem_ok.c", "c", safe)
+        assert not any(f.rule_id == "RULE-24-CPP-UAF-DOUBLE-FREE" for f in f_safe)
+
+    def test_rule_25_rust_unsafe_ffi(self):
+        vuln = """
+extern "C" { fn c_parse(ptr: *const u8); }
+pub fn dangerous(ptr: *const u8) -> u8 {
+    unsafe {
+        c_parse(ptr);
+        *ptr
+    }
+}
+"""
+        safe = """
+pub fn safe_add(a: i32, b: i32) -> i32 {
+    a.saturating_add(b)
+}
+"""
+        f_vuln = self._run_rules_on_source("src/ffi.rs", "rust", vuln)
+        assert any(f.rule_id == "RULE-25-RUST-UNSAFE-FFI" and f.cwe_id == "CWE-242" and f.severity == "HIGH" for f in f_vuln)
+        f_safe = self._run_rules_on_source("src/safe.rs", "rust", safe)
+        assert not any(f.rule_id == "RULE-25-RUST-UNSAFE-FFI" for f in f_safe)
+
+    def test_rule_26_polyglot_sqli(self):
+        go_vuln = 'package main\nfunc q(db *DB, id string) { db.Query("SELECT * FROM users WHERE id = " + id) }\n'
+        go_safe = 'package main\nfunc q(db *DB, id string) { db.Query("SELECT * FROM users WHERE id = $1", id) }\n'
+        java_vuln = 'class Repo { void q(Statement s, String id) { s.executeQuery("SELECT * FROM u WHERE id=" + id); } }\n'
+        java_safe = 'class Repo { void q(Connection c, String id) { PreparedStatement ps = c.prepareStatement("SELECT * FROM u WHERE id=?"); ps.setString(1, id); ps.executeQuery(); } }\n'
+        php_vuln = '<?php function q($c, $id) { mysqli_query($c, "SELECT * FROM u WHERE id=" . $id); } ?>\n'
+
+        assert any(f.rule_id == "RULE-26-POLYGLOT-SQLI" for f in self._run_rules_on_source("repo.go", "go", go_vuln))
+        assert not any(f.rule_id == "RULE-26-POLYGLOT-SQLI" for f in self._run_rules_on_source("repo_ok.go", "go", go_safe))
+        assert any(f.rule_id == "RULE-26-POLYGLOT-SQLI" for f in self._run_rules_on_source("Repo.java", "java", java_vuln))
+        assert not any(f.rule_id == "RULE-26-POLYGLOT-SQLI" for f in self._run_rules_on_source("RepoOk.java", "java", java_safe))
+        assert any(f.rule_id == "RULE-26-POLYGLOT-SQLI" for f in self._run_rules_on_source("repo.php", "php", php_vuln))
+
+    def test_rule_27_polyglot_cmdi(self):
+        go_vuln = 'package main\nfunc run(userArg string) { exec.Command("sh", "-c", userArg) }\n'
+        go_safe = 'package main\nfunc run() { exec.Command("ls", "-la") }\n'
+        php_vuln = '<?php function run($cmd) { shell_exec($cmd); } ?>\n'
+        php_safe = '<?php function run($arg) { shell_exec("ls " . escapeshellarg($arg)); } ?>\n'
+
+        assert any(f.rule_id == "RULE-27-POLYGLOT-CMDI" for f in self._run_rules_on_source("cmd.go", "go", go_vuln))
+        assert not any(f.rule_id == "RULE-27-POLYGLOT-CMDI" for f in self._run_rules_on_source("cmd_ok.go", "go", go_safe))
+        assert any(f.rule_id == "RULE-27-POLYGLOT-CMDI" for f in self._run_rules_on_source("cmd.php", "php", php_vuln))
+        assert not any(f.rule_id == "RULE-27-POLYGLOT-CMDI" for f in self._run_rules_on_source("cmd_ok.php", "php", php_safe))
+
+    def test_rule_28_polyglot_deser(self):
+        java_vuln = "class D { Object load(ObjectInputStream ois) throws Exception { return ois.readObject(); } }\n"
+        cs_vuln = "class D { object Load(Stream s) { var bf = new BinaryFormatter(); return bf.Deserialize(s); } }\n"
+        rb_vuln = "def load(raw)\n  YAML.load(raw)\nend\n"
+        rb_safe = "def load(raw)\n  YAML.safe_load(raw)\nend\n"
+
+        assert any(f.rule_id == "RULE-28-POLYGLOT-DESER" for f in self._run_rules_on_source("D.java", "java", java_vuln))
+        assert any(f.rule_id == "RULE-28-POLYGLOT-DESER" for f in self._run_rules_on_source("D.cs", "csharp", cs_vuln))
+        assert any(f.rule_id == "RULE-28-POLYGLOT-DESER" for f in self._run_rules_on_source("d.rb", "ruby", rb_vuln))
+        assert not any(f.rule_id == "RULE-28-POLYGLOT-DESER" for f in self._run_rules_on_source("d_ok.rb", "ruby", rb_safe))
+
+    def test_rule_29_polyglot_xxe(self):
+        java_vuln = "class X { void p() throws Exception { DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance(); dbf.newDocumentBuilder(); } }\n"
+        java_safe = 'class X { void p() throws Exception { DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance(); dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true); } }\n'
+        php_vuln = '<?php $doc = simplexml_load_string($xml, "SimpleXMLElement", LIBXML_NOENT); ?>\n'
+        php_safe = '<?php $doc = simplexml_load_string($xml); ?>\n'
+
+        assert any(f.rule_id == "RULE-29-POLYGLOT-XXE" for f in self._run_rules_on_source("X.java", "java", java_vuln))
+        assert not any(f.rule_id == "RULE-29-POLYGLOT-XXE" for f in self._run_rules_on_source("XOk.java", "java", java_safe))
+        assert any(f.rule_id == "RULE-29-POLYGLOT-XXE" for f in self._run_rules_on_source("x.php", "php", php_vuln))
+        assert not any(f.rule_id == "RULE-29-POLYGLOT-XXE" for f in self._run_rules_on_source("x_ok.php", "php", php_safe))
+
+    def test_rule_30_solidity_reentrancy(self):
+        vuln = """
+pragma solidity ^0.8.0;
+contract Vault {
+    mapping(address => uint256) public balances;
+    function withdraw() external {
+        uint256 bal = balances[msg.sender];
+        (bool ok, ) = msg.sender.call{value: bal}("");
+        require(ok);
+        balances[msg.sender] = 0;
+    }
+}
+"""
+        safe_cei = """
+pragma solidity ^0.8.0;
+contract SafeVault {
+    mapping(address => uint256) public balances;
+    function withdraw() external {
+        uint256 bal = balances[msg.sender];
+        balances[msg.sender] = 0;
+        (bool ok, ) = msg.sender.call{value: bal}("");
+        require(ok);
+    }
+}
+"""
+        safe_guard = """
+pragma solidity ^0.8.0;
+contract GuardedVault {
+    mapping(address => uint256) public balances;
+    function withdraw() external nonReentrant {
+        uint256 bal = balances[msg.sender];
+        (bool ok, ) = msg.sender.call{value: bal}("");
+        require(ok);
+        balances[msg.sender] = 0;
+    }
+}
+"""
+        assert any(f.rule_id == "RULE-30-SOLIDITY-REENTRANCY" for f in self._run_rules_on_source("Vault.sol", "solidity", vuln))
+        assert not any(f.rule_id == "RULE-30-SOLIDITY-REENTRANCY" for f in self._run_rules_on_source("SafeVault.sol", "solidity", safe_cei))
+        assert not any(f.rule_id == "RULE-30-SOLIDITY-REENTRANCY" for f in self._run_rules_on_source("GuardedVault.sol", "solidity", safe_guard))
+
+    def test_rule_31_solidity_tx_origin_delegate(self):
+        vuln = """
+pragma solidity ^0.8.0;
+contract Auth {
+    address owner;
+    function admin(address target, bytes calldata data) external {
+        require(tx.origin == owner);
+        target.delegatecall(data);
+    }
+}
+"""
+        safe = """
+pragma solidity ^0.8.0;
+contract SafeAuth {
+    address owner;
+    function admin() external view returns (bool) {
+        require(msg.sender == owner);
+        return true;
+    }
+}
+"""
+        hits = [f for f in self._run_rules_on_source("Auth.sol", "solidity", vuln) if f.rule_id == "RULE-31-SOLIDITY-TX-ORIGIN-DELEGATE"]
+        assert len(hits) >= 2
+        assert not any(f.rule_id == "RULE-31-SOLIDITY-TX-ORIGIN-DELEGATE" for f in self._run_rules_on_source("SafeAuth.sol", "solidity", safe))
+
+    def test_rule_32_template_unescaped_xss_ssti(self):
+        jinja_vuln = "<div>{{ user_bio|safe }}</div>\n"
+        blade_vuln = "<div>{!! $comment !!}</div>\n"
+        ejs_vuln = "<div><%- payload %></div>\n"
+        safe_tpl = "<div>{{ user_bio|e }}</div>\n"
+
+        assert any(f.rule_id == "RULE-32-TEMPLATE-UNESCAPED-XSS-SSTI" for f in self._run_rules_on_source("p.jinja2", "web_template", jinja_vuln))
+        assert any(f.rule_id == "RULE-32-TEMPLATE-UNESCAPED-XSS-SSTI" for f in self._run_rules_on_source("p.blade.php", "web_template", blade_vuln))
+        assert any(f.rule_id == "RULE-32-TEMPLATE-UNESCAPED-XSS-SSTI" for f in self._run_rules_on_source("p.ejs", "web_template", ejs_vuln))
+        assert not any(f.rule_id == "RULE-32-TEMPLATE-UNESCAPED-XSS-SSTI" for f in self._run_rules_on_source("ok.jinja2", "web_template", safe_tpl))
+
+    def test_rule_33_template_missing_csrf(self):
+        vuln = '<form action="/transfer" method="POST"><input name="amount"><button>Send</button></form>\n'
+        safe_jinja = '<form action="/transfer" method="POST">{{ csrf_token() }}<input name="amount"></form>\n'
+        safe_blade = '<form action="/transfer" method="post">@csrf<input name="amount"></form>\n'
+        safe_get = '<form action="/search" method="GET"><input name="q"></form>\n'
+
+        assert any(f.rule_id == "RULE-33-TEMPLATE-MISSING-CSRF" and f.severity == "MEDIUM" for f in self._run_rules_on_source("pay.html", "web_template", vuln))
+        assert not any(f.rule_id == "RULE-33-TEMPLATE-MISSING-CSRF" for f in self._run_rules_on_source("pay_ok.jinja2", "web_template", safe_jinja))
+        assert not any(f.rule_id == "RULE-33-TEMPLATE-MISSING-CSRF" for f in self._run_rules_on_source("pay_ok.blade.php", "web_template", safe_blade))
+        assert not any(f.rule_id == "RULE-33-TEMPLATE-MISSING-CSRF" for f in self._run_rules_on_source("search.html", "web_template", safe_get))
+
+    def test_finding_contract_enabled_filter_and_enterprise_enrichment(self):
+        from engine.enterprise_manager import EnterpriseManager
+        from engine.polyglot_rules import POLYGLOT_RULE_CATALOG
+        from models import SecurityQueryRule
+
+        vuln = 'package main\nfunc q(db *DB, id string) { db.Query("SELECT * FROM users WHERE id = " + id) }\n'
+        findings_1 = self._run_rules_on_source("svc/repo.go", "go", vuln)
+        findings_2 = self._run_rules_on_source("svc/repo.go", "go", vuln)
+        assert len(findings_1) == 1
+        f = findings_1[0]
+        assert f.id == findings_2[0].id
+        assert len(f.id) >= 16
+        assert f.best_fix_location is not None
+        assert f.best_fix_location.filepath == "svc/repo.go"
+        assert f.best_fix_location.line >= 1
+        assert len(f.path_nodes) >= 1
+        assert f.language == "Go"
+
+        filtered = self._run_rules_on_source("svc/repo.go", "go", vuln, enabled_rule_ids={"RULE-30-SOLIDITY-REENTRANCY"})
+        assert filtered == []
+
+        em = EnterpriseManager()
+        for rmeta in POLYGLOT_RULE_CATALOG:
+            if not any(q.id == rmeta["id"] for q in em.queries):
+                em.queries.append(
+                    SecurityQueryRule(
+                        id=rmeta["id"],
+                        name=rmeta["name"],
+                        engine="SAST",
+                        language=", ".join(rmeta["languages"]),
+                        severity=rmeta["severity"],
+                        cwe_id=rmeta["cwe_id"],
+                        owasp_category=rmeta["owasp_category"],
+                        cvss_score=rmeta["cvss_score"],
+                        description=rmeta["description"],
+                        remediation=rmeta["remediation"],
+                        enabled=True,
+                    )
+                )
+        enriched = em.enrich_findings(findings_1)
+        assert len(enriched) == 1
+        assert enriched[0].plain_english_summary
+        assert enriched[0].best_fix_location is not None
+
