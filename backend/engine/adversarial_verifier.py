@@ -15,12 +15,13 @@ Architecture & Security Invariants:
 from __future__ import annotations
 
 import ast
+from collections import Counter
 import hashlib
 import math
 import os
 import re
 import textwrap
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
 from compiler.ast_parser import ASTNormalizer, has_unsafe_uri_interpolation
 from compiler.dfg_builder import DFGBuilder
@@ -681,24 +682,18 @@ def verify_findings_adversarially(
                         final_excl = None
 
                     raw_vec = str(parsed.get("cvss_vector") or "").strip()
-                    if _CVSS31_VECTOR_RX.match(raw_vec):
+                    if final_verdict == "FALSE_POSITIVE":
+                        final_vec, final_score = compute_deterministic_cvss31(
+                            finding,
+                            is_false_positive=True,
+                        )
+                    elif _CVSS31_VECTOR_RX.match(raw_vec):
                         final_vec = raw_vec
-                        raw_sc = parsed.get("cvss_score")
-                        if raw_sc is not None and not isinstance(raw_sc, bool):
-                            try:
-                                parsed_sc = float(raw_sc)
-                                if 0.0 <= parsed_sc <= 10.0:
-                                    final_score = round(parsed_sc, 1)
-                                else:
-                                    final_score = _score_cvss31_vector(raw_vec)
-                            except (TypeError, ValueError):
-                                final_score = _score_cvss31_vector(raw_vec)
-                        else:
-                            final_score = _score_cvss31_vector(raw_vec)
+                        final_score = _score_cvss31_vector(raw_vec)
                     else:
                         final_vec, final_score = compute_deterministic_cvss31(
                             finding,
-                            is_false_positive=(final_verdict == "FALSE_POSITIVE"),
+                            is_false_positive=False,
                         )
 
                     ai_rat = str(parsed.get("rationale") or "").strip()
@@ -866,9 +861,17 @@ def _try_parse_python_ast(code: str) -> Optional[ast.Module]:
         return None
 
 
-def _collect_python_aliases(tree: ast.AST) -> Dict[str, str]:
-    """Builds alias -> canonical module/symbol map from imports and simple assignments."""
+def _collect_python_aliases(tree: ast.AST) -> Tuple[Dict[str, str], Set[str]]:
+    """
+    2-pass + 3-iteration fixpoint alias resolver for Python ASTs.
+    Pass 1 collects all Import / ImportFrom bindings (including nested conditional imports).
+    Pass 2 iterates up to 3 times over Assign / AnnAssign nodes so chained aliases
+    (e.g. `if True: import subprocess as sp; a = sp.Popen; b = a`) resolve cleanly,
+    and tracks variables bound to `socket.socket(...)` instances.
+    """
     aliases: Dict[str, str] = {}
+    assign_pairs: List[Tuple[str, ast.AST]] = []
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -880,11 +883,32 @@ def _collect_python_aliases(tree: ast.AST) -> Dict[str, str]:
                 bound = alias.asname or alias.name
                 aliases[bound] = f"{mod}.{alias.name}" if mod else alias.name
         elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-            target_name = node.targets[0].id
-            rhs_name = _resolve_ast_dotted_name(node.value, aliases)
-            if rhs_name:
+            assign_pairs.append((node.targets[0].id, node.value))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+            assign_pairs.append((node.target.id, node.value))
+
+    socket_vars: Set[str] = set()
+    for _ in range(3):
+        changed = False
+        for target_name, val_node in assign_pairs:
+            if isinstance(val_node, ast.Call):
+                callee_name = _resolve_ast_dotted_name(val_node.func, aliases) or ""
+                if callee_name in {"socket.socket", "socket.create_connection"}:
+                    if target_name not in socket_vars:
+                        socket_vars.add(target_name)
+                        changed = True
+                continue
+            rhs_name = _resolve_ast_dotted_name(val_node, aliases)
+            if rhs_name and aliases.get(target_name) != rhs_name:
                 aliases[target_name] = rhs_name
-    return aliases
+                changed = True
+            if isinstance(val_node, ast.Name) and val_node.id in socket_vars and target_name not in socket_vars:
+                socket_vars.add(target_name)
+                changed = True
+        if not changed:
+            break
+
+    return aliases, socket_vars
 
 
 def _resolve_ast_dotted_name(node: ast.AST, aliases: Dict[str, str]) -> Optional[str]:
@@ -912,14 +936,18 @@ _DISALLOWED_CWE78_ARGV0: Set[str] = {
     "bash",
     "/bin/bash",
     "zsh",
+    "dash",
+    "ksh",
     "cmd",
     "cmd.exe",
     "powershell",
     "powershell.exe",
+    "pwsh",
     "curl",
     "wget",
     "nc",
     "ncat",
+    "netcat",
 }
 
 
@@ -928,8 +956,10 @@ def _is_safe_cwe78_subprocess_run(call_node: ast.Call, norm_cwe: str) -> bool:
     Narrow CWE-78 Exemption:
     Permits `subprocess.run([...], shell=False)` (or omitting `shell`) ONLY when:
     - `norm_cwe == "CWE-78"`
+    - No `**kwargs` unpacking (`kw.arg is None`) is present
     - First argument (positional or `args=` keyword) is a non-empty literal `list` or `tuple`
-    - First argv literal is not a shell interpreter or network exfiltration tool
+    - First argv element is a static string literal whose normalized path AND basename are not
+      a shell interpreter or network exfiltration tool
     - `shell` keyword is absent OR explicitly literal `False`
     """
     if norm_cwe != "CWE-78":
@@ -937,6 +967,8 @@ def _is_safe_cwe78_subprocess_run(call_node: ast.Call, norm_cwe: str) -> bool:
 
     cmd_arg: Optional[ast.AST] = call_node.args[0] if call_node.args else None
     for kw in call_node.keywords:
+        if kw.arg is None:
+            return False
         if kw.arg == "args" and cmd_arg is None:
             cmd_arg = kw.value
         elif kw.arg == "shell":
@@ -946,10 +978,48 @@ def _is_safe_cwe78_subprocess_run(call_node: ast.Call, norm_cwe: str) -> bool:
     if not isinstance(cmd_arg, (ast.List, ast.Tuple)) or not cmd_arg.elts:
         return False
     first_el = cmd_arg.elts[0]
-    if isinstance(first_el, ast.Constant) and isinstance(first_el.value, str):
-        if first_el.value.strip().lower() in _DISALLOWED_CWE78_ARGV0:
-            return False
+    if not (isinstance(first_el, ast.Constant) and isinstance(first_el.value, str)):
+        return False
+
+    norm_argv0 = first_el.value.strip().lower().replace("\\", "/")
+    if not norm_argv0:
+        return False
+    base_argv0 = os.path.basename(norm_argv0)
+    if norm_argv0 in _DISALLOWED_CWE78_ARGV0 or base_argv0 in _DISALLOWED_CWE78_ARGV0:
+        return False
     return True
+
+
+def _unsafe_subprocess_call_signature(resolved: str, node: ast.Call) -> str:
+    """Builds a normalized call signature differentiating argv0 and shell flags for multiset diffing."""
+    shell_tag = "shell=default"
+    cmd_arg: Optional[ast.AST] = node.args[0] if node.args else None
+    for kw in node.keywords:
+        if kw.arg is None:
+            shell_tag = "shell=kwunpack"
+        elif kw.arg == "args" and cmd_arg is None:
+            cmd_arg = kw.value
+        elif kw.arg == "shell":
+            if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, bool):
+                shell_tag = f"shell={kw.value.value}"
+            else:
+                shell_tag = "shell=dyn"
+
+    argv_tag = "none"
+    if isinstance(cmd_arg, (ast.List, ast.Tuple)):
+        if cmd_arg.elts and isinstance(cmd_arg.elts[0], ast.Constant) and isinstance(cmd_arg.elts[0].value, str):
+            raw0 = cmd_arg.elts[0].value.strip().lower().replace("\\", "/")
+            argv_tag = f"list:{os.path.basename(raw0) or raw0}"
+        else:
+            argv_tag = "list:<dynamic>"
+    elif isinstance(cmd_arg, ast.Constant) and isinstance(cmd_arg.value, str):
+        argv_tag = f"str:{cmd_arg.value.strip()[:32]}"
+    elif isinstance(cmd_arg, ast.JoinedStr):
+        argv_tag = "fstr"
+    elif cmd_arg is not None:
+        argv_tag = type(cmd_arg).__name__
+
+    return f"{resolved}({argv_tag},{shell_tag})"
 
 
 def _extract_python_hostile_signals(
@@ -957,7 +1027,7 @@ def _extract_python_hostile_signals(
     norm_cwe: str,
 ) -> Dict[str, Any]:
     """Extracts structured hostile-construct signals from a parsed Python AST."""
-    aliases = _collect_python_aliases(tree)
+    aliases, socket_vars = _collect_python_aliases(tree)
     imported_roots: Set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -968,7 +1038,7 @@ def _extract_python_hostile_signals(
                 imported_roots.add(node.module.split(".", 1)[0])
 
     safe_cwe78_runs = 0
-    unsafe_subprocess_calls: Set[str] = set()
+    unsafe_subprocess_counts: Counter[str] = Counter()
     os_exec_calls: Set[str] = set()
     dynamic_exec_calls: Set[str] = set()
     native_escape_hits: Set[str] = set()
@@ -989,26 +1059,35 @@ def _extract_python_hostile_signals(
                 if _is_safe_cwe78_subprocess_run(node, norm_cwe):
                     safe_cwe78_runs += 1
                 else:
-                    unsafe_subprocess_calls.add("subprocess.run")
+                    unsafe_subprocess_counts[_unsafe_subprocess_call_signature(resolved, node)] += 1
             elif resolved in _SUBPROCESS_CALL_METHODS or resolved.startswith("subprocess."):
-                unsafe_subprocess_calls.add(resolved)
+                unsafe_subprocess_counts[_unsafe_subprocess_call_signature(resolved, node)] += 1
             elif resolved in _OS_EXEC_SPAWN_FUNCS:
                 os_exec_calls.add(resolved)
             elif resolved in _DYNAMIC_EXEC_FUNCS:
                 dynamic_exec_calls.add(resolved)
             elif resolved.startswith(("ctypes.", "cffi.")):
                 native_escape_hits.add(resolved)
-            elif resolved in {"socket.connect", "urllib.request.urlopen"} or resolved.endswith(".connect"):
-                if resolved == "urllib.request.urlopen":
-                    if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                        if node.args[0].value.lower().startswith(("http://", "https://")):
-                            net_exfil_hits.add("urllib.request.urlopen(http)")
-                    else:
-                        net_exfil_hits.add("urllib.request.urlopen")
-                elif resolved == "socket.connect":
+            elif resolved == "urllib.request.urlopen":
+                if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                    if node.args[0].value.lower().startswith(("http://", "https://")):
+                        net_exfil_hits.add("urllib.request.urlopen(http)")
+                else:
+                    net_exfil_hits.add("urllib.request.urlopen")
+            elif (
+                resolved == "socket.connect"
+                or (resolved.startswith("socket.") and resolved.endswith(".connect"))
+                or resolved.endswith(".socket.connect")
+            ):
+                net_exfil_hits.add("socket.connect")
+            elif isinstance(node.func, ast.Attribute) and node.func.attr == "connect":
+                recv = node.func.value
+                if isinstance(recv, ast.Name) and recv.id in socket_vars:
                     net_exfil_hits.add("socket.connect")
-                elif resolved.endswith(".connect") and "socket" in imported_roots:
-                    net_exfil_hits.add("socket.connect")
+                elif isinstance(recv, ast.Call):
+                    recv_callee = _resolve_ast_dotted_name(recv.func, aliases) or ""
+                    if recv_callee == "socket.socket":
+                        net_exfil_hits.add("socket.connect")
             elif resolved == "os.path.expanduser":
                 if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
                     if node.args[0].value.startswith("~"):
@@ -1038,7 +1117,7 @@ def _extract_python_hostile_signals(
     return {
         "imported_subprocess": "subprocess" in imported_roots,
         "safe_cwe78_runs": safe_cwe78_runs,
-        "unsafe_subprocess_calls": unsafe_subprocess_calls,
+        "unsafe_subprocess_counts": unsafe_subprocess_counts,
         "os_exec_calls": os_exec_calls,
         "dynamic_exec_calls": dynamic_exec_calls,
         "native_escape_hits": native_escape_hits,
@@ -1080,7 +1159,7 @@ def check_hostile_patch_post_gate(
                 else {
                     "imported_subprocess": "subprocess" in orig,
                     "safe_cwe78_runs": 0,
-                    "unsafe_subprocess_calls": set(),
+                    "unsafe_subprocess_counts": Counter(),
                     "os_exec_calls": set(),
                     "dynamic_exec_calls": set(),
                     "native_escape_hits": set(),
@@ -1089,21 +1168,21 @@ def check_hostile_patch_post_gate(
                 }
             )
 
-            # Narrow CWE-78 exemption check for subprocess
-            new_unsafe_sp = prop_sig["unsafe_subprocess_calls"] - orig_sig["unsafe_subprocess_calls"]
-            if new_unsafe_sp:
+            # Narrow CWE-78 exemption check for subprocess (multiset signature diffing)
+            new_unsafe_sp_counter = prop_sig["unsafe_subprocess_counts"] - orig_sig["unsafe_subprocess_counts"]
+            if new_unsafe_sp_counter:
                 blocked_reasons.append(
-                    f"Blocked newly introduced subprocess call(s): {', '.join(sorted(new_unsafe_sp))} "
-                    "(only literal list-argv subprocess.run([...], shell=False) is permitted for CWE-78)."
+                    f"Blocked newly introduced subprocess call(s): {', '.join(sorted(new_unsafe_sp_counter.keys()))} "
+                    "(only static literal list-argv subprocess.run([...], shell=False) is permitted for CWE-78)."
                 )
             elif prop_sig["imported_subprocess"] and not orig_sig["imported_subprocess"]:
-                if norm_cwe == "CWE-78" and prop_sig["safe_cwe78_runs"] >= 1 and not prop_sig["unsafe_subprocess_calls"]:
+                if norm_cwe == "CWE-78" and prop_sig["safe_cwe78_runs"] >= 1 and not prop_sig["unsafe_subprocess_counts"]:
                     python_ast_validated_cwe78_subprocess = True
                 else:
                     blocked_reasons.append(
                         "Blocked newly introduced 'subprocess' import outside narrow CWE-78 list-argv exemption."
                     )
-            elif norm_cwe == "CWE-78" and prop_sig["safe_cwe78_runs"] >= 1 and not prop_sig["unsafe_subprocess_calls"]:
+            elif norm_cwe == "CWE-78" and prop_sig["safe_cwe78_runs"] >= 1 and not prop_sig["unsafe_subprocess_counts"]:
                 python_ast_validated_cwe78_subprocess = True
 
             new_os_exec = prop_sig["os_exec_calls"] - orig_sig["os_exec_calls"]
@@ -1151,7 +1230,20 @@ def check_hostile_patch_post_gate(
 # ---------------------------------------------------------------------------
 # 6. S11 Syntax Check, CPG Taint Severance & 3-Persona Review Panel
 # ---------------------------------------------------------------------------
-def _check_balanced_delimiters(code: str) -> Tuple[bool, Optional[str]]:
+_HASH_COMMENT_LANGUAGES: Set[str] = {
+    "ruby",
+    "shell",
+    "bash",
+    "sh",
+    "yaml",
+    "yml",
+    "python",
+    "perl",
+    "r",
+}
+
+
+def _check_balanced_delimiters(code: str, language: str = "") -> Tuple[bool, Optional[str]]:
     """Quote- and comment-aware balanced delimiter check for `()`, `[]`, `{}`."""
     pairs = {")": "(", "]": "[", "}": "{"}
     stack: List[Tuple[str, int]] = []
@@ -1159,6 +1251,7 @@ def _check_balanced_delimiters(code: str) -> Tuple[bool, Optional[str]]:
     in_line_comment = False
     in_block_comment = False
     escape = False
+    allow_hash_comment = (language or "").strip().lower() in _HASH_COMMENT_LANGUAGES
     line_no = 1
     i = 0
     n = len(code)
@@ -1195,6 +1288,10 @@ def _check_balanced_delimiters(code: str) -> Tuple[bool, Optional[str]]:
             in_line_comment = True
             i += 2
             continue
+        if allow_hash_comment and ch == "#":
+            in_line_comment = True
+            i += 1
+            continue
         if ch == "/" and nxt == "*":
             in_block_comment = True
             i += 2
@@ -1211,6 +1308,8 @@ def _check_balanced_delimiters(code: str) -> Tuple[bool, Optional[str]]:
             stack.pop()
         i += 1
 
+    if in_quote is not None:
+        return False, f"Unclosed string literal ({in_quote})."
     if stack:
         open_ch, open_ln = stack[-1]
         return False, f"Unclosed '{open_ch}' opened at line {open_ln}."
@@ -1238,7 +1337,7 @@ def _check_patch_syntax(proposed_code: str, language: str) -> Tuple[bool, Option
             return False, f"Python SyntaxError at line {exc.lineno}: {exc.msg}"
 
     # Non-Python languages: balanced delimiters first
-    bal_ok, bal_err = _check_balanced_delimiters(proposed_code)
+    bal_ok, bal_err = _check_balanced_delimiters(proposed_code, language=norm_lang)
     if not bal_ok:
         return False, bal_err
 
@@ -1253,7 +1352,7 @@ def _check_patch_syntax(proposed_code: str, language: str) -> Tuple[bool, Option
     except Exception:
         return True, None
 
-    # Allow snippet blocks lacking outer class/function wrapper in Java/Go/C/C++/C#/Rust/Kotlin/Scala
+    # Allow snippet blocks lacking outer class/function wrapper in Java/Go/C/C++/C#/Rust/Kotlin/Scala/Solidity
     snippet_wrappers: Dict[str, Tuple[str, ...]] = {
         "java": (
             "class _S11Wrap {\nvoid _m() throws Exception {\n" + proposed_code + "\n}\n}",
@@ -1272,6 +1371,7 @@ def _check_patch_syntax(proposed_code: str, language: str) -> Tuple[bool, Option
         "rust": ("fn _s11_wrap() {\n" + proposed_code + "\n}\n",),
         "kotlin": ("fun _s11Wrap() {\n" + proposed_code + "\n}\n",),
         "scala": ("object _S11Wrap {\ndef _m(): Unit = {\n" + proposed_code + "\n}\n}",),
+        "solidity": ("contract _S11Wrap {\n" + proposed_code + "\n}\n",),
     }
     for wrapped in snippet_wrappers.get(norm_lang, ()):
         try:
@@ -1339,20 +1439,23 @@ def _compile_in_memory_cpg_metrics(
         return 0, 0
 
 
-_MITIGATION_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = (
-    ("shlex.quote", re.compile(r"\bshlex\.(?:quote|split)\s*\(")),
-    ("shell=False", re.compile(r"\bshell\s*=\s*False\b")),
-    ("html.escape", re.compile(r"\b(?:html\.escape|bleach\.clean|DOMPurify\.sanitize|escapeHtml|textContent)\b")),
-    ("PreparedStatement", re.compile(r"\b(?:PreparedStatement|prepareStatement|SqlParameter)\b")),
-    ("parameterized_sql", re.compile(r"(?:\bexecute\w*\s*\([^)]*(?:\?|%s|\$\d+)[^)]*,)")),
-    ("path_confinement", re.compile(r"\b(?:os\.path\.commonpath|commonpath|is_relative_to|secure_filename|filepath\.Clean)\b")),
-    ("ssrf_guard", re.compile(r"\b(?:ipaddress\.ip_address|is_private|is_loopback)\b")),
-    ("nonReentrant", re.compile(r"\bnonReentrant\b")),
-    ("yaml.safe_load", re.compile(r"\b(?:yaml\.safe_load|SafeLoader|ast\.literal_eval)\b")),
-    ("tls_verify_true", re.compile(r"\bverify\s*=\s*True\b")),
-    ("authz_ownership", re.compile(r"(?:owner_id\s*==|owner_id\s*=|tenant_id\s*==|tenant_id\s*=|current_user|Depends\s*\(|@login_required|check_permission)")),
-    ("bounds_or_atomic", re.compile(r"(?:<= 0|transaction\.atomic|FOR UPDATE|httponly\s*=\s*True|secure\s*=\s*True|\.origin\s*[!=]==)")),
+_MITIGATION_PATTERNS: Tuple[Tuple[str, FrozenSet[str], re.Pattern[str]], ...] = (
+    ("shlex.quote", frozenset({"CWE-78", "CWE-77"}), re.compile(r"\bshlex\.(?:quote|split)\s*\(")),
+    ("shell=False", frozenset({"CWE-78", "CWE-77"}), re.compile(r"\bshell\s*=\s*False\b")),
+    ("html.escape", frozenset({"CWE-79", "CWE-80"}), re.compile(r"\b(?:html\.escape|bleach\.clean|DOMPurify\.sanitize|escapeHtml|textContent)\b")),
+    ("PreparedStatement", frozenset({"CWE-89"}), re.compile(r"\b(?:PreparedStatement|prepareStatement|SqlParameter)\b")),
+    ("parameterized_sql", frozenset({"CWE-89"}), re.compile(r"(?:\bexecute\w*\s*\([^)]*(?:\?|%s|\$\d+)[^)]*,)")),
+    ("path_confinement", frozenset({"CWE-22", "CWE-23", "CWE-73"}), re.compile(r"\b(?:os\.path\.commonpath|commonpath|realpath|is_relative_to|secure_filename|filepath\.Clean)\b")),
+    ("ssrf_guard", frozenset({"CWE-918"}), re.compile(r"\b(?:ipaddress\.ip_address|ipaddress|is_private|is_loopback)\b")),
+    ("nonReentrant", frozenset({"CWE-841"}), re.compile(r"\bnonReentrant\b")),
+    ("yaml.safe_load", frozenset({"CWE-502", "CWE-94"}), re.compile(r"\b(?:yaml\.safe_load|SafeLoader|ast\.literal_eval)\b")),
+    ("tls_or_xxe_guard", frozenset({"CWE-295", "CWE-611"}), re.compile(r"\b(?:verify\s*=\s*True|rejectUnauthorized\s*:\s*true|defusedxml|disallow-doctype-decl)\b")),
+    ("authz_ownership", frozenset({"CWE-639", "CWE-284", "CWE-862", "CWE-863"}), re.compile(r"(?:owner_id\s*==|owner_id\s*=|tenant_id\s*==|tenant_id\s*=|current_user|Depends\s*\(|@login_required|check_permission)")),
+    ("bounds_or_atomic", frozenset({"CWE-840", "CWE-362"}), re.compile(r"(?:<= 0|transaction\.atomic|FOR UPDATE)")),
+    ("cookie_or_origin_guard", frozenset({"CWE-352", "CWE-942", "CWE-614", "CWE-1004", "CWE-345"}), re.compile(r"(?:httponly\s*=\s*True|secure\s*=\s*True|\.origin\s*[!=]==)")),
 )
+
+_ALL_MAPPED_MITIGATION_CWES: FrozenSet[str] = frozenset().union(*(cwes for _, cwes, _ in _MITIGATION_PATTERNS))
 
 
 def _detect_penetration_bypasses(proposed_code: str, cwe_id: Optional[str]) -> List[str]:
@@ -1647,10 +1750,13 @@ def validate_patch_with_panel(
     prop_sinks, prop_sans = _compile_in_memory_cpg_metrics(req.filepath, req.proposed_code, lang)
     bypasses = _detect_penetration_bypasses(req.proposed_code, eff_cwe)
 
+    use_scoped_cwes = bool(eff_cwe and eff_cwe in _ALL_MAPPED_MITIGATION_CWES)
     mitigations_added: List[str] = [
         label
-        for label, rx in _MITIGATION_PATTERNS
-        if rx.search(req.proposed_code) and not rx.search(req.original_code)
+        for label, compat_cwes, rx in _MITIGATION_PATTERNS
+        if ((not use_scoped_cwes) or (eff_cwe in compat_cwes))
+        and rx.search(req.proposed_code)
+        and not rx.search(req.original_code)
     ]
 
     if (not syntax_ok) or hostile_patch_blocked or (req.original_code.strip() == req.proposed_code.strip()):
@@ -1685,7 +1791,15 @@ def validate_patch_with_panel(
     personas = det_personas
     execution_mode: CognitiveExecutionMode = "DETERMINISTIC"
 
-    if req.use_ai and ai_engine is not None and ai_engine.has_usable_credentials():
+    if (
+        req.use_ai
+        and ai_engine is not None
+        and ai_engine.has_usable_credentials()
+        and not is_hostile_instruction_file(req.filepath)
+    ):
+        safe_fp = strip_hostile_target_instructions(
+            (req.filepath or "").replace("\r", "").replace("\n", "")
+        ).strip()
         safe_orig = _scrub_secrets(strip_hostile_target_instructions(req.original_code), raw_secret_tokens)
         safe_prop = _scrub_secrets(strip_hostile_target_instructions(req.proposed_code), raw_secret_tokens)
         s11_sys_prompt = (
@@ -1699,13 +1813,13 @@ def validate_patch_with_panel(
             '"verdict": "APPROVE|CONCERN|REJECT", "score": 0-100, "findings": ["..."], "summary": "..."}]}'
         )
         s11_user_prompt = (
-            f"File: {req.filepath} ({lang}) | CWE: {eff_cwe or 'N/A'}\n"
+            f"File: {safe_fp} ({lang}) | CWE: {eff_cwe or 'N/A'}\n"
             f"Deterministic Gates: syntax_ok={syntax_ok}, hostile_patch_blocked={hostile_patch_blocked}, "
             f"cpg_sink_severed={cpg_sink_severed}\n"
             f"--- ORIGINAL CODE ---\n{safe_orig[:3000]}\n"
             f"--- PROPOSED PATCH ---\n{safe_prop[:3000]}"
         )
-        cache_mat = f"{req.filepath}|{eff_cwe or ''}|{safe_orig}|{safe_prop}"
+        cache_mat = f"{safe_fp}|{eff_cwe or ''}|{safe_orig}|{safe_prop}"
         parsed, _hit, dispatch_err = ai_engine.dispatch_structured_json(
             workflow="s11_patch_panel",
             system_prompt=s11_sys_prompt,
