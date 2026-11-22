@@ -1228,6 +1228,12 @@ class TestFastApiDualEngineAndEnterpriseRules:
             loc_resp = client.get("/api/node-at-location", params={"filepath": "api/runner.py", "line": 4})
             assert loc_resp.status_code == 200
             assert loc_resp.json()["node"] is not None
+
+            # Empty or slash-only filepath must return {"node": None} (never match every node via endswith(""))
+            for empty_fp in ("", "/", "\\", "   "):
+                empty_loc = client.get("/api/node-at-location", params={"filepath": empty_fp, "line": 1})
+                assert empty_loc.status_code == 200
+                assert empty_loc.json() == {"node": None}, f"Expected None for filepath={empty_fp!r}"
         finally:
             isolated_mgr.close()
 
@@ -1332,4 +1338,87 @@ class TestFastApiDualEngineAndEnterpriseRules:
             # Verify no out-of-Literal mutations occurred during enrichment
             validated = Finding.model_validate(ef.model_dump())
             assert validated.rule_id == ef.rule_id
+
+    def test_enrichment_regression_polyglot_deser_and_rule15_tls_bypass(self):
+        from engine.enterprise_manager import EnterpriseManager
+
+        em = EnterpriseManager()
+
+        java_deser = Finding(
+            id="reg-deser-java",
+            rule_id="RULE-28-POLYGLOT-DESER",
+            severity="CRITICAL",
+            title="Polyglot Unsafe Native Object Deserialization",
+            description="Java ObjectInputStream.readObject deserializes untrusted stream.",
+            cwe_id="CWE-502",
+            owasp_category="A08:2021 - Software and Data Integrity Failures",
+            cvss_score=9.8,
+            remediation="Use schema-validated JSON parsers or strict ObjectInputFilter allowlists instead of ObjectInputStream.readObject.",
+            path_nodes=[
+                {
+                    "id": "java-deser-1",
+                    "label": "Call",
+                    "name": "ois.readObject",
+                    "code": "Object obj = new ObjectInputStream(in).readObject();",
+                    "filepath": "src/main/java/PayloadHandler.java",
+                    "start_line": 24,
+                    "end_line": 24,
+                    "start_col": 8,
+                    "end_col": 58,
+                    "is_source": False,
+                    "is_sink": True,
+                    "is_sanitizer": False,
+                }
+            ],
+            path_edges=[],
+            scan_engine="SAST",
+        )
+
+        tls_bypass = Finding(
+            id="reg-rule15-tls",
+            rule_id="RULE-15-XXE-TLS-BYPASS",
+            severity="HIGH",
+            title="Disabled TLS Certificate Verification (verify=False)",
+            description="HTTPS client disables TLS certificate verification via verify=False.",
+            cwe_id="CWE-611",
+            owasp_category="A05:2021 - Security Misconfiguration",
+            cvss_score=7.5,
+            remediation="Enable TLS certificate verification (verify=True) and use trusted CA bundles.",
+            path_nodes=[
+                {
+                    "id": "py-tls-1",
+                    "label": "Call",
+                    "name": "requests.get",
+                    "code": "resp = requests.get(endpoint, verify=False)",
+                    "filepath": "api/client.py",
+                    "start_line": 14,
+                    "end_line": 14,
+                    "start_col": 4,
+                    "end_col": 47,
+                    "is_source": False,
+                    "is_sink": True,
+                    "is_sanitizer": False,
+                }
+            ],
+            path_edges=[],
+            scan_engine="SAST",
+        )
+
+        enriched = em.enrich_findings([java_deser, tls_bypass])
+        by_id = {f.id: f for f in enriched}
+
+        # 1. RULE-28-POLYGLOT-DESER (Java ObjectInputStream) must NEVER emit hashlib.sha256
+        ef_deser = by_id["reg-deser-java"]
+        assert ef_deser.best_fix_location is not None
+        assert "hashlib.sha256" not in ef_deser.best_fix_location.recommended_fix
+        assert "JSON" in ef_deser.best_fix_location.recommended_fix or "ObjectInputFilter" in ef_deser.best_fix_location.recommended_fix
+
+        # 2. RULE-15-XXE-TLS-BYPASS with verify=False must NOT be mislabeled as XML XXE
+        ef_tls = by_id["reg-rule15-tls"]
+        assert ef_tls.best_fix_location is not None
+        assert "factory.setFeature" not in ef_tls.best_fix_location.recommended_fix
+        assert "XML parser" not in ef_tls.plain_english_summary
+        assert "TLS" in ef_tls.plain_english_summary or "certificate" in ef_tls.plain_english_summary.lower()
+        assert "verify=True" in ef_tls.best_fix_location.recommended_fix or "TLS" in ef_tls.best_fix_location.recommended_fix
+
 

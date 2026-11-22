@@ -249,6 +249,20 @@ def compute_best_fix_location(finding: Finding) -> BestFixLocation:
             f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Enforcing `msg.sender` access control and "
             f"restricting `delegatecall` targets eliminates phishing authorization bypass and contract takeover."
         )
+    elif (
+        "TLS" in (finding.title or "").upper()
+        or "verify=false" in code_snip.lower()
+        or "unverified_context" in code_snip.lower()
+        or "rejectunauthorized" in code_snip.lower()
+    ):
+        if is_js:
+            rec_fix = "https.request(url, { rejectUnauthorized: true }); // Enforce TLS certificate verification"
+        else:
+            rec_fix = "resp = requests.get(endpoint, verify=True, timeout=15)  # Enforce TLS certificate & hostname verification"
+        explanation = (
+            f"Best Fixed Location ({fp}:L{ln} — `{code_snip[:80]}`): Re-enabling strict TLS certificate and hostname "
+            f"verification prevents man-in-the-middle (MITM) interception and credential eavesdropping."
+        )
     elif "XXE" in rule_upper or cwe == "CWE-611":
         rec_fix = 'factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);'
         explanation = (
@@ -283,6 +297,12 @@ def compute_best_fix_location(finding: Finding) -> BestFixLocation:
             rec_fix = "parsed_doc = json.loads(raw_payload)  # Replace unsafe binary deserialization with strict schema JSON"
         elif "jwt.decode" in code_snip:
             rec_fix = "claims = jwt.decode(token, JWT_VERIFY_KEY, algorithms=['RS256'], options={'verify_signature': True})"
+        elif cwe == "CWE-502" or "DESER" in rule_upper:
+            rec_fix = (
+                finding.remediation
+                if finding.remediation
+                else "// Replace unsafe native object deserialization with schema-validated JSON or a strict type allowlist"
+            )
         else:
             rec_fix = "digest = hashlib.sha256(payload_bytes).hexdigest()  # Or add usedforsecurity=False if non-cryptographic"
         explanation = (
@@ -814,6 +834,34 @@ def populate_plain_english_and_raci(
         finding.management_action_steps = [
             f"1. Replace `tx.origin` with `msg.sender` or restrict `delegatecall` to immutable trusted implementations at `{fp}`:L{ln}.",
             "2. Remove deprecated `selfdestruct`/`suicide` calls and re-verify access-control invariants."
+        ]
+    elif (
+        "TLS" in (finding.title or "").upper()
+        or "verify=false" in code_snip.lower()
+        or "unverified_context" in code_snip.lower()
+        or "rejectunauthorized" in code_snip.lower()
+    ):
+        finding.plain_english_summary = (
+            f"WHAT IS WRONG: The outbound HTTPS/TLS client at `{fp}` (Line {ln}, `{code_snip[:90]}`) explicitly disables "
+            f"TLS certificate verification (`verify=False` / unverified SSL context / `rejectUnauthorized: false`), exposing "
+            f"encrypted traffic to man-in-the-middle interception. TECHNICAL EVIDENCE: {raw_desc}"
+        )
+        finding.non_coder_analogy = (
+            "Like sending armored bank couriers with sensitive cash while instructing them never to check the ID badge of the receiving vault."
+        )
+        finding.business_impact = (
+            "Man-in-the-Middle Eavesdropping & Credential Theft (OWASP A02/A05:2021 / CWE-295): Network attackers can intercept "
+            "or tamper with API tokens, customer PII, and backend service traffic without triggering TLS errors."
+        )
+        finding.effort_estimate = "~10 mins (Re-enable `verify=True` / default verified TLS context)"
+        finding.financial_risk_tier = "Tier 1 — Encrypted Transport Interception & Credential Exposure Risk"
+        finding.raci_responsible = "Lead Developer (TECH_LEAD)"
+        finding.raci_accountable = "Security Architect (SECURITY_LEAD)"
+        finding.raci_consulted = "DevOps / Infra Lead (DEVOPS_LEAD)"
+        finding.raci_informed = "Compliance Officer (COMPLIANCE_GRC)"
+        finding.management_action_steps = [
+            f"1. Remove `verify=False` / unverified SSL context overrides at `{fp}`:L{ln} and enforce strict certificate validation.",
+            "2. Provision internal/private CAs via standard trust stores rather than disabling TLS verification globally."
         ]
     elif "XXE" in rule_upper or cwe == "CWE-611":
         finding.plain_english_summary = (

@@ -2934,17 +2934,21 @@ def remediate_batch_apply(req: BatchRemediateRequest):
 @app.get("/api/node-at-location")
 def get_node_at_location(filepath: str = Query(...), line: int = Query(...)):
     """Finds the most specific CPG node matching filepath and line number in both Neo4j and Embedded SQLite modes."""
+    norm_req = (filepath or "").replace("\\", "/").strip().lstrip("/")
+    if not norm_req:
+        return {"node": None}
+
     if graph_store_mgr.mode == "EMBEDDED_SQLITE":
         emb = graph_store_mgr._embedded_store
-        emb._ensure_loaded()
-        norm_req = filepath.replace("\\", "/").lstrip("/")
         candidates = []
-        for n in emb._nodes.values():
-            n_fp = (n.filepath or "").replace("\\", "/").lstrip("/")
-            if not n_fp:
-                continue
-            if (n_fp.endswith(norm_req) or norm_req.endswith(n_fp)) and n.start_line <= line <= n.end_line:
-                candidates.append(n)
+        with emb._lock:
+            emb._ensure_loaded()
+            for n in emb._nodes.values():
+                n_fp = (n.filepath or "").replace("\\", "/").lstrip("/")
+                if not n_fp:
+                    continue
+                if (n_fp.endswith(norm_req) or norm_req.endswith(n_fp)) and n.start_line <= line <= n.end_line:
+                    candidates.append(n)
         if candidates:
             candidates.sort(key=lambda n: (n.end_line - n.start_line, n.end_col - n.start_col))
             return {"node": candidates[0].model_dump()}
@@ -2959,7 +2963,7 @@ def get_node_at_location(filepath: str = Query(...), line: int = Query(...)):
     LIMIT 1
     """
     with neo4j_client.driver.session() as session:
-        rec = session.run(query, filepath=filepath, line=line).single()
+        rec = session.run(query, filepath=norm_req, line=line).single()
         if rec and rec["node"]:
             return {"node": rec["node"]}
     return {"node": None}
