@@ -1404,7 +1404,37 @@ class TestFastApiDualEngineAndEnterpriseRules:
             scan_engine="SAST",
         )
 
-        enriched = em.enrich_findings([java_deser, tls_bypass])
+        weak_md5 = Finding(
+            id="reg-rule13-md5",
+            rule_id="RULE-13-UNSAFE-DESERIALIZATION-CRYPTO",
+            severity="HIGH",
+            title="Weak Cryptographic Digest (MD5)",
+            description="Weak hash algorithm hashlib.md5 used for password/token digest.",
+            cwe_id="CWE-502",
+            owasp_category="A02:2021 - Cryptographic Failures",
+            cvss_score=7.5,
+            remediation="",
+            path_nodes=[
+                {
+                    "id": "py-md5-1",
+                    "label": "Call",
+                    "name": "hashlib.md5",
+                    "code": "h = hashlib.md5(user_secret.encode()).hexdigest()",
+                    "filepath": "api/crypto.py",
+                    "start_line": 9,
+                    "end_line": 9,
+                    "start_col": 4,
+                    "end_col": 53,
+                    "is_source": False,
+                    "is_sink": True,
+                    "is_sanitizer": False,
+                }
+            ],
+            path_edges=[],
+            scan_engine="SAST",
+        )
+
+        enriched = em.enrich_findings([java_deser, tls_bypass, weak_md5])
         by_id = {f.id: f for f in enriched}
 
         # 1. RULE-28-POLYGLOT-DESER (Java ObjectInputStream) must NEVER emit hashlib.sha256
@@ -1420,5 +1450,10 @@ class TestFastApiDualEngineAndEnterpriseRules:
         assert "XML parser" not in ef_tls.plain_english_summary
         assert "TLS" in ef_tls.plain_english_summary or "certificate" in ef_tls.plain_english_summary.lower()
         assert "verify=True" in ef_tls.best_fix_location.recommended_fix or "TLS" in ef_tls.best_fix_location.recommended_fix
+
+        # 3. RULE-13-UNSAFE-DESERIALIZATION-CRYPTO with hashlib.md5 MUST still emit hashlib.sha256
+        ef_md5 = by_id["reg-rule13-md5"]
+        assert ef_md5.best_fix_location is not None
+        assert "hashlib.sha256" in ef_md5.best_fix_location.recommended_fix
 
 

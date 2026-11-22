@@ -297,6 +297,14 @@ def compute_best_fix_location(finding: Finding) -> BestFixLocation:
             rec_fix = "parsed_doc = json.loads(raw_payload)  # Replace unsafe binary deserialization with strict schema JSON"
         elif "jwt.decode" in code_snip:
             rec_fix = "claims = jwt.decode(token, JWT_VERIFY_KEY, algorithms=['RS256'], options={'verify_signature': True})"
+        elif (
+            "md5" in code_snip.lower()
+            or "sha1" in code_snip.lower()
+            or "DIGEST" in (finding.title or "").upper()
+            or "WEAK CRYPTO" in (finding.title or "").upper()
+            or cwe in ("CWE-327", "CWE-328")
+        ):
+            rec_fix = "digest = hashlib.sha256(payload_bytes).hexdigest()  # SHA-256 / Argon2id"
         elif cwe == "CWE-502" or "DESER" in rule_upper:
             rec_fix = (
                 finding.remediation
