@@ -5392,8 +5392,12 @@ class EnterpriseManager:
         iac_f = [
             f for f in active_findings
             if f.scan_engine == "IaC"
-            or f.cwe_id in ("CWE-250", "CWE-798", "CWE-829")
-            or f.rule_id in ("IAC-1-COMPOSE-SECRET", "IAC-2-CONTAINER-ROOT", "IAC-3-CICD-WORKFLOW-SECURITY", "RULE-8-HARDCODED-SECRET", "SECRET-GIT-HISTORY-LEAK")
+            or f.cwe_id in ("CWE-250", "CWE-798", "CWE-829", "CWE-200", "CWE-532")
+            or f.rule_id in (
+                "IAC-1-COMPOSE-SECRET", "IAC-2-CONTAINER-ROOT", "IAC-3-CICD-WORKFLOW-SECURITY",
+                "RULE-8-HARDCODED-SECRET", "SECRET-GIT-HISTORY-LEAK",
+                "COG-4-SENSITIVE-DATA-EXPOSURE",
+            )
         ]
         dos_f = [
             f for f in active_findings
@@ -6095,7 +6099,7 @@ class EnterpriseManager:
                     if iac_f
                     else f"OK • ALL {i_ok_count} CHECKS PASSED"
                 ),
-                severity="HIGH" if any(f.cwe_id == "CWE-798" for f in iac_f) else ("MEDIUM" if iac_f else "LOW"),
+                severity="HIGH" if any(f.cwe_id in ("CWE-798", "CWE-200", "CWE-532") or f.rule_id == "COG-4-SENSITIVE-DATA-EXPOSURE" for f in iac_f) else ("MEDIUM" if iac_f else "LOW"),
                 total_checks_count=i_total_count,
                 ok_count=i_ok_count,
                 issue_count=i_issue_count,

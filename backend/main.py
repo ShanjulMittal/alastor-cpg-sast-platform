@@ -1861,6 +1861,96 @@ _cached_cognitive_dir: str = ""
 _last_neo4j_ingested_dir: Optional[str] = None
 _findings_lock = threading.Lock()
 
+_COGNITIVE_REDACT_FALLBACK = "[REDACTED_" + "SECRET]"
+_COGNITIVE_CREDENTIAL_REGEXES = (
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{16,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9_]{12,}\b"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z\-_]{20,}\b"),
+    re.compile(
+        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"
+    ),
+)
+
+
+def _snapshot_cached_cognitive() -> Tuple[List[Finding], str]:
+    """Returns a thread-safe snapshot of cached cognitive findings and their directory."""
+    with _findings_lock:
+        return list(_cached_cognitive_findings), _cached_cognitive_dir
+
+
+def _scrub_cognitive_text(text: str, replacements: List[Tuple[str, str]]) -> str:
+    if not text:
+        return text
+    out = text
+    for raw_tok, mask_lbl in replacements:
+        if raw_tok and raw_tok in out:
+            out = out.replace(raw_tok, mask_lbl)
+    for rx in _COGNITIVE_CREDENTIAL_REGEXES:
+        out = rx.sub(_COGNITIVE_REDACT_FALLBACK, out)
+    return out
+
+
+def _scrub_cognitive_findings(
+    findings_to_scrub: List[Finding],
+    reference_findings: List[Finding],
+) -> List[Finding]:
+    """Scrubs known raw secret literals (longest-first) and credential regexes from cognitive findings."""
+    mask_by_raw: Dict[str, str] = {}
+    for rf in reference_findings + findings_to_scrub:
+        raw_val = rf.secret_value_raw
+        if raw_val and len(raw_val) >= 4 and raw_val not in mask_by_raw:
+            mask_by_raw[raw_val] = rf.secret_value_masked or _COGNITIVE_REDACT_FALLBACK
+    replacements = sorted(mask_by_raw.items(), key=lambda kv: len(kv[0]), reverse=True)
+
+    scrubbed_list: List[Finding] = []
+    for f in findings_to_scrub:
+        f_cp = f.model_copy(deep=True)
+        if not f_cp.is_secret_finding:
+            f_cp.secret_value_raw = None
+        for attr in (
+            "title",
+            "description",
+            "plain_english_summary",
+            "non_coder_analogy",
+            "business_impact",
+            "remediation",
+            "reachability_reason",
+        ):
+            cur = getattr(f_cp, attr, None)
+            if isinstance(cur, str) and cur:
+                setattr(f_cp, attr, _scrub_cognitive_text(cur, replacements))
+        if f_cp.management_action_steps:
+            f_cp.management_action_steps = [
+                _scrub_cognitive_text(step, replacements)
+                for step in f_cp.management_action_steps
+            ]
+        for node in f_cp.path_nodes or []:
+            if isinstance(node, dict):
+                for n_key in ("code", "name"):
+                    if isinstance(node.get(n_key), str) and node[n_key]:
+                        node[n_key] = _scrub_cognitive_text(node[n_key], replacements)
+        if f_cp.best_fix_location is not None:
+            for bfl_attr in (
+                "code_snippet",
+                "explanation",
+                "recommended_fix",
+                "before_code_block",
+                "after_code_block",
+            ):
+                cur_bfl = getattr(f_cp.best_fix_location, bfl_attr, None)
+                if isinstance(cur_bfl, str) and cur_bfl:
+                    setattr(
+                        f_cp.best_fix_location,
+                        bfl_attr,
+                        _scrub_cognitive_text(cur_bfl, replacements),
+                    )
+        scrubbed_list.append(f_cp)
+    return scrubbed_list
+
 
 def get_or_compute_findings(force_refresh: bool = False) -> List[Finding]:
     """Retrieves cached findings or executes SAST + SCA + IaC rules when refreshed, merged with site-extracted code matches and enriched with BFL, Aging & Triage."""
@@ -1949,9 +2039,10 @@ def get_or_compute_findings(force_refresh: bool = False) -> List[Finding]:
             seen_loc.add(ef_loc)
             combined.append(ef.model_copy(deep=True))
 
-    if _cached_cognitive_findings and _cached_cognitive_dir:
+    snap_cog_findings, snap_cog_dir = _snapshot_cached_cognitive()
+    if snap_cog_findings and snap_cog_dir:
         try:
-            _norm_cog_dir = os.path.normcase(os.path.realpath(_cached_cognitive_dir))
+            _norm_cog_dir = os.path.normcase(os.path.realpath(snap_cog_dir))
             _norm_cur_real = os.path.normcase(os.path.realpath(target_dir))
         except Exception:
             _norm_cog_dir = ""
@@ -1965,7 +2056,7 @@ def get_or_compute_findings(force_refresh: bool = False) -> List[Finding]:
                 )
                 for f in combined
             }
-            for cf in _cached_cognitive_findings:
+            for cf in snap_cog_findings:
                 cf_key = (
                     cf.rule_id,
                     (cf.path_nodes[-1].get("filepath") if cf.path_nodes else ""),
@@ -4647,15 +4738,16 @@ def _resolve_findings_for_project_target(target_dir: str) -> List[Finding]:
         base_findings = enterprise_mgr.enrich_findings(
             [Finding(**f) for f in cached["latest_findings"] if isinstance(f, dict)]
         )
-    if _cached_cognitive_findings and _cached_cognitive_dir:
+    snap_cog_findings, snap_cog_dir = _snapshot_cached_cognitive()
+    if snap_cog_findings and snap_cog_dir:
         try:
-            norm_cog = os.path.normcase(os.path.realpath(_cached_cognitive_dir))
+            norm_cog = os.path.normcase(os.path.realpath(snap_cog_dir))
         except Exception:
             norm_cog = ""
         if norm_cog and norm_cog == norm_req:
             seen_ids = {f.id for f in base_findings}
             merged = list(base_findings)
-            for cf in _cached_cognitive_findings:
+            for cf in snap_cog_findings:
                 if cf.id not in seen_ids:
                     seen_ids.add(cf.id)
                     merged.append(cf.model_copy(deep=True))
@@ -5130,22 +5222,24 @@ def run_cognitive_semantic_hunt(req: CognitiveHuntRequest):
         if hunt_resp.sibling_findings
         else []
     )
-    hunt_resp.findings = _redact_findings_for_active_rbac(enriched_semantic)
-    hunt_resp.sibling_findings = _redact_findings_for_active_rbac(enriched_siblings)
+    scrubbed_semantic = _scrub_cognitive_findings(enriched_semantic, active_findings)
+    scrubbed_siblings = _scrub_cognitive_findings(enriched_siblings, active_findings)
+    hunt_resp.findings = _redact_findings_for_active_rbac(scrubbed_semantic)
+    hunt_resp.sibling_findings = _redact_findings_for_active_rbac(scrubbed_siblings)
 
     # Merge discovered cognitive & sibling findings into confined cognitive cache for target_dir
     norm_target = os.path.normcase(os.path.realpath(target_dir))
-    norm_existing_cog = (
-        os.path.normcase(os.path.realpath(_cached_cognitive_dir))
-        if _cached_cognitive_dir
-        else ""
-    )
     with _findings_lock:
+        norm_existing_cog = (
+            os.path.normcase(os.path.realpath(_cached_cognitive_dir))
+            if _cached_cognitive_dir
+            else ""
+        )
         if norm_existing_cog != norm_target:
             _cached_cognitive_findings = []
             _cached_cognitive_dir = target_dir
         seen_cog_ids = {f.id for f in _cached_cognitive_findings}
-        for nf in enriched_semantic + enriched_siblings:
+        for nf in scrubbed_semantic + scrubbed_siblings:
             if nf.id not in seen_cog_ids:
                 seen_cog_ids.add(nf.id)
                 _cached_cognitive_findings.append(nf.model_copy(deep=True))
@@ -5222,7 +5316,13 @@ def validate_cognitive_patch_panel(req: PatchPanelValidateRequest):
     if req.finding_id:
         findings = _resolve_findings_for_project_target(target_dir)
         matched_finding = next((f for f in findings if f.id == req.finding_id), None)
-        if matched_finding is None and _cached_findings:
+        norm_req = os.path.normcase(os.path.realpath(target_dir))
+        norm_cur = (
+            os.path.normcase(os.path.realpath(current_scan_dir))
+            if current_scan_dir
+            else ""
+        )
+        if matched_finding is None and _cached_findings and norm_req == norm_cur:
             matched_finding = next((f for f in _cached_findings if f.id == req.finding_id), None)
 
     return validate_patch_with_panel(

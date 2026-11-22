@@ -1373,7 +1373,7 @@ class PastaThreatEngine:
                 PastaAttackTreeNode(
                     id=n_sink_id,
                     node_role="VULN_SINK",
-                    title=_redact_sensitive_text(f.title[:64], forbidden_raw_values),
+                    title=_redact_sensitive_text(f.title, forbidden_raw_values)[:64],
                     subtitle=sink_sub,
                     severity=eff_sev,
                     filepath=sink_fp,
@@ -1874,7 +1874,7 @@ class PastaThreatEngine:
                     PastaAttackTreeNode(
                         id=f"{sc_id}-n{idx + 1}",
                         node_role=n_role,
-                        title=_redact_sensitive_text(h.title[:80], forbidden_raw_values),
+                        title=_redact_sensitive_text(h.title, forbidden_raw_values)[:80],
                         subtitle=_redact_sensitive_text(
                             f"{h.filepath}:L{max(1, int(h.line or 1))}" if h.filepath else h.hop_type,
                             forbidden_raw_values,
