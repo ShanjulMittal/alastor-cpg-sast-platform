@@ -29,7 +29,12 @@ from compiler.dfg_builder import DFGBuilder
 from compiler.scanner import ScannedFile
 from database.graph_store import EmbeddedGraphStore, GraphStoreManager, Neo4jGraphStore
 from engine.community_detector import build_community_graph_view, detect_code_communities
-from engine.rule_executor import RULES, RuleExecutor, is_sanitizer_compatible_for_sink
+from engine.rule_executor import (
+    RULES,
+    RuleExecutor,
+    is_sanitizer_compatible_for_sink,
+    merge_findings_deduplicated,
+)
 from models import (
     AppTreeSummary,
     CPGEdge,
@@ -201,6 +206,66 @@ class TestDomainAwareRuleExecutor:
                 )
                 assert sum(1 for f in deduped if f.rule_id == "RULE-27-POLYGLOT-CMDI") == 1
 
+    def test_merge_findings_deduplicated_preserves_multi_source_shared_sink_paths(self):
+        # Two distinct entrypoints flowing into the EXACT same sink line must BOTH be preserved!
+        f_path_a = Finding(
+            id="taint-path-a",
+            rule_id="RULE-1-TAINT",
+            severity="CRITICAL",
+            title="Taint Vulnerability: Untrusted Input Flows to Sensitive Sink",
+            path_nodes=[
+                {"id": "src_a", "filepath": "api/route_a.py", "start_line": 10},
+                {"id": "sink_shared", "filepath": "core/runner.py", "start_line": 42},
+            ],
+            path_edges=[{"id": "e1", "source": "src_a", "target": "sink_shared", "type": "DFG_FLOWS_TO"}],
+        )
+        f_path_b = Finding(
+            id="taint-path-b",
+            rule_id="RULE-1-TAINT",
+            severity="CRITICAL",
+            title="Taint Vulnerability: Untrusted Input Flows to Sensitive Sink",
+            path_nodes=[
+                {"id": "src_b", "filepath": "api/route_b.py", "start_line": 22},
+                {"id": "sink_shared", "filepath": "core/runner.py", "start_line": 42},
+            ],
+            path_edges=[{"id": "e2", "source": "src_b", "target": "sink_shared", "type": "DFG_FLOWS_TO"}],
+        )
+        # Duplicate of f_path_a with different id but identical node IDs must be dropped
+        f_path_a_dup = Finding(
+            id="taint-path-a-dup",
+            rule_id="RULE-1-TAINT",
+            severity="CRITICAL",
+            title="Taint Vulnerability: Untrusted Input Flows to Sensitive Sink",
+            path_nodes=[
+                {"id": "src_a", "filepath": "api/route_a.py", "start_line": 10},
+                {"id": "sink_shared", "filepath": "core/runner.py", "start_line": 42},
+            ],
+            path_edges=[],
+        )
+        # Single-node findings on the same (rule_id, filepath, start_line) MUST still deduplicate
+        f_single_1 = Finding(
+            id="single-1",
+            rule_id="RULE-6-SHELL-INJECTION",
+            severity="CRITICAL",
+            title="Unsafe Shell Execution",
+            path_nodes=[{"id": "c1", "filepath": "core/runner.py", "start_line": 42}],
+            path_edges=[],
+        )
+        f_single_2 = Finding(
+            id="single-2",
+            rule_id="RULE-6-SHELL-INJECTION",
+            severity="CRITICAL",
+            title="Unsafe Shell Execution",
+            path_nodes=[{"id": "c2", "filepath": "core/runner.py", "start_line": 42}],
+            path_edges=[],
+        )
+
+        merged = merge_findings_deduplicated([f_path_a, f_single_1], [f_path_b, f_path_a_dup, f_single_2])
+        taint_ids = [f.id for f in merged if f.rule_id == "RULE-1-TAINT"]
+        assert taint_ids == ["taint-path-a", "taint-path-b"]
+        single_ids = [f.id for f in merged if f.rule_id == "RULE-6-SHELL-INJECTION"]
+        assert single_ids == ["single-1"]
+
 
 # ---------------------------------------------------------------------------
 # 2. EmbeddedGraphStore SQLite WAL Persistence & Reload
@@ -284,6 +349,40 @@ class TestEmbeddedGraphStorePersistence:
             assert store.get_counts()["nodes"] == 8
         finally:
             store.close()
+
+    def test_ingest_cpg_atomic_on_commit_error_and_close_resets_loaded_flag(self, tmp_path):
+        db_path = str(tmp_path / "vault" / "atomic.db")
+        store = EmbeddedGraphStore(db_path)
+        n1 = _mk_node("n_ok", filepath="ok.py", start_line=1)
+        store.ingest_cpg([n1], [])
+        assert store.get_counts() == {"nodes": 1, "edges": 0}
+
+        # Simulate SQLite commit failure: in-memory _nodes/_edges must NOT be mutated
+        n2 = _mk_node("n_fail", filepath="fail.py", start_line=2)
+        e_fail = _mk_edge("n_ok", "n_fail", "DFG_FLOWS_TO", "x")
+        real_conn = store._get_conn()
+
+        class _FailingCommitConn:
+            def __getattr__(self, item):
+                return getattr(real_conn, item)
+
+            def commit(self):
+                real_conn.rollback()
+                raise sqlite3.OperationalError("simulated disk full")
+
+        with mock.patch.object(store, "_get_conn", return_value=_FailingCommitConn()):
+            with pytest.raises(sqlite3.OperationalError, match="simulated disk full"):
+                store.ingest_cpg([n2], [e_fail])
+
+        assert "n_fail" not in store._nodes
+        assert e_fail.id not in store._edges
+        assert store.get_counts() == {"nodes": 1, "edges": 0}
+
+        # Closing must reset _loaded so subsequent re-open reloads cleanly from disk
+        store.close()
+        assert store._loaded is False
+        assert store.get_counts() == {"nodes": 1, "edges": 0}
+        store.close()
 
 
 # ---------------------------------------------------------------------------
@@ -601,6 +700,145 @@ class TestEmbeddedGraphStoreViews:
         finally:
             store.close()
 
+    def test_app_tree_spider_and_app_tree_view_modes_preserve_label_and_persist(self, tmp_path):
+        app_tree = AppTreeSummary(
+            root_path="/repo",
+            total_files=2,
+            total_directories=2,
+            total_lines=40,
+            category_counts={"API": 1, "Core": 1},
+            detected_tech_stack=["Python"],
+            tree=DirectoryTreeNode(
+                name="repo",
+                path="repo",
+                purpose="Root",
+                subdirectories=[
+                    DirectoryTreeNode(
+                        name="api",
+                        path="api",
+                        purpose="Routes",
+                        files=[
+                            FilePurposeInfo(
+                                filepath="api/routes.py",
+                                filename="routes.py",
+                                extension=".py",
+                                category="API",
+                                purpose="HTTP routes",
+                                language="python",
+                                line_count=20,
+                                size_bytes=200,
+                                sha256="aaa",
+                                is_cpg_supported=True,
+                            ),
+                            FilePurposeInfo(
+                                filepath="api/service.py",
+                                filename="service.py",
+                                extension=".py",
+                                category="Core",
+                                purpose="Business logic",
+                                language="python",
+                                line_count=20,
+                                size_bytes=220,
+                                sha256="bbb",
+                                is_cpg_supported=True,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+            flat_files=[],
+            cross_file_edges=[
+                CrossFileEdge(
+                    source_filepath="api/routes.py",
+                    target_filepath="api/service.py",
+                    edge_type="IMPORTS",
+                    symbols=["run_job"],
+                    flow_label="IMPORTS",
+                )
+            ],
+        )
+
+        db_path = str(tmp_path / "spider.db")
+        store = EmbeddedGraphStore(db_path)
+        try:
+            store.ingest_app_tree(app_tree)
+            spider_view = store.query_graph_view("SPIDER")
+            assert spider_view["view_mode"] == "SPIDER"
+            assert any(e["type"] == "IMPORTS" for e in spider_view["edges"])
+            assert any(e["type"] == "CONTAINS" for e in spider_view["edges"])
+
+            tree_view = store.query_graph_view("APP_TREE")
+            assert tree_view["view_mode"] == "APP_TREE"
+            assert len(tree_view["nodes"]) == len(spider_view["nodes"])
+        finally:
+            store.close()
+
+        # Verify Neo4jGraphStore supports SPIDER/APP_TREE & ENTRYPOINTS with project-wide fallback
+        neo_mock = mock.MagicMock()
+        mock_session = mock.MagicMock()
+        neo_mock.driver.session.return_value.__enter__.return_value = mock_session
+
+        ep_rec = {
+            "all_nodes": [
+                {
+                    "id": "ep1",
+                    "label": "Function",
+                    "name": "route_login",
+                    "filepath": "api/routes.py",
+                    "start_line": 3,
+                    "end_line": 8,
+                    "ast_type": "function_definition",
+                    "code": "@app.post('/login')\ndef route_login(): pass",
+                    "is_source": True,
+                    "is_sink": False,
+                    "is_sanitizer": False,
+                },
+                {
+                    "id": "sink1",
+                    "label": "Call",
+                    "name": "os.system",
+                    "filepath": "api/service.py",
+                    "start_line": 12,
+                    "end_line": 12,
+                    "ast_type": "call",
+                    "code": "os.system(cmd)",
+                    "is_source": False,
+                    "is_sink": True,
+                    "is_sanitizer": False,
+                },
+            ],
+            "all_edges": [
+                {"id": "e_ep", "source": "ep1", "target": "sink1", "type": "DFG_FLOWS_TO", "var_name": "cmd"}
+            ],
+        }
+        # First call (scoped to missing filepath) returns empty; second call (project-wide fallback) returns ep_rec
+        empty_res = mock.MagicMock()
+        empty_res.single.return_value = {"all_nodes": [], "all_edges": []}
+        populated_res = mock.MagicMock()
+        populated_res.single.return_value = ep_rec
+        mock_session.run.side_effect = [empty_res, populated_res]
+
+        reloaded_cache = EmbeddedGraphStore(db_path)
+        neo_store = Neo4jGraphStore(neo_mock, reloaded_cache)
+        try:
+            neo_spider = neo_store.query_graph_view("SPIDER")
+            assert neo_spider["view_mode"] == "SPIDER"
+            assert any(e["type"] == "IMPORTS" for e in neo_spider["edges"])
+
+            neo_app_tree = neo_store.query_graph_view("APP_TREE")
+            assert neo_app_tree["view_mode"] == "APP_TREE"
+
+            neo_ep = neo_store.query_graph_view("ENTRYPOINTS", filepath="unmatched/file.py")
+            assert neo_ep["view_mode"] == "ENTRYPOINTS"
+            assert len(neo_ep["nodes"]) == 2
+            assert len(neo_ep["edges"]) == 1
+            assert mock_session.run.call_count == 2
+            first_query = mock_session.run.call_args_list[0][0][0]
+            assert "is_source" in first_query
+            assert "DFG_FLOWS_TO" in first_query
+        finally:
+            neo_store.close()
+
 
 # ---------------------------------------------------------------------------
 # 5. GraphStoreManager Automatic Failover & Engine Selection
@@ -670,6 +908,18 @@ class TestGraphStoreManagerFailover:
         mgr = GraphStoreManager(neo4j_client=offline_neo4j, vault_dir=str(tmp_path / ".alastor_vault"))
         try:
             with pytest.raises(RuntimeError, match="Neo4j unreachable"):
+                mgr.ensure_backend(force_probe=True)
+        finally:
+            mgr.close()
+
+    def test_forced_neo4j_mode_raises_when_probe_returns_false(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ALASTOR_GRAPH_ENGINE", "neo4j")
+        false_neo4j = mock.MagicMock()
+        false_neo4j.verify_connectivity_and_apoc.return_value = False
+
+        mgr = GraphStoreManager(neo4j_client=false_neo4j, vault_dir=str(tmp_path / ".alastor_vault"))
+        try:
+            with pytest.raises(RuntimeError, match="verify|False|Neo4j"):
                 mgr.ensure_backend(force_probe=True)
         finally:
             mgr.close()

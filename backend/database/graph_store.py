@@ -194,7 +194,7 @@ def _best_effort_chmod(path: str, mode: int) -> None:
         pass
 
 
-def _build_app_tree_spider(app_tree: AppTreeSummary) -> Dict[str, Any]:
+def _build_app_tree_spider(app_tree: AppTreeSummary, view_mode: str = "SPIDER") -> Dict[str, Any]:
     nodes: Dict[str, Dict[str, Any]] = {}
     edges: Dict[str, Dict[str, Any]] = {}
 
@@ -262,7 +262,7 @@ def _build_app_tree_spider(app_tree: AppTreeSummary) -> Dict[str, Any]:
                 "var_name": ", ".join(ce.symbols[:3]) if ce.symbols else None,
             }
 
-    return {"view_mode": "SPIDER", "nodes": list(nodes.values()), "edges": list(edges.values())}
+    return {"view_mode": view_mode, "nodes": list(nodes.values()), "edges": list(edges.values())}
 
 
 # ---------------------------------------------------------------------------
@@ -498,6 +498,7 @@ class EmbeddedGraphStore:
                 except sqlite3.Error:
                     pass
                 self._conn = None
+            self._loaded = False
 
     def ingest_cpg(
         self,
@@ -554,12 +555,10 @@ class EmbeddedGraphStore:
                         total_nodes,
                     )
 
-            for n in unique_nodes:
-                self._nodes[n.id] = n
-
+            valid_node_ids = set(self._nodes.keys()) | {n.id for n in unique_nodes}
             unique_edges = [
                 e for e in {e.id: e for e in edges}.values()
-                if e.source_id in self._nodes and e.target_id in self._nodes
+                if e.source_id in valid_node_ids and e.target_id in valid_node_ids
             ]
             total_edges = len(unique_edges)
             edge_tuples = [
@@ -585,6 +584,8 @@ class EmbeddedGraphStore:
                     )
 
             conn.commit()
+            for n in unique_nodes:
+                self._nodes[n.id] = n
             for e in unique_edges:
                 self._edges[e.id] = e
             self._rebuild_memory_indices()
@@ -1578,7 +1579,7 @@ class EmbeddedGraphStore:
             if mode_upper in ("SPIDER", "APP_TREE"):
                 effective_tree = app_tree or self.get_app_tree()
                 if effective_tree is not None:
-                    return _build_app_tree_spider(effective_tree)
+                    return _build_app_tree_spider(effective_tree, view_mode=mode_upper)
                 # Fallback bounded spider over CPG graph
                 return self._collect_subgraph_from_edges(
                     self._edges.values(),
@@ -1707,6 +1708,10 @@ class Neo4jGraphStore:
                 findings=findings,
                 app_tree=app_tree,
             )
+        if mode_upper in ("SPIDER", "APP_TREE"):
+            effective_tree = app_tree or self.embedded_cache.get_app_tree()
+            if effective_tree is not None:
+                return _build_app_tree_spider(effective_tree, view_mode=mode_upper)
 
         rel_map = {
             "DFG": ":DFG_FLOWS_TO",
@@ -1714,24 +1719,48 @@ class Neo4jGraphStore:
             "CFG": ":CFG_NEXT|CFG_TRUE|CFG_FALSE|CFG_LOOP_BACK|CFG_BREAK",
             "CFG_ONLY": ":CFG_NEXT|CFG_TRUE|CFG_FALSE|CFG_LOOP_BACK|CFG_BREAK",
             "CALL_GRAPH": ":CALLS",
+            "ENTRYPOINTS": ":DFG_FLOWS_TO|CALLS|CFG_NEXT",
+            "ENTRYPOINT_GRAPH": ":DFG_FLOWS_TO|CALLS|CFG_NEXT",
         }
         rel_filter = rel_map.get(mode_upper, "")
-        params: Dict[str, Any] = {}
-        where_stmt = ""
-        if filepath:
-            params["filepath"] = _norm_filepath(filepath)
-            where_stmt = "WHERE (s.filepath ENDS WITH $filepath OR $filepath ENDS WITH s.filepath OR t.filepath ENDS WITH $filepath)"
-
-        cypher = (
-            f"MATCH (s:CPGNode)-[r{rel_filter}]->(t:CPGNode) {where_stmt} "
-            "WITH s, r, t LIMIT 240 "
-            "RETURN collect(DISTINCT properties(s)) + collect(DISTINCT properties(t)) AS all_nodes, "
-            "collect(DISTINCT {id: toString(coalesce(r.id, elementId(r))), source: s.id, target: t.id, type: type(r), var_name: r.var_name}) AS all_edges"
+        ep_predicate = (
+            "(s.is_source = true OR (s.label = 'Function' AND ("
+            "s.code CONTAINS '@app.' OR s.code CONTAINS '@router.' OR "
+            "s.code CONTAINS '@GetMapping' OR s.code CONTAINS '@PostMapping' OR "
+            "s.code CONTAINS 'app.get(' OR s.code CONTAINS 'app.post(' OR "
+            "s.code CONTAINS 'http.HandleFunc')))"
         )
+        is_entrypoints = mode_upper in ("ENTRYPOINTS", "ENTRYPOINT_GRAPH")
+
+        def _build_query(use_filepath: bool) -> Tuple[str, Dict[str, Any]]:
+            clauses: List[str] = []
+            q_params: Dict[str, Any] = {}
+            if is_entrypoints:
+                clauses.append(ep_predicate)
+            if use_filepath and filepath:
+                q_params["filepath"] = _norm_filepath(filepath)
+                clauses.append(
+                    "(s.filepath ENDS WITH $filepath OR $filepath ENDS WITH s.filepath OR t.filepath ENDS WITH $filepath)"
+                )
+            where_stmt = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            q = (
+                f"MATCH (s:CPGNode)-[r{rel_filter}]->(t:CPGNode) {where_stmt} "
+                "WITH s, r, t LIMIT 240 "
+                "RETURN collect(DISTINCT properties(s)) + collect(DISTINCT properties(t)) AS all_nodes, "
+                "collect(DISTINCT {id: toString(coalesce(r.id, elementId(r))), source: s.id, target: t.id, type: type(r), var_name: r.var_name}) AS all_edges"
+            )
+            return q, q_params
+
         with self.neo4j_client.driver.session() as session:
+            cypher, params = _build_query(use_filepath=bool(filepath))
             rec = session.run(cypher, **params).single()
             raw_nodes = rec["all_nodes"] if rec else []
             raw_edges = rec["all_edges"] if rec else []
+            if not raw_edges and filepath:
+                fb_cypher, fb_params = _build_query(use_filepath=False)
+                fb_rec = session.run(fb_cypher, **fb_params).single()
+                raw_nodes = fb_rec["all_nodes"] if fb_rec else []
+                raw_edges = fb_rec["all_edges"] if fb_rec else []
 
         uniq_nodes: Dict[str, Dict[str, Any]] = {}
         for n in raw_nodes or []:
@@ -1819,7 +1848,8 @@ class GraphStoreManager:
             if pref == "neo4j":
                 if self.neo4j_client is None:
                     raise RuntimeError("ALASTOR_GRAPH_ENGINE=neo4j requires a configured Neo4jClient.")
-                self.neo4j_client.verify_connectivity_and_apoc()
+                if not self.neo4j_client.verify_connectivity_and_apoc():
+                    raise RuntimeError("Neo4j APOC connectivity verification returned False")
                 if self._neo4j_store is None:
                     self._neo4j_store = Neo4jGraphStore(self.neo4j_client, self._embedded_store)
                 self._active_store = self._neo4j_store

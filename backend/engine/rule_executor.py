@@ -135,29 +135,54 @@ def merge_findings_deduplicated(
     primary: Sequence[Finding],
     secondary: Sequence[Finding],
 ) -> List[Finding]:
-    """Merges two finding sequences without duplicating identical IDs or `(rule_id, filepath, start_line)` hits."""
+    """
+    Merges two finding sequences without dropping distinct multi-entrypoint taint paths sharing a sink:
+    - Always deduplicates exact `finding.id` matches.
+    - For multi-node findings (`len(path_nodes) > 1`), deduplicates by `(rule_id, sorted_node_ids)`
+      (falling back to `(rule_id, source_fp, source_line, sink_fp, sink_line)` if node IDs are absent).
+    - For single-node findings (`len(path_nodes) <= 1`), deduplicates by `(rule_id, sink_fp, sink_line)`.
+    """
     merged: List[Finding] = []
     seen_ids: Set[str] = set()
-    seen_rule_locs: Set[Tuple[str, str, int]] = set()
+    seen_semantic_keys: Set[Tuple[Any, ...]] = set()
 
     for f in (*primary, *secondary):
         if f.id in seen_ids:
             continue
-        sink_fp = ""
-        sink_ln = 0
-        if f.best_fix_location and f.best_fix_location.filepath:
-            sink_fp = f.best_fix_location.filepath
-            sink_ln = int(f.best_fix_location.line or 0)
-        elif f.path_nodes:
-            last_n = f.path_nodes[-1]
-            sink_fp = str(last_n.get("filepath") or "")
-            sink_ln = int(last_n.get("start_line") or 0)
-        loc_key = (f.rule_id, sink_fp, sink_ln)
-        if sink_fp and sink_ln > 0 and loc_key in seen_rule_locs:
+
+        semantic_key: Optional[Tuple[Any, ...]] = None
+        if len(f.path_nodes) > 1:
+            node_ids = tuple(sorted(str(n.get("id")) for n in f.path_nodes if isinstance(n, dict) and n.get("id")))
+            if len(node_ids) == len(f.path_nodes):
+                semantic_key = ("PATH_IDS", f.rule_id, node_ids)
+            else:
+                first_n = f.path_nodes[0] if isinstance(f.path_nodes[0], dict) else {}
+                last_n = f.path_nodes[-1] if isinstance(f.path_nodes[-1], dict) else {}
+                src_fp = str(first_n.get("filepath") or "")
+                src_ln = int(first_n.get("start_line") or 0)
+                sink_fp = str(last_n.get("filepath") or "")
+                sink_ln = int(last_n.get("start_line") or 0)
+                if src_fp and sink_fp and src_ln > 0 and sink_ln > 0:
+                    semantic_key = ("PATH_ENDS", f.rule_id, src_fp, src_ln, sink_fp, sink_ln)
+        else:
+            sink_fp = ""
+            sink_ln = 0
+            if f.best_fix_location and f.best_fix_location.filepath:
+                sink_fp = f.best_fix_location.filepath
+                sink_ln = int(f.best_fix_location.line or 0)
+            elif f.path_nodes and isinstance(f.path_nodes[-1], dict):
+                last_n = f.path_nodes[-1]
+                sink_fp = str(last_n.get("filepath") or "")
+                sink_ln = int(last_n.get("start_line") or 0)
+            if sink_fp and sink_ln > 0:
+                semantic_key = ("SINGLE", f.rule_id, sink_fp, sink_ln)
+
+        if semantic_key is not None and semantic_key in seen_semantic_keys:
             continue
+
         seen_ids.add(f.id)
-        if sink_fp and sink_ln > 0:
-            seen_rule_locs.add(loc_key)
+        if semantic_key is not None:
+            seen_semantic_keys.add(semantic_key)
         merged.append(f)
     return merged
 
