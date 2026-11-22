@@ -344,31 +344,64 @@ class DFGBuilder:
         if ts_node.type in self.func_types:
             return  # Do not descend into nested inner functions
 
-        # Flow-sensitive conditional branching: copy local_san per branch and intersect on merge
+        # Flow-sensitive conditional branching: walk all elif/else alternatives and intersect on merge
         if ts_node.type in ("if_statement", "if_expression", "if"):
             conseq = ts_node.child_by_field_name("consequence") or ts_node.child_by_field_name("body")
-            alt = ts_node.child_by_field_name("alternative")
-            before_san = {k: set(v) for k, v in local_san.items()}
-            true_san = {k: set(v) for k, v in before_san.items()}
-            if conseq is not None:
-                self._walk_helper_body(conseq, true_san, return_domains_list)
+            alts = list(ts_node.children_by_field_name("alternative"))
+            if not alts:
+                alts = [
+                    ch for ch in ts_node.children
+                    if ch.type in ("elif_clause", "else_if_clause", "else_clause", "elsif", "else")
+                ]
 
-            if alt is not None:
-                false_san = {k: set(v) for k, v in before_san.items()}
-                self._walk_helper_body(alt, false_san, return_domains_list)
-                merged_keys = set(true_san.keys()) & set(false_san.keys())
+            before_san = {k: set(v) for k, v in local_san.items()}
+
+            if conseq is None and not alts:
+                # Grammars like Swift `if_statement` have no `consequence`/`alternative` fields:
+                # walk children with a copy of local_san so returns are evaluated, then intersect with before_san.
+                branch_san = {k: set(v) for k, v in before_san.items()}
+                for ch in ts_node.children:
+                    self._walk_helper_body(ch, branch_san, return_domains_list)
+                merged_keys = set(before_san.keys()) & set(branch_san.keys())
                 local_san.clear()
                 for k in merged_keys:
-                    doms = _combine_domains(true_san[k], false_san[k])
+                    doms = _combine_domains(before_san[k], branch_san[k])
                     if doms:
                         local_san[k] = doms
-            else:
-                merged_keys = set(before_san.keys()) & set(true_san.keys())
+                return
+
+            branch_states: List[Dict[str, Set[str]]] = []
+            if conseq is not None:
+                true_san = {k: set(v) for k, v in before_san.items()}
+                self._walk_helper_body(conseq, true_san, return_domains_list)
+                branch_states.append(true_san)
+
+            has_exhaustive_else = False
+            for alt in alts:
+                if alt.type in ("else_clause", "else") or alt.type not in (
+                    "elif_clause", "else_if_clause", "elsif", "if_statement", "if_expression", "if"
+                ):
+                    has_exhaustive_else = True
+                alt_san = {k: set(v) for k, v in before_san.items()}
+                self._walk_helper_body(alt, alt_san, return_domains_list)
+                branch_states.append(alt_san)
+
+            if not has_exhaustive_else:
+                branch_states.append(before_san)
+
+            if branch_states:
+                merged_keys = set(branch_states[0].keys())
+                for st in branch_states[1:]:
+                    merged_keys &= set(st.keys())
                 local_san.clear()
                 for k in merged_keys:
-                    doms = _combine_domains(before_san[k], true_san[k])
-                    if doms:
-                        local_san[k] = doms
+                    acc = set(branch_states[0][k])
+                    for st in branch_states[1:]:
+                        acc = _combine_domains(acc, st[k])
+                        if not acc:
+                            break
+                    if acc:
+                        local_san[k] = acc
             return
 
         if ts_node.type in self.assign_types:
@@ -381,7 +414,7 @@ class DFGBuilder:
                     )
                     if ts_node.type in _AUGMENTED_ASSIGN_TYPES:
                         prior = local_san.get(var_name, set())
-                        merged = _combine_domains(prior, doms) if prior else doms
+                        merged = _combine_domains(prior, doms)
                         if merged:
                             local_san[var_name] = merged
                         else:
@@ -879,7 +912,7 @@ class DFGBuilder:
             scope_san = self.sanitized_vars.setdefault(scope_id, {})
             if assign_ts.type in _AUGMENTED_ASSIGN_TYPES:
                 prior = scope_san.get(target_var_name, set())
-                effective_domains = _combine_domains(prior, rhs_domains) if prior else rhs_domains
+                effective_domains = _combine_domains(prior, rhs_domains)
             else:
                 effective_domains = rhs_domains
 

@@ -1523,3 +1523,113 @@ int process(int err) {
         )
 
 
+class TestTask2FixRound2:
+    """Regression suite for Fix Round 2 scoped re-review findings."""
+
+    def test_python_if_elif_else_and_fallthrough_helper_not_sanitizer(self):
+        from compiler.ast_parser import ASTNormalizer
+        from compiler.dfg_builder import DFGBuilder
+
+        py_code = b"""
+import html
+
+def h_raw_else(u, a, b):
+    if a:
+        return html.escape(u)
+    elif b:
+        return html.escape(u)
+    else:
+        return u
+
+def h_fallthrough(u, a, b):
+    out = u
+    if a:
+        out = html.escape(u)
+    elif b:
+        out = html.escape(u)
+    return out
+
+def h_all_safe(u, a, b):
+    if a:
+        return html.escape(u)
+    elif b:
+        return html.escape(u)
+    else:
+        return html.escape(u)
+"""
+        sf = _make_scanned_file("api/branch_helpers.py", py_code, "python")
+        norm = ASTNormalizer(sf)
+        nodes, _ = norm.parse()
+        dfg = DFGBuilder(sf.filepath, sf.content_bytes, sf.language, nodes, norm.node_map, {}, {})
+        dfg.build()
+        assert "h_raw_else" not in dfg.sanitizer_helpers
+        assert "h_fallthrough" not in dfg.sanitizer_helpers
+        assert "HTML" in dfg.sanitizer_helpers.get("h_all_safe", set())
+
+    def test_php_single_quoted_strings_not_corrupted_by_comment_stripper(self):
+        from engine.polyglot_rules import run_polyglot_rules
+
+        php_vuln = "<?php\n$p = '/*';\nshell_exec($u);\n?>\n"
+        php_safe = "<?php\nshell_exec('curl https://example.com');\n?>\n"
+
+        sf_v = _make_scanned_file("cmd_vuln.php", php_vuln.encode("utf-8"), "php")
+        nv, ev = _compile_four_passes([sf_v])
+        assert any(
+            f.rule_id == "RULE-27-POLYGLOT-CMDI"
+            for f in run_polyglot_rules([sf_v], nv, ev)
+        )
+
+        sf_s = _make_scanned_file("cmd_safe.php", php_safe.encode("utf-8"), "php")
+        ns, es = _compile_four_passes([sf_s])
+        assert not any(
+            f.rule_id == "RULE-27-POLYGLOT-CMDI"
+            for f in run_polyglot_rules([sf_s], ns, es)
+        )
+
+    def test_comparison_chained_with_logical_and_remains_xss_sink(self):
+        js_code = b"""
+function render(el, count, user) {
+  el.innerHTML = count > 0 && user.bio;
+}
+"""
+        sf = _make_scanned_file("ui/cmp_and.js", js_code, "javascript")
+        nodes, _ = _compile_four_passes([sf])
+        sinks = [n for n in nodes if n.label == "Assignment" and n.name == "el.innerHTML"]
+        assert len(sinks) == 1
+        assert sinks[0].is_sink is True
+
+    def test_augmented_assign_never_upgrades_unsanitized_variable(self):
+        js_code = b"""
+function renderAccum(elBad, elGood, user, a) {
+  let s = user.bio;
+  s += esc(a);
+  elBad.innerHTML = s;
+
+  let ok = "";
+  ok += esc(a);
+  elGood.innerHTML = ok;
+}
+"""
+        sf = _make_scanned_file("ui/aug_assign.js", js_code, "javascript")
+        nodes, _ = _compile_four_passes([sf])
+        sinks = {
+            n.name: n for n in nodes
+            if n.label == "Assignment" and n.name.endswith(".innerHTML")
+        }
+        assert sinks["elBad.innerHTML"].is_sink is True
+        assert sinks["elGood.innerHTML"].is_sink is False
+
+    def test_secondary_sink_retains_sink_domain_with_replace_arg(self):
+        from compiler.ast_parser import classify_taint_with_domains
+
+        _, is_sink, is_san, sink_domain, _ = classify_taint_with_domains(
+            'open(path.replace("\\r", ""))',
+            "call",
+            'open(path.replace("\\r", ""))',
+            language="python",
+        )
+        assert is_san is False
+        assert sink_domain == "PATH"
+
+
+

@@ -156,11 +156,12 @@ _CATALOG_BY_ID: Dict[str, Dict[str, Any]] = {r["id"]: r for r in POLYGLOT_RULE_C
 _CHAR_LITERAL_RE = re.compile(r"'(?:[^'\\\n]|\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|.))'")
 
 
-def _strip_c_style_comments_preserve_lines(source: str) -> str:
+def _strip_c_style_comments_preserve_lines(source: str, allow_single_quote_strings: bool = False) -> str:
     """
     Replaces `//...` and `/*...*/` comments with spaces while preserving newlines (1-to-1 line numbers).
-    Handles double-quoted strings and single-quoted character literals cleanly without mistaking
-    Rust lifetimes (`'a`, `'static`) for unterminated single-quoted strings.
+    When `allow_single_quote_strings=True` (PHP, Dart, Solidity), single quotes open multi-character
+    string literals; when `False` (Rust, C/C++, Java, Go, etc.), single quotes only match character
+    literals via `_CHAR_LITERAL_RE` so Rust lifetimes (`'a`, `'static`) never open string mode.
     """
     out: List[str] = []
     i = 0
@@ -188,15 +189,18 @@ def _strip_c_style_comments_preserve_lines(source: str) -> str:
             continue
 
         if ch == "'":
-            # Only consume as char literal when matching `'x'` / `'\n'` / `'\x41'` / `'\u{...}'`,
-            # never entering string mode on Rust lifetimes like `'static` or `'a`.
-            cm = _CHAR_LITERAL_RE.match(source, i)
-            if cm:
-                out.append(cm.group(0))
-                i = cm.end()
-            else:
+            if allow_single_quote_strings:
+                in_str = "'"
                 out.append(ch)
                 i += 1
+            else:
+                cm = _CHAR_LITERAL_RE.match(source, i)
+                if cm:
+                    out.append(cm.group(0))
+                    i = cm.end()
+                else:
+                    out.append(ch)
+                    i += 1
             continue
 
         if ch == "/" and i + 1 < n and source[i + 1] == "/":
@@ -1231,7 +1235,11 @@ def run_polyglot_rules(
             if lang == "ruby":
                 clean_src = _strip_hash_comments_preserve_lines(raw_src)
             elif lang == "php":
-                clean_src = _strip_hash_comments_preserve_lines(_strip_c_style_comments_preserve_lines(raw_src))
+                clean_src = _strip_hash_comments_preserve_lines(
+                    _strip_c_style_comments_preserve_lines(raw_src, allow_single_quote_strings=True)
+                )
+            elif lang == "dart":
+                clean_src = _strip_c_style_comments_preserve_lines(raw_src, allow_single_quote_strings=True)
             else:
                 clean_src = _strip_c_style_comments_preserve_lines(raw_src)
 
@@ -1245,7 +1253,7 @@ def run_polyglot_rules(
                 findings.extend(_check_rule_29_polyglot_xxe(sf, clean_src, ctx))
 
         elif lang == "solidity":
-            clean_src = _strip_c_style_comments_preserve_lines(raw_src)
+            clean_src = _strip_c_style_comments_preserve_lines(raw_src, allow_single_quote_strings=True)
             if "RULE-30-SOLIDITY-REENTRANCY" in enabled:
                 findings.extend(_check_rule_30_solidity_reentrancy(sf, clean_src, ctx))
             if "RULE-31-SOLIDITY-TX-ORIGIN-DELEGATE" in enabled:

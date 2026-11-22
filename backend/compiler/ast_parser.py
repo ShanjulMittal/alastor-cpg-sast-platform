@@ -542,8 +542,14 @@ def _is_structurally_safe_html_expr(expr: str) -> bool:
         return True
 
     # 6. Pure top-level comparison returning boolean (`a === b`, `n > 1`, `x !== 0`)
-    # Strictly outside quotes/parens and excluding arrow functions (`=>`).
-    if _has_top_level_comparison(e) and not any(ch in e for ch in ("?", "`")):
+    # Strictly outside quotes/parens, excluding arrow functions (`=>`) and short-circuit operators (`&&`/`||`/`??`).
+    if (
+        _has_top_level_comparison(e)
+        and not any(ch in e for ch in ("?", "`"))
+        and "&&" not in e
+        and "||" not in e
+        and "??" not in e
+    ):
         return True
 
     # 7. Nested template literal whose every `${...}` is structurally safe (and no unsafe href=)
@@ -793,7 +799,7 @@ def classify_taint_with_domains(
     #   (e.g., `const x = escapeHtml(a) + raw_b`); Pass 3 (DFGBuilder) propagates RHS domains structurally.
     # - On call nodes, match sanitizer patterns strictly against the callee head (not argument substrings).
     is_unsafe_uri_expr = has_unsafe_uri_interpolation(clean_raw)
-    if not is_sink and not is_unsafe_uri_expr and node_type not in assign_types:
+    if not is_sink and not sink_domain and not is_unsafe_uri_expr and node_type not in assign_types:
         callee_head = _extract_callee_head(clean_raw) if node_type in call_or_member_types else clean_code
         for san, domains in sanitizer_domain_map.items():
             if node_type in call_or_member_types:
