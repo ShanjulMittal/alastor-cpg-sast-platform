@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { useAuditStore } from "@/store/useAuditStore";
 import { GitHubRepoVerifyResponse, ProjectConfig } from "@/types/cpg";
+import { FleetCommandWorkbench } from "@/components/FleetCommandWorkbench";
 import {
   FolderGit2,
   GitBranch,
@@ -27,9 +28,13 @@ import {
   Loader2,
   ExternalLink,
   Trash2,
+  Terminal,
 } from "lucide-react";
 
 export function ProjectsHubView() {
+  const [activeHubTab, setActiveHubTab] = useState<
+    "PORTFOLIO" | "FLEET_COMMAND"
+  >("PORTFOLIO");
   const projects = useAuditStore((s) => s.projects);
   const activateProject = useAuditStore((s) => s.activateProject);
   const createProject = useAuditStore((s) => s.createProject);
@@ -321,8 +326,65 @@ export function ProjectsHubView() {
           </div>
         </div>
 
-        {/* Portfolio Summary Strip (Strictly Real Scanned Data) */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Light-Only Daylight Hub Tab Switcher */}
+        <div
+          role="tablist"
+          aria-label="Projects Hub Views"
+          className="bg-white border border-slate-300 rounded-xl p-1.5 shadow-sm flex flex-wrap items-center gap-2"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeHubTab === "PORTFOLIO"}
+            onClick={() => setActiveHubTab("PORTFOLIO")}
+            className={`px-4 py-2 rounded-lg text-xs font-extrabold border flex items-center gap-2 transition-colors cursor-pointer ${
+              activeHubTab === "PORTFOLIO"
+                ? "bg-indigo-700 text-white border-indigo-800 shadow-sm"
+                : "bg-white text-slate-700 hover:bg-slate-100 border-slate-200"
+            }`}
+          >
+            <FolderGit2 className="w-4 h-4" />
+            <span>Portfolio Projects</span>
+            <span
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-extrabold ${
+                activeHubTab === "PORTFOLIO"
+                  ? "bg-white text-indigo-950"
+                  : "bg-slate-100 text-slate-800 border border-slate-300"
+              }`}
+            >
+              {projects.length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeHubTab === "FLEET_COMMAND"}
+            onClick={() => setActiveHubTab("FLEET_COMMAND")}
+            className={`px-4 py-2 rounded-lg text-xs font-extrabold border flex items-center gap-2 transition-colors cursor-pointer ${
+              activeHubTab === "FLEET_COMMAND"
+                ? "bg-indigo-700 text-white border-indigo-800 shadow-sm"
+                : "bg-white text-slate-700 hover:bg-slate-100 border-slate-200"
+            }`}
+          >
+            <Terminal className="w-4 h-4" />
+            <span>Fleet Command, Checkpoints &amp; Scanner Fusion</span>
+            <span
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-extrabold ${
+                activeHubTab === "FLEET_COMMAND"
+                  ? "bg-white text-indigo-950"
+                  : "bg-emerald-50 text-emerald-900 border border-emerald-300"
+              }`}
+            >
+              CLI • CSV • Fusion • GC
+            </span>
+          </button>
+        </div>
+
+        {activeHubTab === "PORTFOLIO" ? (
+          <>
+            {/* Portfolio Summary Strip (Strictly Real Scanned Data) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="p-4 rounded-xl bg-[var(--surface-panel)] border border-[var(--border-subtle)] flex items-center justify-between">
             <div>
               <div className="text-[11px] font-mono uppercase text-[var(--ink-muted)]">Registered Directories</div>
@@ -753,6 +815,10 @@ export function ProjectsHubView() {
             );
           })}
         </div>
+          </>
+        ) : (
+          <FleetCommandWorkbench />
+        )}
       </div>
 
       {/* Import GitHub (Public URL / Private Token) or Local Project Modal */}

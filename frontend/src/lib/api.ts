@@ -38,10 +38,22 @@ import {
   EvReplayResponse,
   EvReplayListResponse,
   EvDeleteReplayResponse,
+  DoctorReport,
+  EstimateReport,
+  ScannerFusionRequest,
+  ScannerFusionResponse,
+  FleetRunRequest,
+  FleetRunResponse,
+  FleetRunListResponse,
+  ScanRunCheckpointSummary,
+  FleetRepoResult,
+  GcRequest,
+  GcReport,
 } from "@/types/cpg";
 
 export const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000";
+export const API_BASE = BACKEND_URL;
 
 export class ApiRequestError extends Error {
   status: number;
@@ -671,4 +683,107 @@ export async function deleteEvReplay(
       method: "DELETE",
     }
   );
+}
+
+// ---------------------------------------------------------------------------
+// 17. ALASTOR v5.0 Pillar 4 — Fleet Batch Runner, Checkpoints, GC & Scanner Fusion
+// ---------------------------------------------------------------------------
+export async function fetchFleetDoctor(
+  checkNeo4j = false
+): Promise<DoctorReport> {
+  const suffix = checkNeo4j ? "?check_neo4j=true" : "";
+  return apiFetchJson<DoctorReport>(`/api/fleet/doctor${suffix}`);
+}
+
+export async function estimateFleetRepo(
+  projectPath?: string | null
+): Promise<EstimateReport> {
+  const localPath = normalizeLocalProjectPath(projectPath);
+  return apiFetchJson<EstimateReport>("/api/fleet/estimate", {
+    method: "POST",
+    body: JSON.stringify(localPath ? { project_path: localPath } : {}),
+  });
+}
+
+export async function importScannerFusion(
+  req: ScannerFusionRequest
+): Promise<ScannerFusionResponse> {
+  const localPath = normalizeLocalProjectPath(req.project_path) ?? "";
+  const body: ScannerFusionRequest = {
+    project_path: localPath,
+    report_json: req.report_json,
+    ...(req.source_format !== undefined
+      ? { source_format: req.source_format }
+      : {}),
+    ...(typeof req.run_s6_verify === "boolean"
+      ? { run_s6_verify: req.run_s6_verify }
+      : {}),
+    ...(typeof req.correlate_cpg === "boolean"
+      ? { correlate_cpg: req.correlate_cpg }
+      : {}),
+  };
+  return apiFetchJson<ScannerFusionResponse>("/api/fusion/import", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function runFleetBatch(
+  req: FleetRunRequest
+): Promise<FleetRunResponse> {
+  return apiFetchJson<FleetRunResponse>("/api/fleet/run", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+export async function listFleetRuns(
+  limit?: number
+): Promise<FleetRunListResponse> {
+  const qs = new URLSearchParams();
+  if (typeof limit === "number") {
+    qs.set("limit", String(limit));
+  }
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return apiFetchJson<FleetRunListResponse>(`/api/fleet/runs${suffix}`);
+}
+
+export async function listFleetCheckpoints(
+  projectPath?: string,
+  limit?: number
+): Promise<ScanRunCheckpointSummary[]> {
+  const qs = new URLSearchParams();
+  const localPath = normalizeLocalProjectPath(projectPath);
+  if (localPath) {
+    qs.set("project_path", localPath);
+  }
+  if (typeof limit === "number") {
+    qs.set("limit", String(limit));
+  }
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return apiFetchJson<ScanRunCheckpointSummary[]>(
+    `/api/fleet/checkpoints${suffix}`
+  );
+}
+
+export async function resumeFleetCheckpoint(
+  runId: string,
+  stopAfter?: string | null
+): Promise<FleetRepoResult> {
+  return apiFetchJson<FleetRepoResult>(
+    `/api/fleet/checkpoints/${encodeURIComponent(runId)}/resume`,
+    {
+      method: "POST",
+      body: JSON.stringify(
+        stopAfter !== undefined ? { stop_after: stopAfter } : {}
+      ),
+    }
+  );
+}
+
+export async function runFleetGc(req: GcRequest): Promise<GcReport> {
+  return apiFetchJson<GcReport>("/api/fleet/gc", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
 }

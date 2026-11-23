@@ -279,6 +279,8 @@ export interface Finding {
   secret_commit_author?: string | null;
   ev_status?: EvStatusType | null;
   ev_evidence_summary?: string | null;
+  source_engine?: string | null;
+  corroborated_by?: string[];
 }
 
 export interface ExtractedAdvisory {
@@ -1856,4 +1858,188 @@ export interface EvReplayListResponse {
 export interface EvDeleteReplayResponse {
   deleted: boolean;
   replay_id: string;
+}
+
+// ---------------------------------------------------------------------------
+// 17. Pillar 4 CLI/SDK, SQLite Stage Checkpoints, Universal Scanner Fusion & Batch Fleet
+// ---------------------------------------------------------------------------
+export type PipelineStageName =
+  | "S0_CPG"
+  | "S1_RULES"
+  | "S2_SECRETS_SCA"
+  | "S3_FUSION"
+  | "S4_COGNITIVE"
+  | "S6_VERIFY"
+  | "S8_CHAINS"
+  | "S9_REPORTS"
+  | "S10_REMEDIATE"
+  | "S11_VALIDATE"
+  | "EV_VERIFY";
+
+export type ScannerFormatType =
+  | "SARIF_2_1"
+  | "CODEQL_SARIF"
+  | "SEMGREP_JSON"
+  | "TRIVY_JSON"
+  | "GITLEAKS_JSON"
+  | "CHECKOV_JSON";
+
+export interface DoctorCheckItem {
+  name: string;
+  status: "OK" | "WARN" | "FAIL";
+  detail: string;
+}
+
+export interface DoctorReport {
+  overall_status: "READY" | "DEGRADED" | "ERROR";
+  python_version: string;
+  parsers_ready: number;
+  parsers_total: number;
+  graph_backend: string;
+  git_available: boolean;
+  docker_available: boolean;
+  vault_path: string;
+  vault_writable: boolean;
+  checks: DoctorCheckItem[];
+}
+
+export interface EstimateReport {
+  project_path: string;
+  total_files: number;
+  total_loc: number;
+  languages: Record<string, number>;
+  skipped_files: number;
+  estimated_deterministic_seconds: number;
+  estimated_ai_tokens: number;
+  estimated_ai_cost_usd: number;
+  recommended_profile: string;
+  repo_kind_hints: string[];
+}
+
+export interface StageCheckpointItem {
+  stage_name: string;
+  status: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "SKIPPED";
+  payload_sha256: string;
+  duration_ms: number;
+  updated_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ScanRunCheckpointSummary {
+  run_id: string;
+  repo_path: string;
+  commit_sha: string;
+  app_group: string;
+  status: "RUNNING" | "COMPLETED" | "FAILED" | "PARTIAL";
+  created_at: string;
+  updated_at: string;
+  host_provenance_valid: boolean;
+  stages: StageCheckpointItem[];
+  summary: Record<string, unknown>;
+}
+
+export interface ScannerFusionRequest {
+  project_path: string;
+  report_json: string;
+  source_format?: ScannerFormatType | null;
+  run_s6_verify?: boolean;
+  correlate_cpg?: boolean;
+}
+
+export interface ScannerFusionResponse {
+  project_path: string;
+  detected_format: ScannerFormatType;
+  imported_raw_count: number;
+  normalized_count: number;
+  corroborated_count: number;
+  new_unique_count: number;
+  cpg_enriched_count: number;
+  s6_verified_count: number;
+  findings: Finding[];
+  warnings: string[];
+}
+
+export interface FleetRepoSpec {
+  repo: string;
+  app_group?: string;
+  branch?: string | null;
+  fusion_reports?: string[];
+  profile?: string;
+}
+
+export interface FleetRepoResult {
+  repo: string;
+  app_group: string;
+  run_id: string;
+  status: "COMPLETED" | "FAILED" | "RESUMED_COMPLETED";
+  total_findings: number;
+  critical_count: number;
+  high_count: number;
+  medium_count: number;
+  low_count: number;
+  corroborated_count: number;
+  ev_confirmed_count: number;
+  go_live_decision: string;
+  resumed_stages: string[];
+  duration_ms: number;
+  error?: string | null;
+}
+
+export interface FleetAppGroupRollup {
+  app_group: string;
+  repo_count: number;
+  completed_repos: number;
+  failed_repos: number;
+  total_findings: number;
+  critical_count: number;
+  high_count: number;
+  corroborated_count: number;
+  ev_confirmed_count: number;
+  go_live_decision:
+    | "NO_GO_HOLD_RELEASE"
+    | "CONDITIONAL_GO_LIVE"
+    | "GO_LIVE_APPROVED";
+}
+
+export interface FleetRunRequest {
+  manifest_name?: string;
+  csv_content?: string | null;
+  repos?: FleetRepoSpec[];
+  group_by_app?: boolean;
+  resume?: boolean;
+  max_workers?: number;
+  stop_after?: string | null;
+}
+
+export interface FleetRunResponse {
+  fleet_run_id: string;
+  manifest_name: string;
+  status: "COMPLETED" | "PARTIAL" | "FAILED";
+  total_repos: number;
+  completed_repos: number;
+  failed_repos: number;
+  created_at: string;
+  repo_results: FleetRepoResult[];
+  app_rollups: FleetAppGroupRollup[];
+}
+
+export interface FleetRunListResponse {
+  total: number;
+  runs: FleetRunResponse[];
+}
+
+export interface GcRequest {
+  older_than_days?: number;
+  keep_last?: number;
+  dry_run?: boolean;
+}
+
+export interface GcReport {
+  dry_run: boolean;
+  pruned_runs: number;
+  pruned_checkpoints: number;
+  pruned_temp_dirs: number;
+  reclaimed_bytes: number;
+  kept_runs: number;
+  warnings: string[];
 }

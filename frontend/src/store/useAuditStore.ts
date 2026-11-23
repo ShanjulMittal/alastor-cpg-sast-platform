@@ -73,6 +73,16 @@ import {
   EvReplayResponse,
   EvRunRequest,
   EvRunResponse,
+  DoctorReport,
+  EstimateReport,
+  ScannerFusionRequest,
+  ScannerFusionResponse,
+  FleetRunRequest,
+  FleetRunResponse,
+  ScanRunCheckpointSummary,
+  FleetRepoResult,
+  GcRequest,
+  GcReport,
 } from "@/types/cpg";
 import {
   BACKEND_URL,
@@ -110,6 +120,14 @@ import {
   replayEvBundles,
   listEvReplays,
   deleteEvReplay,
+  fetchFleetDoctor,
+  estimateFleetRepo,
+  importScannerFusion,
+  runFleetBatch,
+  listFleetRuns,
+  listFleetCheckpoints,
+  resumeFleetCheckpoint,
+  runFleetGc,
 } from "@/lib/api";
 
 export const UI_PREFS_STORAGE_KEY = "alastor_ui_prefs_v4";
@@ -181,6 +199,18 @@ function resetEvSlice(prevEpoch: number) {
     isReplayingEv: false,
     isLoadingEvReplays: false,
     evError: null,
+  };
+}
+
+function resetFleetSlice(prevEpoch: number) {
+  return {
+    _fleetEpoch: prevEpoch + 1,
+    fleetEstimate: null,
+    fusionResult: null,
+    isEstimatingFleet: false,
+    isImportingFusion: false,
+    isLoadingCheckpoints: false,
+    fleetError: null,
   };
 }
 
@@ -397,6 +427,25 @@ interface AuditState {
   isReplayingEv: boolean;
   isLoadingEvReplays: boolean;
   evError: string | null;
+
+  // Pillar 4: Fleet Command, SQLite Stage Checkpoints & Universal Scanner Fusion
+  _fleetEpoch: number;
+  fleetDoctor: DoctorReport | null;
+  fleetEstimate: EstimateReport | null;
+  fusionResult: ScannerFusionResponse | null;
+  fleetRunResult: FleetRunResponse | null;
+  fleetRuns: FleetRunResponse[];
+  fleetCheckpoints: ScanRunCheckpointSummary[];
+  fleetGcReport: GcReport | null;
+  isLoadingDoctor: boolean;
+  isEstimatingFleet: boolean;
+  isImportingFusion: boolean;
+  isRunningFleet: boolean;
+  isLoadingFleetRuns: boolean;
+  isLoadingCheckpoints: boolean;
+  isResumingCheckpoint: boolean;
+  isRunningGc: boolean;
+  fleetError: string | null;
 
   // UI Simplicity, Layout & Command Palette State
   uiDensityMode: "SIMPLE_CLEAN" | "PRO_DETAILED";
@@ -680,6 +729,23 @@ interface AuditState {
   loadEvReplaysAction: (projectPath?: string) => Promise<void>;
   deleteEvReplayAction: (replayId: string) => Promise<void>;
   clearEvError: () => void;
+  fetchFleetDoctorAction: (checkNeo4j?: boolean) => Promise<void>;
+  estimateFleetRepoAction: (projectPath?: string) => Promise<void>;
+  importScannerFusionAction: (
+    req: Omit<ScannerFusionRequest, "project_path"> & { project_path?: string }
+  ) => Promise<void>;
+  runFleetBatchAction: (req: FleetRunRequest) => Promise<void>;
+  loadFleetRunsAction: (limit?: number) => Promise<void>;
+  loadFleetCheckpointsAction: (
+    projectPath?: string,
+    limit?: number
+  ) => Promise<void>;
+  resumeFleetCheckpointAction: (
+    runId: string,
+    stopAfter?: string | null
+  ) => Promise<FleetRepoResult | null>;
+  runFleetGcAction: (req: GcRequest) => Promise<void>;
+  clearFleetError: () => void;
   triggerScan: (
     targetPath?: string,
     options?: GitRepoScanOptions
@@ -808,6 +874,24 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   isReplayingEv: false,
   isLoadingEvReplays: false,
   evError: null,
+
+  _fleetEpoch: 0,
+  fleetDoctor: null,
+  fleetEstimate: null,
+  fusionResult: null,
+  fleetRunResult: null,
+  fleetRuns: [],
+  fleetCheckpoints: [],
+  fleetGcReport: null,
+  isLoadingDoctor: false,
+  isEstimatingFleet: false,
+  isImportingFusion: false,
+  isRunningFleet: false,
+  isLoadingFleetRuns: false,
+  isLoadingCheckpoints: false,
+  isResumingCheckpoint: false,
+  isRunningGc: false,
+  fleetError: null,
 
   uiDensityMode: "SIMPLE_CLEAN",
   ideLayoutMode: "SPLIT_BOTH",
@@ -2017,6 +2101,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
             projectPath: path,
             isLoadingPasta: false,
             ...resetEvSlice(state._evEpoch),
+            ...resetFleetSlice(state._fleetEpoch),
           }
     );
   },
@@ -2652,6 +2737,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       cognitiveErrorBanner: null,
       patchPanelError: null,
       ...resetEvSlice(state._evEpoch),
+      ...resetFleetSlice(state._fleetEpoch),
       ...(existingProj?.target_path ? { projectPath: existingProj.target_path } : {}),
     }));
 
@@ -2704,6 +2790,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           cognitiveErrorBanner: null,
           patchPanelError: null,
           ...resetEvSlice(state._evEpoch),
+          ...resetFleetSlice(state._fleetEpoch),
         }));
         if (needsScan) {
           const hasLocalCheckout =
@@ -4136,6 +4223,188 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     }
   },
 
+  clearFleetError: () => set({ fleetError: null }),
+
+  fetchFleetDoctorAction: async (checkNeo4j = false) => {
+    set({ isLoadingDoctor: true, fleetError: null });
+    try {
+      const doc = await fetchFleetDoctor(checkNeo4j);
+      set({
+        fleetDoctor: doc,
+        isLoadingDoctor: false,
+        fleetError: null,
+      });
+    } catch (err: any) {
+      const msg =
+        err?.detail || err?.message || "Failed to run ALASTOR Doctor check.";
+      console.error("Failed to fetch fleet doctor:", err);
+      set({ isLoadingDoctor: false, fleetError: msg });
+    }
+  },
+
+  estimateFleetRepoAction: async (projectPath) => {
+    const epoch = get()._fleetEpoch;
+    const targetPath = (projectPath ?? get().projectPath ?? "").trim();
+    set({ isEstimatingFleet: true, fleetError: null });
+    try {
+      const est = await estimateFleetRepo(targetPath);
+      if (get()._fleetEpoch !== epoch) return;
+      set({
+        fleetEstimate: est,
+        isEstimatingFleet: false,
+        fleetError: null,
+      });
+    } catch (err: any) {
+      const msg =
+        err?.detail || err?.message || "Failed to estimate workspace scope.";
+      console.error("Failed to estimate fleet workspace:", err);
+      if (get()._fleetEpoch === epoch) {
+        set({ isEstimatingFleet: false, fleetError: msg });
+      }
+    }
+  },
+
+  importScannerFusionAction: async (req) => {
+    const epoch = get()._fleetEpoch;
+    const targetPath = (req.project_path ?? get().projectPath ?? "").trim();
+    set({ isImportingFusion: true, fleetError: null });
+    try {
+      const res = await importScannerFusion({
+        ...req,
+        project_path: targetPath,
+      });
+      if (get()._fleetEpoch !== epoch) return;
+      set({
+        fusionResult: res,
+        isImportingFusion: false,
+        fleetError: null,
+      });
+      await get().fetchFindings();
+      if (get()._fleetEpoch !== epoch) return;
+      void Promise.all([
+        get().fetchMetrics(),
+        get().fetchPastaState({ forceRefresh: true }),
+        get().fetchSastPlusSuite({ forceRefresh: true }),
+      ]);
+    } catch (err: any) {
+      const msg =
+        err?.detail ||
+        err?.message ||
+        "Failed to import external scanner report.";
+      console.error("Failed to import scanner fusion report:", err);
+      if (get()._fleetEpoch === epoch) {
+        set({ isImportingFusion: false, fleetError: msg });
+      }
+    }
+  },
+
+  runFleetBatchAction: async (req) => {
+    set({ isRunningFleet: true, fleetError: null });
+    try {
+      const res = await runFleetBatch(req);
+      set({
+        fleetRunResult: res,
+        isRunningFleet: false,
+        fleetError: null,
+      });
+      await Promise.all([
+        get().loadFleetRunsAction(),
+        get().loadFleetCheckpointsAction(),
+      ]);
+    } catch (err: any) {
+      const msg =
+        err?.detail || err?.message || "Failed to run multi-repo fleet batch.";
+      console.error("Failed to run fleet batch:", err);
+      set({ isRunningFleet: false, fleetError: msg });
+    }
+  },
+
+  loadFleetRunsAction: async (limit = 30) => {
+    set({ isLoadingFleetRuns: true });
+    try {
+      const res = await listFleetRuns(limit);
+      set({
+        fleetRuns: res.runs || [],
+        isLoadingFleetRuns: false,
+      });
+    } catch (err: any) {
+      const msg =
+        err?.detail || err?.message || "Failed to load persisted fleet runs.";
+      console.error("Failed to load fleet runs:", err);
+      set({ isLoadingFleetRuns: false, fleetError: msg });
+    }
+  },
+
+  loadFleetCheckpointsAction: async (projectPath, limit = 50) => {
+    const epoch = get()._fleetEpoch;
+    const isProjectScoped = Boolean(projectPath && projectPath.trim());
+    set({ isLoadingCheckpoints: true });
+    try {
+      const items = await listFleetCheckpoints(projectPath, limit);
+      if (isProjectScoped && get()._fleetEpoch !== epoch) return;
+      set({
+        fleetCheckpoints: Array.isArray(items) ? items : [],
+        isLoadingCheckpoints: false,
+      });
+    } catch (err: any) {
+      const msg =
+        err?.detail ||
+        err?.message ||
+        "Failed to load SQLite stage checkpoints.";
+      console.error("Failed to load fleet checkpoints:", err);
+      if (!isProjectScoped || get()._fleetEpoch === epoch) {
+        set({ isLoadingCheckpoints: false, fleetError: msg });
+      }
+    }
+  },
+
+  resumeFleetCheckpointAction: async (runId, stopAfter) => {
+    set({ isResumingCheckpoint: true, fleetError: null });
+    try {
+      const res = await resumeFleetCheckpoint(runId, stopAfter);
+      set({
+        isResumingCheckpoint: false,
+        fleetError: null,
+      });
+      await Promise.all([
+        get().loadFleetCheckpointsAction(),
+        get().loadFleetRunsAction(),
+      ]);
+      return res;
+    } catch (err: any) {
+      const msg =
+        err?.detail ||
+        err?.message ||
+        `Failed to resume checkpoint run '${runId}'.`;
+      console.error("Failed to resume fleet checkpoint:", err);
+      set({ isResumingCheckpoint: false, fleetError: msg });
+      return null;
+    }
+  },
+
+  runFleetGcAction: async (req) => {
+    set({ isRunningGc: true, fleetError: null });
+    try {
+      const report = await runFleetGc(req);
+      set({
+        fleetGcReport: report,
+        isRunningGc: false,
+        fleetError: null,
+      });
+      if (!req.dry_run) {
+        await Promise.all([
+          get().loadFleetCheckpointsAction(),
+          get().loadFleetRunsAction(),
+        ]);
+      }
+    } catch (err: any) {
+      const msg =
+        err?.detail || err?.message || "Failed to run Vault garbage collection.";
+      console.error("Failed to run fleet GC:", err);
+      set({ isRunningGc: false, fleetError: msg });
+    }
+  },
+
   triggerScan: async (targetPath?: string, options?: GitRepoScanOptions) => {
     const path = (targetPath || get().projectPath || "").trim();
     if (!path) {
@@ -4168,6 +4437,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       cognitiveErrorBanner: null,
       patchPanelError: null,
       ...resetEvSlice(state._evEpoch),
+      ...resetFleetSlice(state._fleetEpoch),
       scanStatusMessage: `Initiating analysis for: ${path}...`,
       scanProgress: {
         is_scanning: true,
