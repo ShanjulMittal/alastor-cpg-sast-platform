@@ -134,17 +134,48 @@ def generate_squid_egress_config(allowed_llm_hosts: Sequence[str], port: int = 3
         f"http_port 127.0.0.1:{port}",
         "acl SSL_ports port 443",
         "acl CONNECT method CONNECT",
+        (
+            "acl blocked_dst dst 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 "
+            "192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 ::1 fc00::/7 fe80::/10"
+        ),
         f"acl allowed_llm dstdomain {' '.join(clean_hosts)}",
         "http_access deny !CONNECT",
         "http_access deny !SSL_ports",
+        "http_access deny blocked_dst",
         "http_access allow CONNECT SSL_ports allowed_llm",
         "http_access deny all",
         "cache deny all",
         "access_log none",
         "cache_log /dev/null",
         "pid_filename /tmp/squid.pid",
+        "pinger_enable off",
+        "netdb_filename none",
+        "coredump_dir /tmp",
     ]
     return "\n".join(lines) + "\n"
+
+
+def _resolve_confined_mount_child(base_real: str, *parts: str, label: str) -> str:
+    """Resolve `base_real / *parts` ensuring no symlink/junction or commonpath escape."""
+    norm_base = os.path.normcase(base_real)
+    cursor = base_real
+    for part in parts:
+        cursor = os.path.join(cursor, part)
+        if is_link_or_junction(cursor):
+            raise HostileRepoError(
+                f"Refusing symlink/junction in {label} mount path: {cursor}"
+            )
+    real_child = _validate_docker_mount_path(cursor, label)
+    try:
+        if os.path.commonpath([norm_base, os.path.normcase(real_child)]) != norm_base:
+            raise HostileRepoError(
+                f"Refusing {label} mount path escaping confined directory: {cursor}"
+            )
+    except ValueError as exc:
+        raise HostileRepoError(
+            f"Refusing {label} mount path escaping confined directory: {cursor}"
+        ) from exc
+    return real_child
 
 
 def build_mediated_sandbox_plan(req: SandboxPlanRequest) -> SandboxExecutionPlan:
@@ -175,14 +206,25 @@ def build_mediated_sandbox_plan(req: SandboxPlanRequest) -> SandboxExecutionPlan
             raise HostileRepoError(f"Invalid output_dir for sandbox plan: {req.output_dir}")
         if ".." in [s for s in re.split(r"[\\/]+", cleaned_out) if s]:
             raise HostileRepoError(f"Path traversal '..' is forbidden in output_dir: {req.output_dir}")
-        if is_link_or_junction(os.path.abspath(cleaned_out)):
+        abs_out = os.path.abspath(cleaned_out)
+        if is_link_or_junction(abs_out):
             raise HostileRepoError(f"Refusing symlink/junction output_dir: {req.output_dir}")
         real_out = _validate_docker_mount_path(cleaned_out, "output_dir")
+        try:
+            if os.path.commonpath([os.path.normcase(real_repo), os.path.normcase(abs_out)]) == os.path.normcase(real_repo):
+                rel_out = os.path.relpath(abs_out, real_repo)
+                if rel_out not in (".", ""):
+                    real_out = _resolve_confined_mount_child(
+                        real_repo, *[p for p in rel_out.split(os.sep) if p and p != "."], label="output_dir"
+                    )
+        except ValueError:
+            pass
     else:
-        real_out = _validate_docker_mount_path(
-            os.path.join(real_repo, ".alastor_sandbox_out"),
-            "output_dir",
+        real_out = _resolve_confined_mount_child(
+            real_repo, ".alastor_sandbox_out", label="output_dir"
         )
+    if os.path.lexists(real_out) and not os.path.isdir(real_out):
+        raise HostileRepoError(f"output_dir exists and is not a directory: {real_out}")
 
     base_scanner_cmd = build_sandbox_docker_command(
         repo_path=real_repo,
@@ -239,17 +281,12 @@ def build_mediated_sandbox_plan(req: SandboxPlanRequest) -> SandboxExecutionPlan
     clean_hosts = _dedupe_validated_llm_hosts(req.allowed_llm_hosts)
     squid_config = generate_squid_egress_config(clean_hosts, port=3128)
 
-    egress_state_dir = _validate_docker_mount_path(
-        os.path.join(real_out, ".alastor_egress"),
-        "egress_state_dir",
+    _ = _resolve_confined_mount_child(real_out, ".alastor_egress", label="egress_state_dir")
+    squid_conf_host = _resolve_confined_mount_child(
+        real_out, ".alastor_egress", "squid.conf", label="squid_conf_host"
     )
-    squid_conf_host = _validate_docker_mount_path(
-        os.path.join(egress_state_dir, "squid.conf"),
-        "squid_conf_host",
-    )
-    sock_dir = _validate_docker_mount_path(
-        os.path.join(egress_state_dir, "run"),
-        "sock_dir",
+    sock_dir = _resolve_confined_mount_child(
+        real_out, ".alastor_egress", "run", label="sock_dir"
     )
 
     egress_docker_cmd = [
@@ -272,9 +309,14 @@ def build_mediated_sandbox_plan(req: SandboxPlanRequest) -> SandboxExecutionPlan
         EGRESS_IMAGE_NAME,
         "sh",
         "-c",
-        "squid -N -f /etc/squid/squid.conf & "
-        "exec socat UNIX-LISTEN:/run/alastor-egress/proxy.sock,fork,reuseaddr,mode=0600 TCP:127.0.0.1:3128",
+        "socat UNIX-LISTEN:/run/alastor-egress/proxy.sock,fork,reuseaddr,unlink-early,mode=0600 TCP:127.0.0.1:3128 & "
+        "exec squid -N -f /etc/squid/squid.conf",
     ]
+
+    warnings.append(
+        f"Pre-write Squid config to '{squid_conf_host}' and create socket directory "
+        f"'{sock_dir}' writable by UID 65534 before starting the egress sidecar container."
+    )
 
     scanner_docker_cmd = (
         base_scanner_cmd[:mount_idx]

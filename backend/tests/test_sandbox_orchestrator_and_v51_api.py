@@ -113,7 +113,30 @@ class TestDockerSandboxFiles:
         assert "org.alastor.git_sha" in scanner_text
         assert 'org.alastor.role="scanner"' in scanner_text
         assert "USER 65534:65534" in scanner_text
-        assert 'ENTRYPOINT ["python", "-m", "alastor_cli"]' in scanner_text
+        assert "/usr/local/bin/alastor-sandbox-entrypoint.sh" in scanner_text
+        assert "ALASTOR_EGRESS_SOCKET" in scanner_text
+        assert "socat TCP-LISTEN:3128,bind=127.0.0.1,fork,reuseaddr" in scanner_text
+        assert 'exec python -m alastor_cli "$@"' in scanner_text
+        assert 'ENTRYPOINT ["/usr/local/bin/alastor-sandbox-entrypoint.sh"]' in scanner_text
+
+        dockerignore = REPO_ROOT / ".dockerignore"
+        assert dockerignore.is_file(), ".dockerignore at repo root must exist"
+        ignore_lines = {ln.strip() for ln in dockerignore.read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.strip().startswith("#")}
+        for expected_pat in (
+            ".alastor_vault/",
+            ".alastor_patches/",
+            ".superpowers/",
+            ".venv/",
+            "backend/data/",
+            "backend/.env*",
+            "backend/tests/",
+            "**/__pycache__/",
+            ".pytest_cache/",
+            "frontend/",
+            "synthetic_test_target/",
+            ".git/",
+        ):
+            assert expected_pat in ignore_lines, f"Missing {expected_pat} in .dockerignore"
 
         egress_text = egress_df.read_text(encoding="utf-8")
         assert "ARG BASE_IMAGE=ubuntu:24.04" in egress_text
@@ -154,15 +177,26 @@ class TestSandboxOrchestrator:
         assert "http_port 127.0.0.1:3128" in lines
         assert "acl SSL_ports port 443" in lines
         assert "acl CONNECT method CONNECT" in lines
+        assert (
+            "acl blocked_dst dst 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 "
+            "192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 ::1 fc00::/7 fe80::/10"
+        ) in lines
         assert "acl allowed_llm dstdomain api.openai.com api.anthropic.com" in lines
         assert "http_access deny !CONNECT" in lines
         assert "http_access deny !SSL_ports" in lines
+        assert "http_access deny blocked_dst" in lines
         assert "http_access allow CONNECT SSL_ports allowed_llm" in lines
         assert "http_access deny all" in lines
         assert "cache deny all" in lines
         assert "access_log none" in lines
         assert "cache_log /dev/null" in lines
         assert "pid_filename /tmp/squid.pid" in lines
+        assert "pinger_enable off" in lines
+        assert "netdb_filename none" in lines
+        assert "coredump_dir /tmp" in lines
+        assert lines.index("http_access deny blocked_dst") < lines.index(
+            "http_access allow CONNECT SSL_ports allowed_llm"
+        )
         assert lines.index("http_access allow CONNECT SSL_ports allowed_llm") < lines.index(
             "http_access deny all"
         )
@@ -287,8 +321,11 @@ class TestSandboxOrchestrator:
         assert any(arg.endswith(":/run/alastor-egress:rw") for arg in ec)
         assert EGRESS_IMAGE_NAME in ec
         ec_joined = " ".join(ec)
-        assert "squid" in ec_joined and "socat" in ec_joined
-        assert "/run/alastor-egress/proxy.sock" in ec_joined
+        assert "socat UNIX-LISTEN:/run/alastor-egress/proxy.sock,fork,reuseaddr,unlink-early,mode=0600 TCP:127.0.0.1:3128 &" in ec_joined
+        assert "exec squid -N -f /etc/squid/squid.conf" in ec_joined
+        assert any(
+            "65534" in w and "squid.conf" in w for w in plan_med.warnings
+        )
 
         sc_med = plan_med.scanner_docker_cmd
         assert "--network=none" in sc_med
@@ -347,6 +384,54 @@ class TestSandboxOrchestrator:
                 )
         finally:
             _remove_dir_link(repo_link)
+
+        # 4. Hostile default .alastor_sandbox_out and .alastor_egress symlink/junction escape blocked!
+        outside_target = tmp_path / "outside_escape"
+        outside_target.mkdir()
+        hostile_default_out = repo / ".alastor_sandbox_out"
+        _create_dir_link(hostile_default_out, outside_target)
+        try:
+            with pytest.raises(HostileRepoError):
+                build_mediated_sandbox_plan(
+                    SandboxPlanRequest(
+                        project_path=str(repo),
+                        output_dir=None,
+                        egress_mode="none",
+                    )
+                )
+        finally:
+            _remove_dir_link(hostile_default_out)
+
+        hostile_egress_dir = out_dir / ".alastor_egress"
+        _create_dir_link(hostile_egress_dir, outside_target)
+        try:
+            with pytest.raises(HostileRepoError):
+                build_mediated_sandbox_plan(
+                    SandboxPlanRequest(
+                        project_path=str(repo),
+                        output_dir=str(out_dir),
+                        egress_mode="mediated",
+                        allowed_llm_hosts=["api.openai.com"],
+                    )
+                )
+        finally:
+            _remove_dir_link(hostile_egress_dir)
+
+        (out_dir / ".alastor_egress").mkdir(exist_ok=True)
+        hostile_run_dir = out_dir / ".alastor_egress" / "run"
+        _create_dir_link(hostile_run_dir, outside_target)
+        try:
+            with pytest.raises(HostileRepoError):
+                build_mediated_sandbox_plan(
+                    SandboxPlanRequest(
+                        project_path=str(repo),
+                        output_dir=str(out_dir),
+                        egress_mode="mediated",
+                        allowed_llm_hosts=["api.openai.com"],
+                    )
+                )
+        finally:
+            _remove_dir_link(hostile_run_dir)
 
     def test_inspect_sandbox_images_ready_drifted_missing_and_no_docker(self):
         from engine.sandbox_orchestrator import (
@@ -630,6 +715,36 @@ class TestV51SdkAndCliWiring:
             ],
         )
         assert r_empty.exit_code == 2
+
+        # Symlink/junction --repo or --out and traversal rejected BEFORE realpath with exit 2
+        outside_cli = tmp_path / "outside_cli"
+        outside_cli.mkdir()
+        repo_junc = tmp_path / "cli_repo_link"
+        out_junc = tmp_path / "cli_out_link"
+        _create_dir_link(repo_junc, repo)
+        _create_dir_link(out_junc, outside_cli)
+        try:
+            assert (
+                runner.invoke(cli, ["scan", "--repo", str(repo_junc), "--sandbox", "--json"]).exit_code
+                == 2
+            )
+            assert (
+                runner.invoke(
+                    cli,
+                    ["scan", "--repo", str(repo), "--out", str(out_junc), "--sandbox", "--json"],
+                ).exit_code
+                == 2
+            )
+            assert (
+                runner.invoke(
+                    cli,
+                    ["scan", "--repo", str(repo), "--out", str(out_dir / ".." / "x"), "--sandbox", "--json"],
+                ).exit_code
+                == 2
+            )
+        finally:
+            _remove_dir_link(repo_junc)
+            _remove_dir_link(out_junc)
 
 
 # ---------------------------------------------------------------------------
@@ -953,6 +1068,34 @@ class TestV51FastApiRoutes:
                 assert captured_stores[0][2] is fake_store
                 assert captured_stores[1][1] is None
                 assert captured_stores[1][2] is None
+
+                # 7. Cross-workspace cognitive cache bleed regression:
+                # Even when current_scan_dir == ws, cognitive findings cached under ws2 MUST NEVER resolve for ws!
+                ws2_only_finding = Finding(
+                    id="WS2-COGNITIVE-BLEED-1",
+                    rule_id="COG-AI-AUTH",
+                    severity="HIGH",
+                    title="WS2 Only Cognitive Finding",
+                    best_fix_location=BestFixLocation(
+                        node_id="n-ws2-1",
+                        filepath="app.py",
+                        line=6,
+                    ),
+                )
+                with monkeypatch.context() as mp:
+                    mp.setattr(main_mod, "_cached_findings", [])
+                    mp.setattr(main_mod, "_cached_external_findings", [])
+                    mp.setattr(main_mod, "_cached_cognitive_findings", [ws2_only_finding])
+                    mp.setattr(main_mod, "_cached_cognitive_dir", str(ws2))
+                    r_bleed = client.post(
+                        "/api/cognitive/agentic-patch",
+                        json={
+                            "project_path": str(ws),
+                            "finding_id": "WS2-COGNITIVE-BLEED-1",
+                            "use_byok_llm": False,
+                        },
+                    )
+                    assert r_bleed.status_code == 404
         finally:
             if iso_store._conn is not None:
                 iso_store.close()

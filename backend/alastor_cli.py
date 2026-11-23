@@ -445,8 +445,15 @@ def scan_cmd(
                 assert_safe_config_source(config_file, repo)
             for host in allowed_llm_hosts:
                 validate_mediated_llm_host(host)
-            real_repo = alastor_sdk._resolve_existing_repo_dir(repo)
-            eff_out = os.path.realpath(out_dir) if out_dir else os.path.abspath("alastor-out")
+            real_repo = alastor_sdk._resolve_confined_sdk_repo_dir(repo)
+            eff_out: Optional[str] = None
+            if out_dir is not None:
+                cleaned_out = alastor_sdk._validate_clean_path_arg(out_dir, "out")
+                if alastor_sdk._has_traversal_segment(cleaned_out):
+                    raise HostileRepoError(f"Path traversal '..' rejected in --out: {out_dir}")
+                if is_link_or_junction(os.path.abspath(cleaned_out)):
+                    raise HostileRepoError(f"Refusing symlink/junction --out: {out_dir}")
+                eff_out = os.path.realpath(cleaned_out)
             cli_args: List[str] = [
                 "scan",
                 "--repo",

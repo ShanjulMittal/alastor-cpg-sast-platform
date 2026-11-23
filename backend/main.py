@@ -6159,7 +6159,6 @@ def _resolve_agentic_patch_finding(
             for pool in (
                 _cached_findings or (),
                 _cached_external_findings or (),
-                _cached_cognitive_findings or (),
             ):
                 hit = next((f for f in pool if f.id == clean_fid), None)
                 if hit is not None:

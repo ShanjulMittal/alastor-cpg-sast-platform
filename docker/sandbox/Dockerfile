@@ -57,7 +57,16 @@ COPY backend/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY backend/ /app/
-RUN chmod -R a+rX /app && \
+RUN printf '%s\n' \
+        '#!/bin/sh' \
+        'set -eu' \
+        'if [ -n "${ALASTOR_EGRESS_SOCKET:-}" ]; then' \
+        '    socat TCP-LISTEN:3128,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:"$ALASTOR_EGRESS_SOCKET" &' \
+        'fi' \
+        'exec python -m alastor_cli "$@"' \
+        > /usr/local/bin/alastor-sandbox-entrypoint.sh && \
+    chmod 0755 /usr/local/bin/alastor-sandbox-entrypoint.sh && \
+    chmod -R a+rX /app && \
     find / -xdev -perm /6000 -type f -exec chmod ug-s {} +
 
 ARG ALASTOR_IMAGE_VERSION=5.1.0
@@ -67,4 +76,4 @@ LABEL org.alastor.version="${ALASTOR_IMAGE_VERSION}" \
       org.alastor.role="scanner"
 
 USER 65534:65534
-ENTRYPOINT ["python", "-m", "alastor_cli"]
+ENTRYPOINT ["/usr/local/bin/alastor-sandbox-entrypoint.sh"]
