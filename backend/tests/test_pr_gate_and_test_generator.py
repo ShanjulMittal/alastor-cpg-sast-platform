@@ -1077,3 +1077,113 @@ class TestSecurityTestGenerator:
             assert decls_1 == [r1.test_name]
             assert decls_2 == [r2.test_name]
             assert set(decls_1).isdisjoint(set(decls_2))
+
+    def test_detect_test_framework_filepathless_language_fallback_and_unicode_line_sep_comments(
+        self, tmp_path: Path
+    ):
+        # Filepath-less Go finding must resolve via finding.language -> "go_test" (not default "app.py" -> "pytest")
+        go_no_fp = Finding(
+            id="f-go-no-fp",
+            rule_id="POLY-GO-SQLI",
+            severity="HIGH",
+            cwe_id="CWE-89",
+            title="Go SQLi without filepath",
+            language="go",
+        )
+        assert detect_test_framework(go_no_fp, str(tmp_path)) == "go_test"
+
+        # Empty filepath in BestFixLocation or unrecognized extension still falls back to finding.language
+        go_empty_fp = Finding(
+            id="f-go-empty-fp",
+            rule_id="POLY-GO-SQLI",
+            severity="HIGH",
+            cwe_id="CWE-89",
+            title="Go SQLi empty filepath",
+            language="go",
+            best_fix_location=BestFixLocation(filepath="", line=4),
+        )
+        assert detect_test_framework(go_empty_fp, str(tmp_path)) == "go_test"
+
+        go_unknown_ext = Finding(
+            id="f-go-md-fp",
+            rule_id="POLY-GO-SQLI",
+            severity="HIGH",
+            cwe_id="CWE-89",
+            title="Go SQLi unknown extension",
+            language="go",
+            best_fix_location=BestFixLocation(filepath="README.md", line=1),
+        )
+        assert detect_test_framework(go_unknown_ext, str(tmp_path)) == "go_test"
+
+        # Filepath-less JS/TS findings resolve to jest / vitest cleanly
+        ts_no_fp = Finding(
+            id="f-ts-no-fp",
+            rule_id="RULE-XSS",
+            severity="HIGH",
+            cwe_id="CWE-79",
+            title="TS XSS\u2028process.exit(1)\u2029alert(1)",
+            language="TypeScript",
+        )
+        assert detect_test_framework(ts_no_fp, str(tmp_path)) == "jest"
+
+        js_no_fp = Finding(
+            id="f-js-no-fp",
+            rule_id="RULE-XSS",
+            severity="HIGH",
+            cwe_id="CWE-79",
+            title="JS XSS",
+            language="javascript",
+        )
+        vitest_repo = tmp_path / "vitest_lang_fb"
+        vitest_repo.mkdir()
+        (vitest_repo / "package.json").write_text(
+            json.dumps({"devDependencies": {"vitest": "^2.0.0"}}),
+            encoding="utf-8",
+        )
+        assert detect_test_framework(js_no_fp, str(vitest_repo)) == "vitest"
+        assert detect_test_framework(ts_no_fp, str(vitest_repo)) == "vitest"
+
+        # Python & unrecognized language fallback -> pytest
+        assert (
+            detect_test_framework(
+                Finding(id="f-py-no-fp", rule_id="R", severity="HIGH", title="Py", language="python"),
+                str(tmp_path),
+            )
+            == "pytest"
+        )
+        assert (
+            detect_test_framework(
+                Finding(id="f-rust-no-fp", rule_id="R", severity="HIGH", title="Rust", language="rust"),
+                str(tmp_path),
+            )
+            == "pytest"
+        )
+
+        # End-to-end JS/TS generation strips Unicode LS/PS (\u2028 / \u2029) from comments
+        gen_ts = generate_security_regression_test(
+            SecurityTestGenerateRequest(
+                project_path=str(vitest_repo),
+                finding_id=ts_no_fp.id,
+                framework="auto",
+                write_to_workspace=False,
+            ),
+            ts_no_fp,
+        )
+        assert gen_ts.framework == "vitest"
+        assert gen_ts.syntax_valid is True
+        assert "\u2028" not in gen_ts.test_code
+        assert "\u2029" not in gen_ts.test_code
+        assert "// Summary    : TS XSS process.exit(1) alert(1)" in gen_ts.test_code
+
+        # End-to-end filepath-less Go generation resolves to go_test
+        gen_go = generate_security_regression_test(
+            SecurityTestGenerateRequest(
+                project_path=str(tmp_path),
+                finding_id=go_no_fp.id,
+                framework="auto",
+                write_to_workspace=False,
+            ),
+            go_no_fp,
+        )
+        assert gen_go.framework == "go_test"
+        assert gen_go.syntax_valid is True

@@ -855,17 +855,49 @@ class TestNextgenFastApiRoutes:
                 assert len(ms_body["reactflow_edges"]) >= 1
                 assert len(ms_body["attack_paths"]) >= 1
 
-                # 7. Active workspace EV-confirmed finding flows through POST /api/nextgen/pr-gate
-                ev_low = Finding(
-                    id="EV-LOW-PR-1",
-                    rule_id="RULE-EV-IDOR",
-                    severity="LOW",
-                    cwe_id="CWE-639",
-                    title="Confirmed EV IDOR in pr_feature",
-                    ev_status="RUNTIME_EXPLOIT_CONFIRMED",
-                    best_fix_location=BestFixLocation(filepath="pr_feature.py", line=2),
+                # 7. Persisted EV-confirmed finding flows through POST /api/nextgen/pr-gate (fresh scan + EV vault correlation)
+                from models import EvReplayBundleItem
+
+                crit_count = sum(
+                    1
+                    for f in gate_body["newly_introduced_findings"]
+                    if f["severity"] == "CRITICAL"
                 )
-                monkeypatch.setattr(main_mod, "_cached_findings", [ev_low])
+                non_crit_fid = next(
+                    f["id"]
+                    for f in gate_body["newly_introduced_findings"]
+                    if f["severity"] != "CRITICAL"
+                )
+                ev_bundle = EvReplayBundleItem(
+                    replay_id="EV-REPLAY-PR-1",
+                    project_path=str(ws),
+                    created_at="2026-11-23T00:00:00Z",
+                    probe_family="CMDI",
+                    method="POST",
+                    path="/deploy",
+                    target_url="http://127.0.0.1:9999/deploy",
+                    finding_id=non_crit_fid,
+                    cwe_id="CWE-78",
+                    status="RUNTIME_EXPLOIT_CONFIRMED",
+                    evidence_summary="Confirmed command injection replay",
+                )
+                with iso_ev._lock:
+                    iso_ev._save_vault_locked(
+                        {iso_ev._project_key(str(ws)): [ev_bundle.model_dump()]}
+                    )
+                r_ev_off = client.post(
+                    "/api/nextgen/pr-gate",
+                    json={
+                        "project_path": str(ws),
+                        "base_ref": "HEAD~1",
+                        "head_ref": "HEAD",
+                        "fail_on_new_severity": "CRITICAL",
+                        "block_on_new_ev_confirmed": False,
+                    },
+                )
+                assert r_ev_off.status_code == 200, r_ev_off.text
+                assert r_ev_off.json()["blocking_count"] == crit_count
+
                 r_ev_gate = client.post(
                     "/api/nextgen/pr-gate",
                     json={
@@ -877,9 +909,13 @@ class TestNextgenFastApiRoutes:
                     },
                 )
                 assert r_ev_gate.status_code == 200, r_ev_gate.text
-                assert r_ev_gate.json()["gate_decision"] == "BLOCK_MERGE"
-                assert r_ev_gate.json()["blocking_count"] == 1
-                monkeypatch.setattr(main_mod, "_cached_findings", [])
+                ev_gate_body = r_ev_gate.json()
+                assert ev_gate_body["gate_decision"] == "BLOCK_MERGE"
+                assert ev_gate_body["blocking_count"] == crit_count + 1
+                assert any(
+                    f["id"] == non_crit_fid and f["ev_status"] == "RUNTIME_EXPLOIT_CONFIRMED"
+                    for f in ev_gate_body["newly_introduced_findings"]
+                )
 
                 # 8. Symlink/junction project_path rejected with HTTP 400 on all 5 path routes
                 ws_link = tmp_path / "ws_link"
@@ -1009,19 +1045,27 @@ class TestNextgenFastApiRoutes:
                 )
                 assert r_ms_file.status_code == 400, r_ms_file.text
 
-                # 2. ValueError / HostileRepoError from finding resolution inside pr-gate / generate-test / compliance -> HTTP 400
+                # 2. ValueError / HostileRepoError from evaluation / finding resolution inside pr-gate / generate-test / compliance -> HTTP 400
                 monkeypatch.setattr(
                     main_mod,
                     "_get_active_or_custom_findings",
                     lambda _td: (_ for _ in ()).throw(HostileRepoError("Simulated hostile finding store")),
                 )
-                assert (
-                    client.post(
-                        "/api/nextgen/pr-gate",
-                        json={"project_path": str(ws)},
-                    ).status_code
-                    == 400
-                )
+                with monkeypatch.context() as mp:
+                    mp.setattr(
+                        main_mod,
+                        "evaluate_pr_delta_gate",
+                        lambda *_a, **_kw: (_ for _ in ()).throw(
+                            HostileRepoError("Simulated hostile pr-gate evaluation")
+                        ),
+                    )
+                    assert (
+                        client.post(
+                            "/api/nextgen/pr-gate",
+                            json={"project_path": str(ws)},
+                        ).status_code
+                        == 400
+                    )
                 assert (
                     client.post(
                         "/api/nextgen/generate-test",
@@ -1037,5 +1081,170 @@ class TestNextgenFastApiRoutes:
                     == 400
                 )
         finally:
+            if iso_store._conn is not None:
+                iso_store.close()
+
+    def test_pr_gate_catches_live_worktree_and_custom_rule_ignoring_stale_cached_findings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import main as main_mod
+        from alastor_cli import cli
+        from database.checkpoint_store import CheckpointStore
+        from engine.compliance_and_rules_engine import CustomRuleEngine
+        from engine.exploit_verification_engine import ExploitVerificationEngine
+        from models import BestFixLocation, EvReplayBundleItem, Finding
+
+        ws = tmp_path / "live_worktree_ws"
+        _init_git_repo(ws)
+        (ws / "base_service.py").write_text(
+            "def add_items(a: int, b: int) -> int:\n"
+            "    return a + b\n",
+            encoding="utf-8",
+        )
+        _commit_all(ws, "commit 1: clean base")
+
+        vault = tmp_path / "vault"
+        iso_store = CheckpointStore(str(vault))
+        iso_ev = ExploitVerificationEngine(vault_dir=str(vault))
+        iso_rules = CustomRuleEngine(vault_dir=str(vault))
+
+        # Populate stale older finding in _cached_findings for current_scan_dir == ws.
+        # If /api/nextgen/pr-gate ever served _cached_findings, it would miss the new WORKTREE change!
+        stale_finding = Finding(
+            id="STALE-CACHED-1",
+            rule_id="RULE-STALE-OLD",
+            severity="LOW",
+            cwe_id="CWE-20",
+            title="Stale cached finding on base_service",
+            best_fix_location=BestFixLocation(filepath="base_service.py", line=1),
+        )
+
+        orig_allowed_fn = main_mod._get_ai_allowed_roots
+        monkeypatch.setattr(main_mod, "startup_event", lambda: None)
+        monkeypatch.setattr(main_mod, "shutdown_event", lambda: None)
+        monkeypatch.setattr(main_mod, "checkpoint_store", iso_store)
+        monkeypatch.setattr(main_mod, "ev_engine", iso_ev)
+        monkeypatch.setattr(main_mod, "custom_rule_engine", iso_rules)
+        monkeypatch.setattr(main_mod, "_get_ai_allowed_roots", lambda: [str(ws)])
+        monkeypatch.setattr(main_mod, "current_scan_dir", str(ws))
+        monkeypatch.setattr(main_mod, "_cached_findings", [stale_finding])
+        monkeypatch.setattr(main_mod, "_cached_external_findings", [])
+        monkeypatch.setattr(main_mod, "_cached_cognitive_findings", [])
+        monkeypatch.setattr(main_mod, "_cached_cognitive_dir", "")
+
+        try:
+            with TestClient(main_mod.app) as client:
+                # Create 1 enabled HIGH custom rule + 1 disabled CRITICAL custom rule
+                r_en = client.post(
+                    "/api/nextgen/custom-rules",
+                    json={
+                        "rule_id": "CUSTOM-WORKTREE-SINK",
+                        "name": "Bespoke unsafe sink call",
+                        "severity": "HIGH",
+                        "cwe_id": "CWE-78",
+                        "languages": ["python"],
+                        "pattern": r"\bcustom_unsafe_sink\s*\(",
+                        "enabled": True,
+                    },
+                )
+                assert r_en.status_code in (200, 201), r_en.text
+
+                r_dis = client.post(
+                    "/api/nextgen/custom-rules",
+                    json={
+                        "rule_id": "CUSTOM-WORKTREE-DISABLED",
+                        "name": "Disabled bespoke sink",
+                        "severity": "CRITICAL",
+                        "cwe_id": "CWE-78",
+                        "languages": ["python"],
+                        "pattern": r"\bcustom_disabled_sink\s*\(",
+                        "enabled": False,
+                    },
+                )
+                assert r_dis.status_code in (200, 201), r_dis.text
+
+                # Introduce fresh uncommitted WORKTREE vulnerability AFTER _cached_findings was populated
+                (ws / "worktree_feature.py").write_text(
+                    "def handle_worktree(payload: str):\n"
+                    "    custom_disabled_sink(payload)\n"
+                    "    return custom_unsafe_sink(payload)\n",
+                    encoding="utf-8",
+                )
+
+                r_gate = client.post(
+                    "/api/nextgen/pr-gate",
+                    json={
+                        "project_path": str(ws),
+                        "base_ref": "HEAD",
+                        "head_ref": "WORKTREE",
+                        "fail_on_new_severity": "HIGH",
+                    },
+                )
+                assert r_gate.status_code == 200, r_gate.text
+                body = r_gate.json()
+                assert body["gate_decision"] == "BLOCK_MERGE"
+                assert body["blocking_count"] == 1
+                assert "worktree_feature.py" in body["changed_files"]
+                new_fids = [f["rule_id"] for f in body["newly_introduced_findings"]]
+                assert "CUSTOM-WORKTREE-SINK" in new_fids
+                assert "CUSTOM-WORKTREE-DISABLED" not in new_fids
+                assert "RULE-STALE-OLD" not in [a["rule_id"] for a in body["annotations"]]
+
+                # Persist EV confirmation for the custom rule finding and verify standalone CLI
+                # `alastor pr-gate` honors BOTH enabled custom rules and EV correlation even at CRITICAL threshold
+                custom_fid = next(
+                    f["id"]
+                    for f in body["newly_introduced_findings"]
+                    if f["rule_id"] == "CUSTOM-WORKTREE-SINK"
+                )
+                ev_bundle = EvReplayBundleItem(
+                    replay_id="EV-REPLAY-CUST-1",
+                    project_path=str(ws),
+                    created_at="2026-11-23T00:00:00Z",
+                    probe_family="CMDI",
+                    method="POST",
+                    path="/worktree",
+                    target_url="http://127.0.0.1:9999/worktree",
+                    finding_id=custom_fid,
+                    cwe_id="CWE-78",
+                    status="RUNTIME_EXPLOIT_CONFIRMED",
+                    evidence_summary="Confirmed custom sink exploit replay",
+                )
+                with iso_ev._lock:
+                    iso_ev._save_vault_locked(
+                        {iso_ev._project_key(str(ws)): [ev_bundle.model_dump()]}
+                    )
+
+                runner = CliRunner()
+                cli_res = runner.invoke(
+                    cli,
+                    [
+                        "pr-gate",
+                        "--repo",
+                        str(ws),
+                        "--base",
+                        "HEAD",
+                        "--head",
+                        "WORKTREE",
+                        "--fail-on",
+                        "CRITICAL",
+                        "--vault-dir",
+                        str(vault),
+                        "--json",
+                    ],
+                )
+                assert cli_res.exit_code == 1, cli_res.output
+                cli_data = json.loads(cli_res.output)
+                assert cli_data["gate_decision"] == "BLOCK_MERGE"
+                assert cli_data["blocking_count"] == 1
+                matched = [
+                    f
+                    for f in cli_data["newly_introduced_findings"]
+                    if f["id"] == custom_fid
+                ]
+                assert len(matched) == 1
+                assert matched[0]["ev_status"] == "RUNTIME_EXPLOIT_CONFIRMED"
+        finally:
+            monkeypatch.setattr(main_mod, "_get_ai_allowed_roots", orig_allowed_fn)
             if iso_store._conn is not None:
                 iso_store.close()

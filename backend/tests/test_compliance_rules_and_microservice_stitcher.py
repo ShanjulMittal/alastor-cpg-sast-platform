@@ -28,6 +28,9 @@ from engine.compliance_and_rules_engine import (
 )
 from engine.hostile_repo_guard import HostileRepoError
 from engine.microservice_stitcher import (
+    _extract_host_hint_from_url,
+    _normalize_queue_topic,
+    _service_host_aliases,
     extract_service_surface,
     normalize_route_template,
     stitch_microservice_attack_graph,
@@ -618,6 +621,33 @@ class TestCustomRuleStudio:
             if os.path.lexists(repo / "linked_outside"):
                 _remove_dir_link(repo / "linked_outside")
 
+    def test_rejects_dot_segment_rule_ids(self, tmp_path: Path):
+        engine = CustomRuleEngine(str(tmp_path / ".alastor_vault"))
+        for bad_id in (".", ".."):
+            with pytest.raises(ValueError):
+                engine._validate_rule_id(bad_id)
+            with pytest.raises(ValueError):
+                engine.get_rule(bad_id)
+            with pytest.raises(ValueError):
+                engine.create_rule(
+                    CustomSecurityRule(
+                        rule_id=bad_id,
+                        name="Dot Segment Rule",
+                        pattern=r"eval\(",
+                    )
+                )
+            with pytest.raises(ValueError):
+                engine.update_rule(
+                    bad_id,
+                    CustomSecurityRule(
+                        rule_id=bad_id,
+                        name="Dot Segment Rule",
+                        pattern=r"eval\(",
+                    ),
+                )
+            with pytest.raises(ValueError):
+                engine.delete_rule(bad_id)
+
 
 # ---------------------------------------------------------------------------
 # 3. Cross-Repo Microservice Attack-Graph Stitcher
@@ -957,5 +987,83 @@ class TestMicroserviceAttackGraphStitcher:
         assert any(p.services == ["gateway", "billing-service"] for p in resp.attack_paths)
         assert any(
             set(p.services) == {"svc-c", "svc-d"} for p in resp.attack_paths
+        )
+
+    def test_bracketed_host_placeholders_and_malformed_ipv6_urls_degrade_gracefully(self, tmp_path: Path):
+        # Direct unit checks for ValueError-prone URLs (`urlsplit` & `.hostname`)
+        assert normalize_route_template("http://[API_HOST]/orders/123") == "/orders/:param"
+        assert normalize_route_template("http://[API_HOST]/orders") == "/orders"
+        assert normalize_route_template("http://[::1/bad") == "/bad"
+        assert normalize_route_template("http://[::1") == "/"
+
+        assert _normalize_queue_topic("sqs://[QUEUE_HOST]/orders-topic") == "orders-topic"
+        assert _normalize_queue_topic("http://[::1/bad") == "bad"
+        assert _normalize_queue_topic("kafka://[::1") == "kafka://[::1"
+
+        assert _extract_host_hint_from_url("http://[API_HOST]/orders") == ""
+        assert _extract_host_hint_from_url("http://[::1/bad") == ""
+
+        svc = MicroserviceRepoInput(
+            service_name="orders-service",
+            repo_path=str(tmp_path),
+            base_url_hint="http://[API_HOST]/orders",
+        )
+        aliases = _service_host_aliases(svc)
+        assert "orders-service" in aliases
+
+        svc_bad_ipv6 = MicroserviceRepoInput(
+            service_name="legacy-svc",
+            repo_path=str(tmp_path),
+            base_url_hint="http://[::1/bad",
+        )
+        assert "legacy-svc" in _service_host_aliases(svc_bad_ipv6)
+
+        # End-to-end stitch does not crash when source code contains bracketed host URLs
+        gw = tmp_path / "gw-bracket"
+        gw.mkdir()
+        (gw / "gw.py").write_text(
+            "import requests\n"
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n"
+            "@app.get('/go')\n"
+            "def go():\n"
+            "    requests.post('http://[API_HOST]/orders')\n"
+            "    requests.get('http://[::1/bad')\n"
+            "    return {}\n",
+            encoding="utf-8",
+        )
+        orders = tmp_path / "orders-bracket"
+        orders.mkdir()
+        (orders / "orders.py").write_text(
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n"
+            "@app.post('/orders')\n"
+            "def create_order():\n"
+            "    return {'ok': True}\n",
+            encoding="utf-8",
+        )
+        resp = stitch_microservice_attack_graph(
+            MicroserviceGraphRequest(
+                services=[
+                    MicroserviceRepoInput(
+                        service_name="gw-bracket",
+                        repo_path=str(gw),
+                        base_url_hint="http://[::1/bad",
+                    ),
+                    MicroserviceRepoInput(
+                        service_name="orders-bracket",
+                        repo_path=str(orders),
+                        base_url_hint="http://[API_HOST]",
+                    ),
+                ],
+                scan_findings=False,
+            )
+        )
+        assert resp.services_analyzed == 2
+        assert any(
+            e.source_service == "gw-bracket"
+            and e.target_service == "orders-bracket"
+            and e.normalized_path == "/orders"
+            for e in resp.edges
         )
 

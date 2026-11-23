@@ -15,6 +15,7 @@ import tempfile
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from database.graph_store import EmbeddedGraphStore
+from engine.compliance_and_rules_engine import CustomRuleEngine
 from engine.enterprise_manager import (
     EnterpriseManager,
     infer_language_from_filepath,
@@ -23,7 +24,7 @@ from engine.enterprise_manager import (
 from engine.exploit_verification_engine import ExploitVerificationEngine
 from engine.fleet_runner import _build_cpg_for_repo
 from engine.frontier_ai_engine import scrub_raw_secrets_text
-from engine.hostile_repo_guard import HostileRepoError, run_hardened_git
+from engine.hostile_repo_guard import HostileRepoError, is_link_or_junction, run_hardened_git
 from engine.scanner_fusion_engine import scrub_finding_secrets
 from engine.secret_validator_engine import SecretValidatorEngine
 from models import (
@@ -413,22 +414,60 @@ def _run_standalone_deterministic_scan(
             )
 
             ev_map: Dict[str, Tuple[str, str]] = {}
-            if vault_dir and os.path.isdir(os.path.realpath(vault_dir)):
-                try:
-                    ev_map = ExploitVerificationEngine(os.path.realpath(vault_dir)).get_confirmed_status_map(
+            custom_findings: List[Finding] = []
+            if vault_dir:
+                abs_vault = os.path.abspath(vault_dir)
+                if os.path.lexists(abs_vault) and is_link_or_junction(abs_vault):
+                    raise HostileRepoError("Refusing symlink/junction vault directory.")
+                real_vault = os.path.realpath(abs_vault)
+                if os.path.isdir(real_vault):
+                    custom_findings = CustomRuleEngine(real_vault).evaluate_enabled_rules_on_workspace(
                         real_repo
                     )
-                except Exception as exc:
-                    logger.warning("Non-fatal EV map lookup error: %s", str(exc)[:120])
+                    try:
+                        ev_map = ExploitVerificationEngine(real_vault).get_confirmed_status_map(
+                            real_repo
+                        )
+                    except Exception as exc:
+                        logger.warning("Non-fatal EV map lookup error: %s", str(exc)[:120])
+
+            merged_raw: List[Finding] = list(combined)
+            seen_ids: Set[str] = {f.id for f in merged_raw}
+            seen_keys: Set[Tuple[str, str, int]] = {
+                (
+                    f.rule_id,
+                    _normalize_repo_relpath(
+                        str(f.path_nodes[-1].get("filepath", "")) if f.path_nodes else "",
+                        real_repo,
+                    ),
+                    int(f.path_nodes[-1].get("start_line") or 0) if f.path_nodes else 0,
+                )
+                for f in merged_raw
+            }
+            for cf in custom_findings:
+                cf_fp = _normalize_repo_relpath(
+                    str(cf.path_nodes[-1].get("filepath", "")) if cf.path_nodes else "",
+                    real_repo,
+                )
+                cf_ln = int(cf.path_nodes[-1].get("start_line") or 0) if cf.path_nodes else 0
+                loc_key = (cf.rule_id, cf_fp, cf_ln)
+                if cf.id in seen_ids or loc_key in seen_keys:
+                    continue
+                seen_ids.add(cf.id)
+                seen_keys.add(loc_key)
+                merged_raw.append(cf)
 
             enriched: List[Finding] = []
-            for raw_f in combined:
+            for raw_f in merged_raw:
                 f = raw_f.model_copy(deep=True)
                 q_rule = query_overrides.get(f.rule_id)
                 if q_rule:
                     f.scan_engine = q_rule.engine
                 last_fp = f.path_nodes[-1].get("filepath", "") if f.path_nodes else ""
-                if f.scan_engine == "SAST" or not f.language or f.language == "Python":
+                if (
+                    f.source_engine != "ALASTOR_CUSTOM_RULE"
+                    and (f.scan_engine == "SAST" or not f.language or f.language == "Python")
+                ):
                     f.language = infer_language_from_filepath(str(last_fp), f.rule_id)
                 f.best_fix_location = preserve_or_compute_best_fix_location(f)
                 if f.id in ev_map:

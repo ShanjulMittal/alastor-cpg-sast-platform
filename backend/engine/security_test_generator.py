@@ -55,11 +55,14 @@ def _validate_repo_dir(project_path: str) -> str:
     return real_repo
 
 
-def _extract_finding_filepath_and_line(finding: Finding) -> Tuple[str, int, str]:
+def _extract_finding_filepath_and_line(
+    finding: Finding,
+    default_filepath: str = "app.py",
+) -> Tuple[str, int, str]:
     fp = ""
     line = 1
     snippet = ""
-    if finding.best_fix_location and finding.best_fix_location.filepath:
+    if finding.best_fix_location and (finding.best_fix_location.filepath or "").strip():
         fp = finding.best_fix_location.filepath
         line = max(1, int(finding.best_fix_location.line or 1))
         snippet = finding.best_fix_location.code_snippet or ""
@@ -68,7 +71,7 @@ def _extract_finding_filepath_and_line(finding: Finding) -> Tuple[str, int, str]
         fp = str(sink.get("filepath") or "")
         line = max(1, int(sink.get("start_line") or 1))
         snippet = str(sink.get("code") or sink.get("name") or "")
-    fp_norm = fp.replace("\\", "/").lstrip("./") or "app.py"
+    fp_norm = fp.replace("\\", "/").strip().lstrip("./") or default_filepath
     return fp_norm, line, snippet
 
 
@@ -123,10 +126,11 @@ def detect_test_framework(
 ) -> ResolvedTestFramework:
     """
     Infers the target unit-test framework (`pytest`, `jest`, `vitest`, or `go_test`)
-    from the finding's source filepath extension and repository manifest (`package.json`).
+    from the finding's raw source filepath extension, falling back to `finding.language`
+    and repository manifest (`package.json`) before defaulting to `pytest`.
     """
-    filepath, _, _ = _extract_finding_filepath_and_line(finding)
-    ext = os.path.splitext(filepath.lower())[1]
+    raw_filepath, _, _ = _extract_finding_filepath_and_line(finding, default_filepath="")
+    ext = os.path.splitext(raw_filepath.lower())[1] if raw_filepath else ""
 
     if ext == ".py":
         return "pytest"
@@ -136,10 +140,14 @@ def detect_test_framework(
         return "vitest" if _has_vitest_in_repo(repo_path) else "jest"
 
     lang_low = (finding.language or "").strip().lower()
-    if lang_low == "go":
+    if lang_low in ("go", "golang"):
         return "go_test"
-    if any(tok in lang_low for tok in ("typescript", "javascript")):
+    if lang_low in ("ts", "js", "tsx", "jsx") or any(
+        tok in lang_low for tok in ("typescript", "javascript")
+    ):
         return "vitest" if _has_vitest_in_repo(repo_path) else "jest"
+    if lang_low in ("py", "python"):
+        return "pytest"
     return "pytest"
 
 
@@ -209,14 +217,14 @@ def _to_go_pascal_suffix(slug: str) -> str:
 
 def _safe_comment(text: str, extra_secrets: Sequence[str], max_len: int = 160) -> str:
     scrubbed = scrub_raw_secrets_text(text or "", extra_raw_secrets=extra_secrets)
-    one_line = re.sub(r"[\r\n\x00]+", " ", scrubbed).strip()
+    one_line = re.sub(r"[\r\n\x00\u2028\u2029]+", " ", scrubbed).strip()
     return one_line[:max_len]
 
 
 def _safe_docstring_text(text: str, extra_secrets: Sequence[str], max_len: int = 160) -> str:
     """Sanitizes untrusted metadata before embedding inside Python triple-quoted docstrings."""
     scrubbed = scrub_raw_secrets_text(text or "", extra_raw_secrets=extra_secrets)
-    one_line = re.sub(r"[\r\n\x00]+", " ", scrubbed)
+    one_line = re.sub(r"[\r\n\x00\u2028\u2029]+", " ", scrubbed)
     cleaned = one_line.replace("\\", "/").replace('"', "").replace("'", "").strip()
     return cleaned[:max_len]
 

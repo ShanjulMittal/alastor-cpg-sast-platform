@@ -1296,9 +1296,13 @@ class CustomRuleEngine:
         self._lock = threading.RLock()
 
     def _validate_rule_id(self, rule_id: str) -> str:
-        if not isinstance(rule_id, str) or not _RULE_ID_RE.match(rule_id):
+        if (
+            not isinstance(rule_id, str)
+            or rule_id in {".", ".."}
+            or not _RULE_ID_RE.match(rule_id)
+        ):
             raise ValueError(
-                "rule_id must be 2-64 chars matching ^[A-Za-z0-9._-]{2,64}$."
+                "rule_id must be 2-64 chars matching ^[A-Za-z0-9._-]{2,64}$ and cannot be '.' or '..'."
             )
         return rule_id
 

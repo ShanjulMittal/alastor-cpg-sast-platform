@@ -219,6 +219,7 @@ app.add_middleware(
 neo4j_client = Neo4jClient.get_instance()
 enterprise_mgr = EnterpriseManager.get_instance()
 VAULT_DIR = os.path.join(enterprise_mgr.platform_root, ".alastor_vault")
+_DEFAULT_VAULT_DIR = VAULT_DIR
 frontier_ai_engine = FrontierAiEngine(vault_dir=VAULT_DIR)
 secret_validator_engine = get_secret_validator_engine(enterprise_mgr.platform_root)
 api_operations_engine = get_api_operations_engine()
@@ -5815,21 +5816,6 @@ def _resolve_nextgen_confined_path(project_path: Optional[str]) -> str:
     return confined
 
 
-def _has_populated_active_findings(norm_req: str) -> bool:
-    with _findings_lock:
-        if _cached_findings:
-            return True
-        if _cached_external_findings:
-            return True
-        if _cached_cognitive_findings and _cached_cognitive_dir:
-            try:
-                if os.path.normcase(os.path.realpath(_cached_cognitive_dir)) == norm_req:
-                    return True
-            except Exception:
-                pass
-    return False
-
-
 def _get_active_or_custom_findings(target_dir: str) -> List[Finding]:
     """
     Collects EV-correlated workspace findings plus enabled `CustomRuleEngine` findings
@@ -5860,20 +5846,19 @@ def run_nextgen_pr_gate(req: PrDeltaGateRequest):
     req_confined = req.model_copy(update={"project_path": confined_path})
 
     try:
-        norm_req = os.path.normcase(os.path.realpath(confined_path))
-        norm_cur = os.path.normcase(
-            os.path.realpath(current_scan_dir or enterprise_mgr.platform_root)
+        effective_vault_dir = (
+            VAULT_DIR
+            if VAULT_DIR != _DEFAULT_VAULT_DIR
+            else (
+                getattr(custom_rule_engine, "vault_dir", None)
+                or getattr(checkpoint_store, "vault_dir", None)
+                or VAULT_DIR
+            )
         )
-        active_findings: Optional[List[Finding]] = None
-        if norm_req == norm_cur and _has_populated_active_findings(norm_req):
-            candidate = _get_active_or_custom_findings(confined_path)
-            if candidate:
-                active_findings = candidate
-
         return evaluate_pr_delta_gate(
             req_confined,
-            findings=active_findings,
-            vault_dir=checkpoint_store.vault_dir,
+            findings=None,
+            vault_dir=effective_vault_dir,
         )
     except HTTPException:
         raise

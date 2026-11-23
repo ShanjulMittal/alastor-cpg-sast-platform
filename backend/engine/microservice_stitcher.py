@@ -138,6 +138,24 @@ _QUEUE_PUBLISH_RE = re.compile(
 )
 _GRPC_CHANNEL_RE = re.compile(r"""insecure_channel\(\s*["']([^"']+)["']|grpc\.Dial\(\s*"([^"]+)\"""")
 _GRPC_STUB_CALL_RE = re.compile(r"""\bstub\.([A-Z][A-Za-z0-9_]*)\(""")
+_SCHEME_AUTHORITY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*")
+
+
+def _safe_url_path(cleaned_url: str) -> str:
+    """Safely extracts a URL path, degrading gracefully if `urlsplit` raises `ValueError`."""
+    try:
+        return urlsplit(cleaned_url).path or ""
+    except ValueError:
+        without_auth = _SCHEME_AUTHORITY_RE.sub("", cleaned_url)
+        return without_auth.split("?", 1)[0].split("#", 1)[0]
+
+
+def _safe_url_hostname(cleaned_url: str) -> str:
+    """Safely extracts a lowercased hostname, returning `""` on invalid IPv6/URL `ValueError`."""
+    try:
+        return (urlsplit(cleaned_url).hostname or "").strip().lower()
+    except ValueError:
+        return ""
 
 
 def normalize_route_template(raw_path: str) -> str:
@@ -151,8 +169,7 @@ def normalize_route_template(raw_path: str) -> str:
         return "/"
 
     if _SCHEME_PREFIX_RE.match(cleaned):
-        parsed = urlsplit(cleaned)
-        path_only = parsed.path or "/"
+        path_only = _safe_url_path(cleaned) or "/"
     else:
         stripped = _LEADING_BASE_VAR_RE.sub("", cleaned)
         path_only = stripped.split("?", 1)[0].split("#", 1)[0]
@@ -187,8 +204,7 @@ def normalize_route_template(raw_path: str) -> str:
 def _normalize_queue_topic(raw_topic: str) -> str:
     cleaned = str(raw_topic or "").strip().strip("'\"`")
     if _SCHEME_PREFIX_RE.match(cleaned):
-        parsed = urlsplit(cleaned)
-        tail = (parsed.path or "").strip("/").rsplit("/", 1)[-1]
+        tail = _safe_url_path(cleaned).strip("/").rsplit("/", 1)[-1]
         return tail.lower() if tail else cleaned.lower()
     return cleaned.lower()
 
@@ -197,8 +213,7 @@ def _extract_host_hint_from_url(raw_url: str) -> str:
     cleaned = str(raw_url or "").strip().strip("'\"`")
     if not _SCHEME_PREFIX_RE.match(cleaned):
         return ""
-    parsed = urlsplit(cleaned)
-    host = (parsed.hostname or "").strip().lower()
+    host = _safe_url_hostname(cleaned)
     if not host or "{" in host or "}" in host or "$" in host:
         return ""
     return host
@@ -721,9 +736,8 @@ def _service_host_aliases(svc: MicroserviceRepoInput) -> Set[str]:
         hint = svc.base_url_hint.strip()
         if not _SCHEME_PREFIX_RE.match(hint):
             hint = f"http://{hint}"
-        parsed = urlsplit(hint)
-        if parsed.hostname:
-            host_low = parsed.hostname.lower()
+        host_low = _safe_url_hostname(hint)
+        if host_low:
             aliases.add(host_low)
             aliases.add(host_low.split(".", 1)[0])
     return {a for a in aliases if a}

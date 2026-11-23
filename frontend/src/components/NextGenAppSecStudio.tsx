@@ -585,7 +585,7 @@ export const NextGenAppSecStudio: React.FC = () => {
       name: ruleNameInput.trim(),
       severity: ruleSeverity,
       cwe_id: ruleCweInput.trim() || "CWE-20",
-      languages: langs.length > 0 ? langs : ["python", "javascript", "typescript"],
+      languages: langs,
       pattern: rulePatternInput,
       anti_pattern: ruleAntiPatternInput.trim() || null,
       description: ruleDescriptionInput.trim(),
@@ -1824,14 +1824,20 @@ export const NextGenAppSecStudio: React.FC = () => {
 
                       <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                         <div className="flex flex-wrap gap-1">
-                          {(rule.languages || []).map((lang) => (
-                            <span
-                              key={lang}
-                              className="px-1.5 py-0.5 rounded bg-white border border-slate-200 font-mono text-[9.5px] text-slate-700"
-                            >
-                              {lang}
+                          {(rule.languages || []).length > 0 ? (
+                            (rule.languages || []).map((lang) => (
+                              <span
+                                key={lang}
+                                className="px-1.5 py-0.5 rounded bg-white border border-slate-200 font-mono text-[9.5px] text-slate-700"
+                              >
+                                {lang}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded bg-white border border-slate-200 font-mono text-[9.5px] text-slate-600">
+                              all languages
                             </span>
-                          ))}
+                          )}
                         </div>
 
                         <div className="flex items-center gap-1">
@@ -1983,7 +1989,7 @@ export const NextGenAppSecStudio: React.FC = () => {
                       type="text"
                       value={ruleLanguagesText}
                       onChange={(e) => setRuleLanguagesText(e.target.value)}
-                      placeholder="python, javascript, typescript"
+                      placeholder="python, javascript, typescript (leave blank for all languages)"
                       className="w-full bg-[#f8fafc] border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-mono text-slate-900"
                     />
                   </div>
