@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -50,6 +51,25 @@ from models import (
     ScannerFusionResponse,
     StageCheckpointItem,
 )
+
+
+def _create_dir_link(link_path: Path, target_dir: Path) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link_path), str(target_dir)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    else:
+        os.symlink(str(target_dir), str(link_path), target_is_directory=True)
+
+
+def _remove_dir_link(link_path: Path) -> None:
+    if os.name == "nt":
+        os.rmdir(link_path)
+    else:
+        os.unlink(link_path)
 
 
 def _init_git_repo_with_commit(repo_dir: Path) -> str:
@@ -173,15 +193,55 @@ class TestHostileRepoGuard:
                 f"\tfsmonitor = {evil_cmd}\n"
                 f"\thooksPath = .git/hooks\n"
                 f"\tsshCommand = {evil_cmd}\n"
+                f"\tpager = {evil_cmd}\n"
+                f"\teditor = {evil_cmd}\n"
+                f"\tgitProxy = {evil_cmd}\n"
+                f"\taskPass = {evil_cmd}\n"
+                f"\talternateRefsCommand = {evil_cmd}\n"
+                f"[sequence]\n"
+                f"\teditor = {evil_cmd}\n"
+                f"[uploadpack]\n"
+                f"\tpackObjectsHook = {evil_cmd}\n"
+                f"[gpg]\n"
+                f"\tprogram = {evil_cmd}\n"
+                f'[gpg "ssh"]\n'
+                f"\tprogram = {evil_cmd}\n"
                 f'[filter "evil"]\n'
                 f"\tsmudge = {evil_cmd}\n"
                 f"\tclean = {evil_cmd}\n"
                 f"\tprocess = {evil_cmd}\n"
                 f"\trequired = true\n"
+                f'[filter "Evil"]\n'
+                f"\tsmudge = {evil_cmd}\n"
+                f"\tclean = {evil_cmd}\n"
+                f"\tprocess = {evil_cmd}\n"
+                f"\trequired = true\n"
+                f"[diff]\n"
+                f"\texternal = {evil_cmd}\n"
                 f'[diff "evil"]\n'
                 f"\ttextconv = {evil_cmd}\n"
                 f"\tcommand = {evil_cmd}\n"
-                f"\texternal = {evil_cmd}\n"
+                f'[diff "Evil"]\n'
+                f"\ttextconv = {evil_cmd}\n"
+                f"\tcommand = {evil_cmd}\n"
+                f"[pager]\n"
+                f"\tdiff = {evil_cmd}\n"
+                f'[remote "origin"]\n'
+                f"\tuploadpack = {evil_cmd}\n"
+                f"\treceivepack = {evil_cmd}\n"
+                f"\tvcs = {evil_cmd}\n"
+                f"\tproxy = {evil_cmd}\n"
+                f'[credential "https://evil.example"]\n'
+                f"\thelper = {evil_cmd}\n"
+                f'[merge "evil"]\n'
+                f"\tdriver = {evil_cmd}\n"
+                f'[protocol "ext"]\n'
+                f"\tallow = always\n"
+                f'[protocol "https"]\n'
+                f"\tallow = always\n"
+                f'[url "ext::sh -c evil"]\n'
+                f"\tinsteadOf = https://github.com/\n"
+                f"\tpushInsteadOf = https://github.com/\n"
             )
 
         custom_env = {
@@ -204,30 +264,79 @@ class TestHostileRepoGuard:
         assert "GIT_DIR" not in hardened.env
         assert "GIT_CONFIG_PARAMETERS" not in hardened.env
 
-        # Preserved pre-existing GIT_CONFIG_COUNT pin + forced security overrides
+        # Preserved pre-existing GIT_CONFIG_COUNT pin + forced security overrides (case-sensitive subsections)
         pin_count = int(hardened.env["GIT_CONFIG_COUNT"])
-        pins = {
-            hardened.env[f"GIT_CONFIG_KEY_{i}"].lower(): hardened.env[f"GIT_CONFIG_VALUE_{i}"]
+        exact_pins = {
+            hardened.env[f"GIT_CONFIG_KEY_{i}"]: hardened.env[f"GIT_CONFIG_VALUE_{i}"]
             for i in range(pin_count)
         }
-        assert pins.get("user.name") == "PreservedPin"
-        assert pins.get("core.fsmonitor") == ""
-        assert pins.get("core.hookspath") == "/dev/null"
-        assert pins.get("core.sshcommand") == "false"
-        assert pins.get("diff.external") == ""
-        assert pins.get("credential.helper") == ""
-        assert pins.get("filter.evil.smudge") == ""
-        assert pins.get("filter.evil.clean") == ""
-        assert pins.get("filter.evil.process") == ""
-        assert pins.get("filter.evil.required") == "false"
-        assert pins.get("diff.evil.textconv") == ""
-        assert pins.get("diff.evil.command") == ""
+        lower_pins = {k.lower(): v for k, v in exact_pins.items()}
+        assert lower_pins.get("user.name") == "PreservedPin"
+        assert lower_pins.get("core.fsmonitor") == ""
+        assert lower_pins.get("core.hookspath") == "/dev/null"
+        assert lower_pins.get("core.sshcommand") == "false"
+        assert lower_pins.get("core.pager") == ""
+        assert lower_pins.get("core.editor") == "false"
+        assert lower_pins.get("sequence.editor") == "false"
+        assert lower_pins.get("core.gitproxy") == ""
+        assert lower_pins.get("core.askpass") == ""
+        assert lower_pins.get("core.alternaterefscommand") == ""
+        assert lower_pins.get("uploadpack.packobjectshook") == ""
+        assert lower_pins.get("gpg.program") == "false"
+        assert lower_pins.get("gpg.ssh.program") == "false"
+        assert lower_pins.get("protocol.allow") == "user"
+        assert lower_pins.get("protocol.file.allow") == "never"
+        assert lower_pins.get("protocol.ext.allow") == "never"
+        assert lower_pins.get("protocol.https.allow") == "user"
+        assert lower_pins.get("diff.external") == ""
+        assert lower_pins.get("credential.helper") == ""
+        assert lower_pins.get("credential.https://evil.example.helper") == ""
+        assert lower_pins.get("pager.diff") == "false"
+        assert lower_pins.get("remote.origin.uploadpack") == ""
+        assert lower_pins.get("remote.origin.receivepack") == ""
+        assert lower_pins.get("remote.origin.vcs") == ""
+        assert lower_pins.get("remote.origin.proxy") == ""
+        assert lower_pins.get("merge.evil.driver") == "false"
+        assert lower_pins.get("url.ext::sh -c evil.insteadof") == ""
+        assert lower_pins.get("url.ext::sh -c evil.pushinsteadof") == ""
 
+        # Both case-variant subsections MUST be neutralized independently!
+        for variant in ("evil", "Evil"):
+            assert exact_pins.get(f"filter.{variant}.smudge") == ""
+            assert exact_pins.get(f"filter.{variant}.clean") == ""
+            assert exact_pins.get(f"filter.{variant}.process") == ""
+            assert exact_pins.get(f"filter.{variant}.required") == "false"
+            assert exact_pins.get(f"diff.{variant}.textconv") == ""
+            assert exact_pins.get(f"diff.{variant}.command") == ""
+
+        (repo_dir / "app.py").write_text("print('modified')\n", encoding="utf-8")
         status_res = run_hardened_git(str(repo_dir), ["status"], environ=custom_env)
         assert status_res.returncode == 0
+        diff_res = run_hardened_git(str(repo_dir), ["diff"], environ=custom_env)
+        assert diff_res.returncode == 0
+        assert "modified" in diff_res.stdout
+        log_res = run_hardened_git(str(repo_dir), ["log", "-p", "-n", "1"], environ=custom_env)
+        assert log_res.returncode == 0
         sha = get_repo_commit_sha(str(repo_dir))
         assert sha == expected_sha
         assert not marker.exists(), "Malicious git config driver executed!"
+
+    def test_benign_repo_diff_works_cleanly(self, tmp_path: Path):
+        repo_dir = tmp_path / "benign_repo"
+        repo_dir.mkdir()
+        _init_git_repo_with_commit(repo_dir)
+        (repo_dir / "app.py").write_text("print('updated')\n", encoding="utf-8")
+
+        hardened = build_hardened_git_env_and_argv(str(repo_dir))
+        pin_keys = {
+            hardened.env[f"GIT_CONFIG_KEY_{i}"].lower()
+            for i in range(int(hardened.env["GIT_CONFIG_COUNT"]))
+        }
+        assert "diff.external" not in pin_keys
+
+        diff_res = run_hardened_git(str(repo_dir), ["diff"])
+        assert diff_res.returncode == 0
+        assert "+print('updated')" in diff_res.stdout
 
     def test_get_repo_commit_sha_non_git_returns_empty_and_missing_raises(self, tmp_path: Path):
         non_git = tmp_path / "plain_dir"
@@ -267,6 +376,35 @@ class TestHostileRepoGuard:
         assert ".alastor.yaml" in found
         assert ".git/hooks/post-checkout" in found
         assert ".git/hooks/pre-commit.sample" not in found
+
+        # Nested junction/symlink inside repo pointing outside MUST still be refused!
+        outside_cfg_dir = tmp_path / "outside_cfg_dir"
+        (outside_cfg_dir / "sub").mkdir(parents=True)
+        outside_cfg = outside_cfg_dir / "sub" / "config.yaml"
+        outside_cfg.write_text("safe: true\n", encoding="utf-8")
+        assert assert_safe_config_source(str(outside_cfg), str(repo_dir)) == os.path.realpath(str(outside_cfg))
+
+        repo_junc = repo_dir / "nested_junc"
+        _create_dir_link(repo_junc, outside_cfg_dir)
+        try:
+            with pytest.raises(HostileRepoError):
+                assert_safe_config_source(str(repo_junc / "sub" / "config.yaml"), str(repo_dir))
+            with pytest.raises(HostileRepoError):
+                assert_safe_config_source(str(repo_junc / ".." / "alastor-user-config.yaml"), str(repo_dir))
+        finally:
+            _remove_dir_link(repo_junc)
+
+        # Symlinked/junction `.git` directory must NOT be traversed by find_hostile_target_configs
+        symlinked_git_repo = tmp_path / "symlink_git_repo"
+        symlinked_git_repo.mkdir()
+        outside_git = tmp_path / "outside_git"
+        (outside_git / "hooks").mkdir(parents=True)
+        (outside_git / "hooks" / "pre-commit").write_text("#!/bin/sh\necho evil\n", encoding="utf-8")
+        _create_dir_link(symlinked_git_repo / ".git", outside_git)
+        try:
+            assert find_hostile_target_configs(str(symlinked_git_repo)) == []
+        finally:
+            _remove_dir_link(symlinked_git_repo / ".git")
 
     @pytest.mark.parametrize(
         "valid_url",
@@ -357,6 +495,29 @@ class TestHostileRepoGuard:
         assert sentinel.exists()
         assert sentinel.read_text(encoding="utf-8") == "DO_NOT_DELETE"
 
+        # Cleanup handles read-only real subdirectories and NEVER calls os.chmod on links/junctions
+        ws_ro = allowed_parent / "repo_ws_ro"
+        ro_subdir = ws_ro / "locked_dir"
+        ro_subdir.mkdir(parents=True)
+        ro_inner_file = ro_subdir / "inner.bin"
+        ro_inner_file.write_bytes(b"Z" * 16)
+        escape_link = ws_ro / "link_out"
+        _create_dir_link(escape_link, outside)
+        os.chmod(ro_subdir, stat.S_IREAD | stat.S_IEXEC if os.name != "nt" else stat.S_IREAD)
+        chmod_paths: list[str] = []
+        real_chmod = os.chmod
+
+        def _spy_chmod(p, mode, *args, **kwargs):
+            chmod_paths.append(os.path.normcase(os.path.abspath(str(p))))
+            return real_chmod(p, mode, *args, **kwargs)
+
+        with mock.patch("engine.hostile_repo_guard.os.chmod", side_effect=_spy_chmod):
+            reclaimed_ro = safe_cleanup_workspace(str(ws_ro), str(allowed_parent))
+        assert reclaimed_ro >= 16
+        assert not ws_ro.exists()
+        assert sentinel.exists()
+        assert os.path.normcase(os.path.abspath(str(escape_link))) not in chmod_paths
+
         # Refuses cleaning allowed_parent itself or outside paths
         with pytest.raises(HostileRepoError):
             safe_cleanup_workspace(str(allowed_parent), str(allowed_parent))
@@ -365,19 +526,21 @@ class TestHostileRepoGuard:
         with pytest.raises(HostileRepoError):
             safe_cleanup_workspace(str(outside), str(allowed_parent))
 
-        # Refuses top-level junction/symlink pointing outside allowed_parent
-        if os.name == "nt":
-            top_junc = allowed_parent / "top_escape_junc"
-            subprocess.run(
-                ["cmd", "/c", "mklink", "/J", str(top_junc), str(outside)],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+        # Refuses intermediate AND top-level junction/symlink pointing outside allowed_parent
+        (outside / "nested_target").mkdir(exist_ok=True)
+        nested_sentinel = outside / "nested_target" / "keep.txt"
+        nested_sentinel.write_text("KEEP", encoding="utf-8")
+        top_junc = allowed_parent / "top_escape_junc"
+        _create_dir_link(top_junc, outside)
+        try:
             with pytest.raises(HostileRepoError):
                 safe_cleanup_workspace(str(top_junc), str(allowed_parent))
+            with pytest.raises(HostileRepoError):
+                safe_cleanup_workspace(str(top_junc / "nested_target"), str(allowed_parent))
             assert sentinel.exists()
-            os.rmdir(top_junc)
+            assert nested_sentinel.exists()
+        finally:
+            _remove_dir_link(top_junc)
 
     def test_build_sandbox_docker_command(self, tmp_path: Path):
         repo_dir = tmp_path / "repo"
@@ -408,6 +571,34 @@ class TestHostileRepoGuard:
 
         with pytest.raises(HostileRepoError):
             build_sandbox_docker_command(str(repo_dir) + "\nevil", str(out_dir))
+
+        # Colon injection in Docker -v paths (outside Windows drive letter prefix)
+        with pytest.raises(HostileRepoError):
+            build_sandbox_docker_command(str(repo_dir / "bad:ro"), str(out_dir))
+        with pytest.raises(HostileRepoError):
+            build_sandbox_docker_command(str(repo_dir), str(out_dir / "bad:rw"))
+
+        # Image validation
+        for bad_img in ("", "-evil", "bad image", "alastor;id"):
+            with pytest.raises(HostileRepoError):
+                build_sandbox_docker_command(str(repo_dir), str(out_dir), image=bad_img)
+
+        # Egress host & cloud metadata validation
+        for bad_host in ("", "-evil", "api.github.com;id", "bad host", "169.254.169.254", "100.100.100.200", "metadata.google.internal", None):
+            with pytest.raises(HostileRepoError):
+                build_sandbox_docker_command(
+                    str(repo_dir),
+                    str(out_dir),
+                    allow_egress_hosts=[bad_host],  # type: ignore[list-item]
+                )
+
+        # Non-str cli_args rejected
+        with pytest.raises(HostileRepoError):
+            build_sandbox_docker_command(
+                str(repo_dir),
+                str(out_dir),
+                cli_args=["scan", None],  # type: ignore[list-item]
+            )
 
 
 class TestCheckpointStore:

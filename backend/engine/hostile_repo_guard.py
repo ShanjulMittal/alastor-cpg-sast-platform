@@ -3,16 +3,20 @@ ALASTOR v5.0 Pillar 4 — Hostile-Repo Isolation & Sandboxed Execution Guardrail
 
 Protects the host and CI runners when inspecting untrusted target repositories:
 1. Hardened `git` subprocess builder neutralizing `core.fsmonitor`, `core.hooksPath`,
-   `core.sshCommand`, `diff.external`, `credential.helper`, `filter.*`, and `diff.*` drivers
-   via `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`.
+   `core.sshCommand`, `core.pager`, `core.editor`, `sequence.editor`, `core.gitProxy`,
+   `core.askPass`, `core.alternateRefsCommand`, `uploadpack.packObjectsHook`,
+   `gpg.program`, `protocol.allow`, `diff.external`, `credential.helper`, `filter.*`,
+   `diff.*`, `pager.*`, `remote.*`, `credential.*.helper`, `gpg.*.program`, `merge.*.driver`,
+   `protocol.*.allow`, and `url.*.insteadOf` / `pushInsteadOf` via `GIT_CONFIG_COUNT`.
 2. Refusal to load `.env`, `.alastor.yaml`, `config.yaml`, or any config located inside
-   the scanned target repository (including symlink traversal).
+   the scanned target repository (including nested symlink/junction traversal).
 3. Strict remote clone URL validation (`http://`, `https://`, `ssh://`, `git@host:owner/repo`).
-4. Symlink- and NTFS-junction-escape-proof workspace cleanup with read-only pack handling.
+4. Symlink- and NTFS-junction-escape-proof workspace cleanup with read-only dir/pack handling.
 5. Hardened opt-in Docker sandbox argv builder (`--read-only`, `--cap-drop=ALL`, `--network=none`).
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import stat
@@ -34,18 +38,55 @@ _BASE_GIT_PINS: Tuple[Tuple[str, str], ...] = (
     ("core.fsmonitor", ""),
     ("core.hooksPath", "/dev/null"),
     ("core.sshCommand", "false"),
-    ("diff.external", ""),
     ("credential.helper", ""),
+    ("core.pager", ""),
+    ("core.editor", "false"),
+    ("sequence.editor", "false"),
+    ("core.gitProxy", ""),
+    ("core.askPass", ""),
+    ("core.alternateRefsCommand", ""),
+    ("uploadpack.packObjectsHook", ""),
+    ("gpg.program", "false"),
+    ("protocol.allow", "user"),
+    ("protocol.file.allow", "never"),
+    ("protocol.ext.allow", "never"),
+    ("protocol.fd.allow", "never"),
+    ("protocol.git.allow", "never"),
 )
 
 _FORCED_BASE_KEYS_LOWER = {k.lower() for k, _ in _BASE_GIT_PINS}
+_SAFE_GIT_PROTOCOLS = {"http", "https", "ssh"}
+
 _FILTER_KEY_RE = re.compile(r"^filter\.(.+)\.(clean|smudge|process|required)$", re.IGNORECASE)
-_DIFF_KEY_RE = re.compile(r"^diff\.(.+)\.(textconv|command)$", re.IGNORECASE)
+_DIFF_SECTION_KEY_RE = re.compile(r"^diff\.(.+)\.(textconv|command)$", re.IGNORECASE)
+_PAGER_KEY_RE = re.compile(r"^pager\.(.+)$", re.IGNORECASE)
+_REMOTE_KEY_RE = re.compile(r"^remote\.(.+)\.(uploadpack|receivepack|vcs|proxy)$", re.IGNORECASE)
+_CREDENTIAL_SECTION_KEY_RE = re.compile(r"^credential\.(.+)\.helper$", re.IGNORECASE)
+_GPG_SECTION_KEY_RE = re.compile(r"^gpg\.(.+)\.program$", re.IGNORECASE)
+_MERGE_KEY_RE = re.compile(r"^merge\.(.+)\.driver$", re.IGNORECASE)
+_PROTOCOL_SECTION_KEY_RE = re.compile(r"^protocol\.(.+)\.allow$", re.IGNORECASE)
+_URL_REWRITE_KEY_RE = re.compile(r"^url\.(.+)\.(insteadof|pushinsteadof)$", re.IGNORECASE)
+
+_GIT_GLOBAL_OPTS_WITH_ARG = {
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--super-prefix",
+    "--config-env",
+    "--exec-path",
+}
+_DIFF_TEXTCONV_SUBCOMMANDS = {"diff", "log", "show"}
+
 _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
 _SSH_USER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SCP_CLONE_RE = re.compile(
     r"^([A-Za-z0-9][A-Za-z0-9._-]*)@([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):([A-Za-z0-9_./-]+)$"
 )
+_DOCKER_IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*$")
+_WINDOWS_DRIVE_PREFIX_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_CLOUD_METADATA_HOSTS = {"169.254.169.254", "100.100.100.200", "metadata.google.internal", "metadata"}
 _HOSTILE_CONFIG_FILENAMES: Tuple[str, ...] = (".env", ".env.local", ".alastor.yaml", "config.yaml")
 
 
@@ -69,10 +110,6 @@ def is_entry_link_or_junction(entry: os.DirEntry[str]) -> bool:
         or (hasattr(entry, "is_junction") and entry.is_junction())
         or is_link_or_junction(entry.path)
     )
-
-
-_is_link_or_junction = is_link_or_junction
-_is_entry_link_or_junction = is_entry_link_or_junction
 
 
 def _is_same_or_inside(candidate: str, root: str) -> bool:
@@ -132,13 +169,56 @@ def _apply_git_config_pins(env: Dict[str, str], pins: Sequence[Tuple[str, str]])
     return out
 
 
+def _canonical_git_config_key(key: str) -> str:
+    """
+    Preserve Git's exact case semantics: section and variable are case-insensitive,
+    while any subsection (including dots inside URLs) is case-sensitive.
+    """
+    first_dot = key.find(".")
+    last_dot = key.rfind(".")
+    if first_dot == -1:
+        return key.lower()
+    if first_dot == last_dot:
+        return key.lower()
+    section = key[:first_dot].lower()
+    subsection = key[first_dot + 1 : last_dot]
+    variable = key[last_dot + 1 :].lower()
+    return f"{section}.{subsection}.{variable}"
+
+
+def _neutralized_value_for_dynamic_key(key: str) -> Optional[str]:
+    lower = key.lower()
+    if lower == "diff.external":
+        return ""
+    filter_match = _FILTER_KEY_RE.match(key)
+    if filter_match:
+        return "false" if filter_match.group(2).lower() == "required" else ""
+    if _DIFF_SECTION_KEY_RE.match(key):
+        return ""
+    if _PAGER_KEY_RE.match(key):
+        return "false"
+    if _REMOTE_KEY_RE.match(key):
+        return ""
+    if _CREDENTIAL_SECTION_KEY_RE.match(key):
+        return ""
+    if _GPG_SECTION_KEY_RE.match(key):
+        return "false"
+    if _MERGE_KEY_RE.match(key):
+        return "false"
+    proto_match = _PROTOCOL_SECTION_KEY_RE.match(key)
+    if proto_match:
+        proto_name = proto_match.group(1).lower()
+        return "user" if proto_name in _SAFE_GIT_PROTOCOLS else "never"
+    if _URL_REWRITE_KEY_RE.match(key):
+        return ""
+    return None
+
+
 def _is_neutralized_config_key(key: str) -> bool:
     lower = key.lower()
-    return (
-        lower in _FORCED_BASE_KEYS_LOWER
-        or bool(_FILTER_KEY_RE.match(key))
-        or bool(_DIFF_KEY_RE.match(key))
-    )
+    if lower in _FORCED_BASE_KEYS_LOWER:
+        return True
+    return _neutralized_value_for_dynamic_key(key) is not None
 
 
 def build_hardened_git_env_and_argv(
@@ -148,7 +228,7 @@ def build_hardened_git_env_and_argv(
 ) -> HardenedGitCommand:
     """
     Construct a sanitized `git -C <repo>` command and environment that strips hostile
-    `GIT_*` env vars and neutralizes `.git/config` hook/filter/diff/fsmonitor execution.
+    `GIT_*` env vars and neutralizes `.git/config` hook/filter/diff/pager/remote/protocol drivers.
     """
     _validate_no_control_chars(repo_path, "repo_path")
     real_repo = os.path.realpath(repo_path)
@@ -185,7 +265,7 @@ def build_hardened_git_env_and_argv(
         raise HostileRepoError(f"Hardened git config inspection exited {probe.returncode}: {err_text}")
 
     dynamic_pins: List[Tuple[str, str]] = []
-    seen_dynamic: set[str] = set()
+    seen_dynamic: set[str] = set(_FORCED_BASE_KEYS_LOWER)
     raw_entries = probe.stdout.decode("utf-8", errors="replace").split("\x00")
     for entry in raw_entries:
         if not entry:
@@ -193,21 +273,49 @@ def build_hardened_git_env_and_argv(
         key = entry.split("\n", 1)[0].strip()
         if not key:
             continue
-        key_lower = key.lower()
-        if key_lower in seen_dynamic:
+        canon_key = _canonical_git_config_key(key)
+        if canon_key in seen_dynamic:
             continue
-        filter_match = _FILTER_KEY_RE.match(key)
-        if filter_match:
-            subkey = filter_match.group(2).lower()
-            dynamic_pins.append((key, "false" if subkey == "required" else ""))
-            seen_dynamic.add(key_lower)
-            continue
-        if _DIFF_KEY_RE.match(key):
-            dynamic_pins.append((key, ""))
-            seen_dynamic.add(key_lower)
+        neutral_val = _neutralized_value_for_dynamic_key(key)
+        if neutral_val is not None:
+            dynamic_pins.append((key, neutral_val))
+            seen_dynamic.add(canon_key)
 
     final_env = _apply_git_config_pins(clean_env, base_pins + dynamic_pins)
     return HardenedGitCommand(argv=["git", "-C", real_repo], env=final_env)
+
+
+def _inject_safe_diff_flags(clean_args: Sequence[str]) -> List[str]:
+    args_list = list(clean_args)
+    idx = 0
+    subcmd_idx: Optional[int] = None
+    while idx < len(args_list):
+        tok = args_list[idx]
+        if tok == "--":
+            break
+        if tok in _GIT_GLOBAL_OPTS_WITH_ARG:
+            idx += 2
+            continue
+        if tok.startswith("-"):
+            idx += 1
+            continue
+        subcmd_idx = idx
+        break
+
+    if subcmd_idx is None or args_list[subcmd_idx] not in _DIFF_TEXTCONV_SUBCOMMANDS:
+        return args_list
+
+    # Only inspect flags before `--` so filenames after `--` are never treated as options.
+    end_opts = args_list.index("--") if "--" in args_list else len(args_list)
+    existing_opts = set(args_list[subcmd_idx + 1 : end_opts])
+    to_insert: List[str] = []
+    if "--no-ext-diff" not in existing_opts:
+        to_insert.append("--no-ext-diff")
+    if "--no-textconv" not in existing_opts:
+        to_insert.append("--no-textconv")
+    if not to_insert:
+        return args_list
+    return args_list[: subcmd_idx + 1] + to_insert + args_list[subcmd_idx + 1 :]
 
 
 def run_hardened_git(
@@ -219,15 +327,17 @@ def run_hardened_git(
     """Execute a git subcommand inside `repo_path` with all hostile config drivers neutralized."""
     clean_args: List[str] = []
     for arg in git_args:
-        arg_str = str(arg)
-        if "\x00" in arg_str:
+        if not isinstance(arg, str):
+            raise HostileRepoError("git argument must be a string")
+        if "\x00" in arg:
             raise HostileRepoError("git argument contains NUL byte")
-        clean_args.append(arg_str)
+        clean_args.append(arg)
 
+    safe_args = _inject_safe_diff_flags(clean_args)
     hardened = build_hardened_git_env_and_argv(repo_path=repo_path, environ=environ, timeout=timeout)
     try:
         return subprocess.run(
-            [*hardened.argv, *clean_args],
+            [*hardened.argv, *safe_args],
             env=hardened.env,
             shell=False,
             capture_output=True,
@@ -247,22 +357,69 @@ def get_repo_commit_sha(repo_path: str) -> str:
     return proc.stdout.strip()
 
 
+def _iter_raw_prefixes(raw_path: str) -> List[str]:
+    """Build cumulative path prefixes without collapsing `..` segments."""
+    joined = raw_path if os.path.isabs(raw_path) else os.path.join(os.getcwd(), raw_path)
+    drive, rest = os.path.splitdrive(joined)
+    if drive:
+        anchor = drive + (os.sep if rest.startswith(("/", "\\")) else "")
+        tail = rest.lstrip("/\\")
+    elif joined.startswith(("/", "\\")):
+        anchor = os.sep
+        tail = rest.lstrip("/\\")
+    else:
+        anchor = ""
+        tail = rest
+
+    prefixes: List[str] = []
+    cursor = anchor
+    for segment in re.split(r"[\\/]+", tail):
+        if not segment or segment == ".":
+            continue
+        cursor = os.path.join(cursor, segment) if cursor else segment
+        prefixes.append(cursor)
+    return prefixes
+
+
 def assert_safe_config_source(config_path: str, repo_root: str) -> str:
     """
     Refuse loading any `.env`, `.alastor.yaml`, `config.yaml`, or configuration path
-    located inside (or resolving into) the scanned target repository.
+    located inside, resolving into, or traversing through the scanned target repository.
     """
     _validate_no_control_chars(config_path, "config_path")
     _validate_no_control_chars(repo_root, "repo_root")
 
+    abs_repo = os.path.abspath(repo_root)
     real_repo = os.path.realpath(repo_root)
+    abs_cfg = os.path.abspath(config_path)
     real_cfg = os.path.realpath(config_path)
-    abs_cfg_parent = os.path.realpath(os.path.dirname(os.path.abspath(config_path)))
+    real_cfg_parent = os.path.realpath(os.path.dirname(abs_cfg))
 
-    if _is_same_or_inside(real_cfg, real_repo) or _is_same_or_inside(abs_cfg_parent, real_repo):
-        raise HostileRepoError(
-            f"Refused configuration source inside scanned target repository: {config_path}"
+    for candidate in (abs_cfg, real_cfg, real_cfg_parent):
+        if _is_same_or_inside(candidate, abs_repo) or _is_same_or_inside(candidate, real_repo):
+            raise HostileRepoError(
+                f"Refused configuration source inside scanned target repository: {config_path}"
+            )
+
+    # Walk un-normalized prefixes to catch nested `<repo>/junc/sub/config.yaml` or `<repo>/junc/../outside`.
+    for prefix in _iter_raw_prefixes(config_path):
+        norm_prefix = os.path.normpath(prefix)
+        real_prefix = os.path.realpath(prefix)
+        in_repo = (
+            _is_same_or_inside(norm_prefix, abs_repo)
+            or _is_same_or_inside(norm_prefix, real_repo)
+            or _is_same_or_inside(real_prefix, abs_repo)
+            or _is_same_or_inside(real_prefix, real_repo)
         )
+        if in_repo:
+            if os.path.lexists(prefix) and is_link_or_junction(prefix):
+                raise HostileRepoError(
+                    f"Refused configuration source traversing symlink/junction inside repository: {config_path}"
+                )
+            raise HostileRepoError(
+                f"Refused configuration source inside scanned target repository: {config_path}"
+            )
+
     return real_cfg
 
 
@@ -271,7 +428,7 @@ def find_hostile_target_configs(repo_root: str) -> List[str]:
     Return relative paths of untrusted config/hook artifacts present inside `repo_root`
     for informational warnings only; never reads or executes them.
     """
-    if not repo_root or not os.path.isdir(repo_root):
+    if not repo_root or not os.path.isdir(repo_root) or is_link_or_junction(repo_root):
         return []
 
     found: List[str] = []
@@ -280,14 +437,20 @@ def find_hostile_target_configs(repo_root: str) -> List[str]:
         if os.path.lexists(candidate):
             found.append(filename)
 
-    hooks_dir = os.path.join(repo_root, ".git", "hooks")
-    if os.path.isdir(hooks_dir) and not _is_link_or_junction(hooks_dir):
+    git_dir = os.path.join(repo_root, ".git")
+    hooks_dir = os.path.join(git_dir, "hooks")
+    if (
+        os.path.isdir(git_dir)
+        and not is_link_or_junction(git_dir)
+        and os.path.isdir(hooks_dir)
+        and not is_link_or_junction(hooks_dir)
+    ):
         try:
             with os.scandir(hooks_dir) as it:
                 for entry in it:
                     if entry.name.lower().endswith(".sample"):
                         continue
-                    if entry.is_file(follow_symlinks=False) or _is_entry_link_or_junction(entry):
+                    if entry.is_file(follow_symlinks=False) or is_entry_link_or_junction(entry):
                         found.append(f".git/hooks/{entry.name}")
         except OSError:
             pass
@@ -370,19 +533,16 @@ def validate_clone_url(url: str) -> str:
 
 
 def _unlink_or_rmdir_link(path: str) -> None:
+    """Remove a symlink or NTFS junction itself; never chmod a symlink target."""
     try:
         os.unlink(path)
-    except PermissionError:
-        os.chmod(path, stat.S_IWRITE)
-        try:
-            os.unlink(path)
-        except OSError:
-            os.rmdir(path)
     except OSError:
         os.rmdir(path)
 
 
 def _remove_file_with_readonly_retry(path: str) -> int:
+    if is_link_or_junction(path):
+        raise HostileRepoError(f"Refusing file-removal chmod on symlink/junction: {path}")
     try:
         size = os.lstat(path).st_size
     except OSError:
@@ -395,18 +555,30 @@ def _remove_file_with_readonly_retry(path: str) -> int:
     return size
 
 
+def _ensure_real_dir_rw_exec(dir_path: str) -> None:
+    if is_link_or_junction(dir_path):
+        raise HostileRepoError(f"Refusing chmod on symlink/junction directory: {dir_path}")
+    try:
+        st = os.lstat(dir_path)
+        if stat.S_ISDIR(st.st_mode) and (st.st_mode & stat.S_IRWXU) != stat.S_IRWXU:
+            os.chmod(dir_path, st.st_mode | stat.S_IRWXU)
+    except OSError:
+        pass
+
+
 def _remove_dir_recursive_no_follow(dir_path: str) -> int:
+    _ensure_real_dir_rw_exec(dir_path)
     reclaimed = 0
     with os.scandir(dir_path) as it:
         for entry in it:
-            if _is_entry_link_or_junction(entry):
+            if is_entry_link_or_junction(entry):
                 _unlink_or_rmdir_link(entry.path)
             elif entry.is_dir(follow_symlinks=False):
                 reclaimed += _remove_dir_recursive_no_follow(entry.path)
                 try:
                     os.rmdir(entry.path)
                 except PermissionError:
-                    os.chmod(entry.path, stat.S_IWRITE | stat.S_IRUSR | stat.S_IXUSR)
+                    os.chmod(entry.path, stat.S_IRWXU)
                     os.rmdir(entry.path)
             else:
                 reclaimed += _remove_file_with_readonly_retry(entry.path)
@@ -416,15 +588,16 @@ def _remove_dir_recursive_no_follow(dir_path: str) -> int:
 def safe_cleanup_workspace(workspace_dir: str, allowed_parent: str) -> int:
     """
     Safely delete `workspace_dir` strictly inside `allowed_parent` without ever following
-    symlinks or Windows NTFS junctions, handling read-only `.git` pack files cleanly.
+    symlinks or Windows NTFS junctions, handling read-only directories and `.git` pack files.
     Returns total reclaimed bytes (or 0 if `workspace_dir` is already absent).
     """
     _validate_no_control_chars(workspace_dir, "workspace_dir")
     _validate_no_control_chars(allowed_parent, "allowed_parent")
 
-    if not os.path.isdir(allowed_parent) or _is_link_or_junction(allowed_parent):
+    if not os.path.isdir(allowed_parent) or is_link_or_junction(allowed_parent):
         raise HostileRepoError(f"allowed_parent must be an existing non-symlink directory: {allowed_parent}")
 
+    abs_parent = os.path.abspath(allowed_parent)
     real_parent = os.path.realpath(allowed_parent)
     abs_ws = os.path.abspath(workspace_dir)
     real_ws = os.path.realpath(abs_ws)
@@ -434,8 +607,24 @@ def safe_cleanup_workspace(workspace_dir: str, allowed_parent: str) -> int:
         raise HostileRepoError(f"Refusing cleanup outside allowed_parent: {workspace_dir}")
     if not _is_strictly_inside(real_ws, real_parent):
         raise HostileRepoError(f"Refusing cleanup of allowed_parent or path outside it: {workspace_dir}")
-    if _is_link_or_junction(abs_ws):
-        raise HostileRepoError(f"Refusing cleanup of symlink/junction workspace root: {workspace_dir}")
+
+    if _is_strictly_inside(abs_ws, real_parent):
+        walk_base = real_parent
+    elif _is_strictly_inside(abs_ws, abs_parent):
+        walk_base = abs_parent
+    else:
+        raise HostileRepoError(f"Refusing cleanup outside allowed_parent: {workspace_dir}")
+
+    rel_ws = os.path.relpath(abs_ws, walk_base)
+    cursor = walk_base
+    for part in rel_ws.split(os.sep):
+        if not part or part == ".":
+            continue
+        if part == "..":
+            raise HostileRepoError(f"Refusing path traversal in workspace_dir: {workspace_dir}")
+        cursor = os.path.join(cursor, part)
+        if os.path.lexists(cursor) and is_link_or_junction(cursor):
+            raise HostileRepoError(f"Refusing cleanup of symlink/junction path component: {cursor}")
 
     if not os.path.lexists(abs_ws):
         return 0
@@ -447,9 +636,46 @@ def safe_cleanup_workspace(workspace_dir: str, allowed_parent: str) -> int:
     try:
         os.rmdir(abs_ws)
     except PermissionError:
-        os.chmod(abs_ws, stat.S_IWRITE | stat.S_IRUSR | stat.S_IXUSR)
+        os.chmod(abs_ws, stat.S_IRWXU)
         os.rmdir(abs_ws)
     return reclaimed
+
+
+def _validate_docker_mount_path(path: str, label: str) -> str:
+    _validate_no_control_chars(path, label)
+    real_path = os.path.realpath(path)
+    tail = real_path[2:] if _WINDOWS_DRIVE_PREFIX_RE.match(real_path) else real_path
+    if ":" in tail:
+        raise HostileRepoError(f"{label} contains forbidden ':' character for Docker -v mount: {path}")
+    return real_path
+
+
+def _validate_docker_egress_host(host: str) -> str:
+    if not isinstance(host, str):
+        raise HostileRepoError("allow_egress_hosts entries must be strings")
+    _validate_no_control_chars(host, "allow_egress_host")
+    cleaned = host.strip(" ")
+    if not cleaned:
+        raise HostileRepoError("allow_egress_hosts cannot contain blank entries")
+    if any(ch.isspace() or ch in (",", ";", "|", "&", "$", "`", "'", '"', "\\", "/") for ch in cleaned):
+        raise HostileRepoError(f"Invalid characters in egress host: {cleaned}")
+    if cleaned.startswith("-"):
+        raise HostileRepoError(f"Egress host cannot start with '-': {cleaned}")
+
+    lower = cleaned.lower()
+    if lower in _CLOUD_METADATA_HOSTS:
+        raise HostileRepoError(f"Cloud metadata endpoint forbidden in allow_egress_hosts: {cleaned}")
+
+    try:
+        ip_obj = ipaddress.ip_address(cleaned)
+    except ValueError:
+        if not _HOSTNAME_RE.match(cleaned):
+            raise HostileRepoError(f"Invalid egress hostname: {cleaned}")
+        return cleaned
+
+    if ip_obj.is_link_local or ip_obj.is_unspecified or ip_obj.is_multicast:
+        raise HostileRepoError(f"Forbidden special-use IP in allow_egress_hosts: {cleaned}")
+    return str(ip_obj)
 
 
 def build_sandbox_docker_command(
@@ -463,14 +689,11 @@ def build_sandbox_docker_command(
     Build a hardened `docker run` argv list with read-only rootfs, dropped capabilities,
     no-new-privileges, PID/memory caps, `:ro` repo mount, and `--network=none` by default.
     """
-    _validate_no_control_chars(repo_path, "repo_path")
-    _validate_no_control_chars(output_dir, "output_dir")
+    real_repo = _validate_docker_mount_path(repo_path, "repo_path")
+    real_out = _validate_docker_mount_path(output_dir, "output_dir")
     _validate_no_control_chars(image, "image")
-    if image.startswith("-"):
-        raise HostileRepoError("Docker image name cannot start with '-'")
-
-    real_repo = os.path.realpath(repo_path)
-    real_out = os.path.realpath(output_dir)
+    if any(ch.isspace() for ch in image) or image.startswith("-") or not _DOCKER_IMAGE_RE.match(image):
+        raise HostileRepoError(f"Invalid Docker image reference: {image}")
 
     argv: List[str] = [
         "docker",
@@ -486,14 +709,9 @@ def build_sandbox_docker_command(
     ]
 
     clean_hosts: List[str] = []
-    for host in allow_egress_hosts or []:
-        h = host.strip()
-        if not h:
-            continue
-        _validate_no_control_chars(h, "allow_egress_host")
-        if any(ch.isspace() or ch == "," for ch in h):
-            raise HostileRepoError(f"Invalid egress host specification: {h}")
-        clean_hosts.append(h)
+    if allow_egress_hosts is not None:
+        for host in allow_egress_hosts:
+            clean_hosts.append(_validate_docker_egress_host(host))
 
     if not clean_hosts:
         argv.append("--network=none")
@@ -512,7 +730,9 @@ def build_sandbox_docker_command(
 
     final_cli_args = cli_args if cli_args is not None else ["scan", "--repo", "/workspace", "--out", "/out"]
     for item in final_cli_args:
-        _validate_no_control_chars(str(item), "cli_arg")
-        argv.append(str(item))
+        if not isinstance(item, str):
+            raise HostileRepoError("cli_args entries must be strings")
+        _validate_no_control_chars(item, "cli_arg")
+        argv.append(item)
 
     return argv
