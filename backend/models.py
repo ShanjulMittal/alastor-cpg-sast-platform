@@ -168,6 +168,9 @@ class Finding(BaseModel):
     # Pillar 3 Live Exploit Verification (EV) & Post-Fix Replay Status
     ev_status: Optional[EvStatusType] = None
     ev_evidence_summary: Optional[str] = None
+    # Pillar 4 Universal Scanner Fusion & Multi-Engine Corroboration
+    source_engine: Optional[str] = None
+    corroborated_by: List[str] = Field(default_factory=list)
 
 
 
@@ -1982,6 +1985,192 @@ class EvReplayListResponse(BaseModel):
     project_path: str
     total: int
     replays: List[EvReplayBundleItem] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# 17. Pillar 4 CLI/SDK, Hostile-Repo Guard, SQLite Stage Checkpoints,
+#     Universal Scanner Fusion & Batch Fleet Models
+# ---------------------------------------------------------------------------
+PipelineStageName = Literal[
+    "S0_CPG",
+    "S1_RULES",
+    "S2_SECRETS_SCA",
+    "S3_FUSION",
+    "S4_COGNITIVE",
+    "S6_VERIFY",
+    "S8_CHAINS",
+    "S9_REPORTS",
+    "S10_REMEDIATE",
+    "S11_VALIDATE",
+    "EV_VERIFY",
+]
+
+ScannerFormatType = Literal[
+    "SARIF_2_1",
+    "CODEQL_SARIF",
+    "SEMGREP_JSON",
+    "TRIVY_JSON",
+    "GITLEAKS_JSON",
+    "CHECKOV_JSON",
+]
+
+
+class DoctorCheckItem(BaseModel):
+    name: str
+    status: Literal["OK", "WARN", "FAIL"]
+    detail: str
+
+
+class DoctorReport(BaseModel):
+    overall_status: Literal["READY", "DEGRADED", "ERROR"]
+    python_version: str
+    parsers_ready: int
+    parsers_total: int
+    graph_backend: str
+    git_available: bool
+    docker_available: bool
+    vault_path: str
+    vault_writable: bool
+    checks: List[DoctorCheckItem] = Field(default_factory=list)
+
+
+class EstimateReport(BaseModel):
+    project_path: str
+    total_files: int
+    total_loc: int
+    languages: Dict[str, int] = Field(default_factory=dict)
+    skipped_files: int = 0
+    estimated_deterministic_seconds: float = 0.0
+    estimated_ai_tokens: int = 0
+    estimated_ai_cost_usd: float = 0.0
+    recommended_profile: str = "deterministic"
+    repo_kind_hints: List[str] = Field(default_factory=list)
+
+
+class StageCheckpointItem(BaseModel):
+    stage_name: str
+    status: Literal["PENDING", "RUNNING", "COMPLETED", "FAILED", "SKIPPED"]
+    payload_sha256: str = ""
+    duration_ms: float = 0.0
+    updated_at: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ScanRunCheckpointSummary(BaseModel):
+    run_id: str
+    repo_path: str
+    commit_sha: str = ""
+    app_group: str = "default"
+    status: Literal["RUNNING", "COMPLETED", "FAILED", "PARTIAL"]
+    created_at: str
+    updated_at: str
+    host_provenance_valid: bool = True
+    stages: List[StageCheckpointItem] = Field(default_factory=list)
+    summary: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ScannerFusionRequest(BaseModel):
+    project_path: str
+    report_json: str
+    source_format: Optional[ScannerFormatType] = None
+    run_s6_verify: bool = False
+    correlate_cpg: bool = True
+
+
+class ScannerFusionResponse(BaseModel):
+    project_path: str
+    detected_format: ScannerFormatType
+    imported_raw_count: int
+    normalized_count: int
+    corroborated_count: int
+    new_unique_count: int
+    cpg_enriched_count: int
+    s6_verified_count: int = 0
+    findings: List[Finding] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class FleetRepoSpec(BaseModel):
+    repo: str
+    app_group: str = "default"
+    branch: Optional[str] = None
+    fusion_reports: List[str] = Field(default_factory=list)
+    profile: str = "deterministic"
+
+
+class FleetRepoResult(BaseModel):
+    repo: str
+    app_group: str
+    run_id: str
+    status: Literal["COMPLETED", "FAILED", "RESUMED_COMPLETED"]
+    total_findings: int = 0
+    critical_count: int = 0
+    high_count: int = 0
+    medium_count: int = 0
+    low_count: int = 0
+    corroborated_count: int = 0
+    ev_confirmed_count: int = 0
+    go_live_decision: str = "CONDITIONAL_GO_LIVE"
+    resumed_stages: List[str] = Field(default_factory=list)
+    duration_ms: float = 0.0
+    error: Optional[str] = None
+
+
+class FleetAppGroupRollup(BaseModel):
+    app_group: str
+    repo_count: int
+    completed_repos: int
+    failed_repos: int
+    total_findings: int
+    critical_count: int
+    high_count: int
+    corroborated_count: int
+    ev_confirmed_count: int
+    go_live_decision: Literal["NO_GO_HOLD_RELEASE", "CONDITIONAL_GO_LIVE", "GO_LIVE_APPROVED"]
+
+
+class FleetRunRequest(BaseModel):
+    manifest_name: str = "fleet-manifest"
+    csv_content: Optional[str] = None
+    repos: List[FleetRepoSpec] = Field(default_factory=list)
+    group_by_app: bool = True
+    resume: bool = True
+    max_workers: int = Field(default=2, ge=1, le=8)
+    stop_after: Optional[str] = None
+
+
+class FleetRunResponse(BaseModel):
+    fleet_run_id: str
+    manifest_name: str
+    status: Literal["COMPLETED", "PARTIAL", "FAILED"]
+    total_repos: int
+    completed_repos: int
+    failed_repos: int
+    created_at: str
+    repo_results: List[FleetRepoResult] = Field(default_factory=list)
+    app_rollups: List[FleetAppGroupRollup] = Field(default_factory=list)
+
+
+class FleetRunListResponse(BaseModel):
+    total: int
+    runs: List[FleetRunResponse] = Field(default_factory=list)
+
+
+class GcRequest(BaseModel):
+    older_than_days: int = Field(default=30, ge=0, le=3650)
+    keep_last: int = Field(default=20, ge=0, le=1000)
+    dry_run: bool = False
+
+
+class GcReport(BaseModel):
+    dry_run: bool
+    pruned_runs: int
+    pruned_checkpoints: int
+    pruned_temp_dirs: int
+    reclaimed_bytes: int
+    kept_runs: int
+    warnings: List[str] = Field(default_factory=list)
+
 
 
 
