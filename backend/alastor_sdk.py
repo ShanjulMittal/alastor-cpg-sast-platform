@@ -28,6 +28,7 @@ from database.graph_store import EmbeddedGraphStore, GraphStoreManager
 from database.neo4j_client import Neo4jClient
 from engine.adversarial_verifier import validate_patch_with_panel
 from engine.api_operations_engine import ApiOperationsEngine
+from engine.compliance_and_rules_engine import evaluate_compliance as _evaluate_compliance_engine
 from engine.enterprise_manager import EnterpriseManager
 from engine.exploit_chain_engine import synthesize_exploit_chains
 from engine.exploit_verification_engine import ExploitVerificationEngine
@@ -47,7 +48,9 @@ from engine.hostile_repo_guard import (
     get_repo_commit_sha,
     is_link_or_junction,
 )
+from engine.microservice_stitcher import stitch_microservice_attack_graph
 from engine.pasta_threat_engine import PastaThreatEngine
+from engine.pr_delta_gate import evaluate_pr_delta_gate
 from engine.remediation_patcher import (
     batch_apply_workspace_patches,
     preview_finding_remediation,
@@ -64,7 +67,10 @@ from engine.scanner_fusion_engine import (
     scrub_finding_secrets,
 )
 from engine.security_playbooks import classify_repo_kinds_and_baselines
+from engine.security_test_generator import generate_security_regression_test
 from models import (
+    ComplianceEvaluateResponse,
+    ComplianceFrameworkId,
     DoctorCheckItem,
     DoctorReport,
     EstimateReport,
@@ -76,9 +82,17 @@ from models import (
     FleetRunResponse,
     GcReport,
     MetricsResponse,
+    MicroserviceGraphRequest,
+    MicroserviceGraphResponse,
+    MicroserviceRepoInput,
     PatchPanelValidateRequest,
+    PrDeltaGateRequest,
+    PrDeltaGateResponse,
     ScannerFormatType,
     ScannerFusionResponse,
+    SecurityTestGenerateRequest,
+    SecurityTestGenerateResponse,
+    TestFrameworkType,
 )
 
 _MAX_REPORT_BYTES = 50 * 1024 * 1024
@@ -1319,6 +1333,81 @@ def gc(
         store.close()
 
 
+def pr_gate(
+    repo_path: str,
+    base_ref: str = "HEAD~1",
+    head_ref: str = "HEAD",
+    fail_on_new_severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"] = "HIGH",
+    block_on_new_secrets: bool = True,
+    block_on_new_ev_confirmed: bool = True,
+    include_cpg_neighbors: bool = True,
+    findings: Optional[List[Finding]] = None,
+    vault_dir: Optional[str] = None,
+) -> PrDeltaGateResponse:
+    """Evaluates a PR/git-diff delta security gate offline without auto-loading target `.env` files."""
+    vdir = _resolve_vault_dir(vault_dir)
+    req = PrDeltaGateRequest(
+        project_path=repo_path,
+        base_ref=base_ref,
+        head_ref=head_ref,
+        fail_on_new_severity=fail_on_new_severity,
+        block_on_new_secrets=block_on_new_secrets,
+        block_on_new_ev_confirmed=block_on_new_ev_confirmed,
+        include_cpg_neighbors=include_cpg_neighbors,
+    )
+    return evaluate_pr_delta_gate(req, findings=findings, vault_dir=vdir)
+
+
+def generate_security_test(
+    repo_path: str,
+    finding: Finding,
+    framework: TestFrameworkType = "auto",
+    write_to_workspace: bool = False,
+    overwrite: bool = False,
+) -> SecurityTestGenerateResponse:
+    """Synthesizes a scrubbed, syntax-validated security regression unit test for a Finding."""
+    if finding is None:
+        raise ValueError("finding is required to generate a security regression test")
+    req = SecurityTestGenerateRequest(
+        project_path=repo_path,
+        finding_id=finding.id,
+        finding=finding,
+        framework=framework,
+        write_to_workspace=write_to_workspace,
+        overwrite=overwrite,
+    )
+    return generate_security_regression_test(req, finding=finding)
+
+
+def evaluate_compliance(
+    repo_path: str,
+    findings: List[Finding],
+    frameworks: Optional[List[ComplianceFrameworkId]] = None,
+) -> ComplianceEvaluateResponse:
+    """Evaluates continuous compliance posture across PCI-DSS 4.0, SOC 2, ISO 27001, HIPAA, and OWASP ASVS 5.0."""
+    cleaned = _validate_clean_path_arg(repo_path, "repo_path")
+    if _has_traversal_segment(cleaned):
+        raise HostileRepoError(f"Path traversal '..' rejected in repo_path: {repo_path}")
+    real_repo = _resolve_existing_repo_dir(cleaned)
+    return _evaluate_compliance_engine(real_repo, findings=list(findings), frameworks=frameworks)
+
+
+def stitch_microservices(
+    services: List[MicroserviceRepoInput],
+    scan_findings: bool = True,
+    workspace_confinement_fn: Optional[Callable[[str], str]] = None,
+) -> MicroserviceGraphResponse:
+    """Stitches cross-repository microservice inbound/outbound surfaces and multi-hop attack paths."""
+    req = MicroserviceGraphRequest(
+        services=list(services),
+        scan_findings=scan_findings,
+    )
+    return stitch_microservice_attack_graph(
+        req,
+        workspace_confinement_fn=workspace_confinement_fn,
+    )
+
+
 __all__ = [
     "FleetOptions",
     "ScanOptions",
@@ -1326,11 +1415,15 @@ __all__ = [
     "doctor",
     "estimate",
     "ev_replay",
+    "evaluate_compliance",
     "fuse_scanner_report",
     "gc",
+    "generate_security_test",
     "inject_findings",
+    "pr_gate",
     "remediate",
     "run_fleet",
     "scan",
+    "stitch_microservices",
     "validate",
 ]

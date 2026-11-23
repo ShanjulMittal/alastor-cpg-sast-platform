@@ -90,6 +90,17 @@ from models import (
     FleetRunListResponse,
     GcRequest,
     GcReport,
+    PrDeltaGateRequest,
+    PrDeltaGateResponse,
+    SecurityTestGenerateRequest,
+    SecurityTestGenerateResponse,
+    ComplianceEvaluateRequest,
+    ComplianceEvaluateResponse,
+    CustomSecurityRule,
+    CustomRuleTestRequest,
+    CustomRuleTestResponse,
+    MicroserviceGraphRequest,
+    MicroserviceGraphResponse,
 )
 import alastor_sdk
 from database.neo4j_client import Neo4jClient
@@ -97,7 +108,7 @@ from database.batch_ingestor import BatchIngestor
 from database.checkpoint_store import CheckpointStore
 from database.graph_store import GraphStoreManager
 from engine.fleet_runner import FleetRunner, _is_remote_repo_syntax, parse_fleet_csv
-from engine.hostile_repo_guard import HostileRepoError, validate_clone_url
+from engine.hostile_repo_guard import HostileRepoError, is_link_or_junction, validate_clone_url
 from engine.rule_executor import RuleExecutor
 from engine.community_detector import detect_code_communities, build_community_graph_view
 from engine.vuln_extractor import VulnExtractorEngine
@@ -106,6 +117,13 @@ from engine.frontier_ai_engine import FrontierAiEngine, scrub_raw_secrets_text
 from engine.secret_validator_engine import get_secret_validator_engine
 from engine.api_operations_engine import get_api_operations_engine
 from engine.exploit_verification_engine import ExploitVerificationEngine
+from engine.pr_delta_gate import evaluate_pr_delta_gate
+from engine.security_test_generator import generate_security_regression_test
+from engine.compliance_and_rules_engine import (
+    CustomRuleEngine,
+    evaluate_compliance as evaluate_compliance_posture,
+)
+from engine.microservice_stitcher import stitch_microservice_attack_graph
 from engine.security_playbooks import (
     classify_repo_kinds_and_baselines,
     run_cognitive_hunt,
@@ -200,22 +218,18 @@ app.add_middleware(
 
 neo4j_client = Neo4jClient.get_instance()
 enterprise_mgr = EnterpriseManager.get_instance()
-frontier_ai_engine = FrontierAiEngine(
-    vault_dir=os.path.join(enterprise_mgr.platform_root, ".alastor_vault")
-)
+VAULT_DIR = os.path.join(enterprise_mgr.platform_root, ".alastor_vault")
+frontier_ai_engine = FrontierAiEngine(vault_dir=VAULT_DIR)
 secret_validator_engine = get_secret_validator_engine(enterprise_mgr.platform_root)
 api_operations_engine = get_api_operations_engine()
-ev_engine = ExploitVerificationEngine(
-    vault_dir=os.path.join(enterprise_mgr.platform_root, ".alastor_vault")
-)
-checkpoint_store = CheckpointStore(
-    vault_dir=os.path.join(enterprise_mgr.platform_root, ".alastor_vault")
-)
+ev_engine = ExploitVerificationEngine(vault_dir=VAULT_DIR)
+checkpoint_store = CheckpointStore(vault_dir=VAULT_DIR)
+custom_rule_engine = CustomRuleEngine(vault_dir=VAULT_DIR)
 current_scan_dir: str = enterprise_mgr.platform_root
 current_app_tree: Optional[AppTreeSummary] = None
 graph_store_mgr = GraphStoreManager.get_instance(
     neo4j_client=neo4j_client,
-    vault_dir=os.path.join(enterprise_mgr.platform_root, ".alastor_vault"),
+    vault_dir=VAULT_DIR,
 )
 _last_scope_telemetry: Optional[ScanScopeTelemetry] = None
 _last_languages_detected: Dict[str, int] = {}
@@ -5763,6 +5777,267 @@ def run_fleet_checkpoint_gc(req: GcRequest):
         dry_run=req.dry_run,
         temp_workspaces_parent=os.path.join(checkpoint_store.vault_dir, "_fleet_cpg_tmp"),
     )
+
+
+# ---------------------------------------------------------------------------
+# 18. ALASTOR v5.0 Pillar 5 — Next-Gen AppSec (/api/nextgen/*)
+# ---------------------------------------------------------------------------
+def _safe_nextgen_error_detail(exc: Any) -> str:
+    return scrub_raw_secrets_text(_sanitize_log(exc))
+
+
+def _resolve_nextgen_confined_path(project_path: Optional[str]) -> str:
+    """Confines a required Pillar 5 workspace path via `_resolve_confined_ev_project_path` (HTTP 400 on violation)."""
+    if project_path is None:
+        raise HTTPException(status_code=400, detail="project_path must be a non-empty path.")
+    raw = str(project_path)
+    cleaned = raw.strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="project_path must be a non-empty path.")
+    if (
+        any(ord(ch) < 32 or ord(ch) == 127 for ch in raw)
+        or cleaned.startswith("-")
+        or "://" in cleaned
+    ):
+        raise HTTPException(status_code=400, detail="Invalid project_path supplied.")
+    abs_cand = os.path.abspath(cleaned)
+    if os.path.lexists(abs_cand) and is_link_or_junction(abs_cand):
+        raise HTTPException(
+            status_code=400,
+            detail="Symlink or junction project_path is not permitted.",
+        )
+    return _resolve_confined_ev_project_path(raw)
+
+
+def _has_populated_active_findings(norm_req: str) -> bool:
+    with _findings_lock:
+        if _cached_findings:
+            return True
+        if _cached_external_findings:
+            return True
+        if _cached_cognitive_findings and _cached_cognitive_dir:
+            try:
+                if os.path.normcase(os.path.realpath(_cached_cognitive_dir)) == norm_req:
+                    return True
+            except Exception:
+                pass
+    return False
+
+
+def _get_active_or_custom_findings(target_dir: str) -> List[Finding]:
+    """
+    Collects EV-correlated workspace findings plus enabled `CustomRuleEngine` findings
+    without mutating `_cached_findings` or nesting engine/vault locks inside `_findings_lock`.
+    """
+    base_findings = list(_resolve_findings_for_project_target(target_dir))
+    custom_findings = custom_rule_engine.evaluate_enabled_rules_on_workspace(
+        target_dir,
+        workspace_confinement_fn=_resolve_confined_ev_project_path,
+    )
+    if not custom_findings:
+        return base_findings
+
+    correlated_custom = _correlate_ev_status_onto_findings(target_dir, custom_findings)
+    merged = [f.model_copy(deep=True) for f in base_findings]
+    seen_ids = {f.id for f in merged}
+    for cf in correlated_custom:
+        if cf.id not in seen_ids:
+            seen_ids.add(cf.id)
+            merged.append(cf.model_copy(deep=True))
+    return merged
+
+
+@app.post("/api/nextgen/pr-gate", response_model=PrDeltaGateResponse)
+def run_nextgen_pr_gate(req: PrDeltaGateRequest):
+    """Evaluates PR/git-diff security delta gate for a confined workspace."""
+    confined_path = _resolve_nextgen_confined_path(req.project_path)
+    req_confined = req.model_copy(update={"project_path": confined_path})
+
+    norm_req = os.path.normcase(os.path.realpath(confined_path))
+    norm_cur = os.path.normcase(
+        os.path.realpath(current_scan_dir or enterprise_mgr.platform_root)
+    )
+    active_findings: Optional[List[Finding]] = None
+    if norm_req == norm_cur and _has_populated_active_findings(norm_req):
+        candidate = _get_active_or_custom_findings(confined_path)
+        if candidate:
+            active_findings = candidate
+
+    try:
+        return evaluate_pr_delta_gate(
+            req_confined,
+            findings=active_findings,
+            vault_dir=checkpoint_store.vault_dir,
+        )
+    except HTTPException:
+        raise
+    except (HostileRepoError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=_safe_nextgen_error_detail(exc)) from exc
+
+
+@app.post("/api/nextgen/generate-test", response_model=SecurityTestGenerateResponse)
+def generate_nextgen_security_test(req: SecurityTestGenerateRequest):
+    """Generates a scrubbed, syntax-validated security regression unit test for a Finding."""
+    confined_path = _resolve_nextgen_confined_path(req.project_path)
+    finding: Optional[Finding] = req.finding
+    if finding is None:
+        clean_fid = (req.finding_id or "").strip()
+        if not clean_fid:
+            raise HTTPException(
+                status_code=400,
+                detail="Either finding or finding_id must be supplied.",
+            )
+        workspace_findings = _get_active_or_custom_findings(confined_path)
+        finding = next((f for f in workspace_findings if f.id == clean_fid), None)
+
+        if finding is None:
+            norm_req = os.path.normcase(os.path.realpath(confined_path))
+            norm_cur = os.path.normcase(
+                os.path.realpath(current_scan_dir or enterprise_mgr.platform_root)
+            )
+            if norm_req == norm_cur:
+                raw_match: Optional[Finding] = None
+                with _findings_lock:
+                    for pool in (
+                        _cached_findings or (),
+                        _cached_external_findings or (),
+                        _cached_cognitive_findings or (),
+                    ):
+                        hit = next((f for f in pool if f.id == clean_fid), None)
+                        if hit is not None:
+                            raw_match = hit.model_copy(deep=True)
+                            break
+                if raw_match is not None:
+                    finding = _correlate_ev_status_onto_findings(
+                        confined_path, [raw_match]
+                    )[0]
+
+        if finding is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Finding '{_sanitize_log(clean_fid)}' not found in confined workspace.",
+            )
+
+    req_confined = req.model_copy(
+        update={
+            "project_path": confined_path,
+            "finding": finding,
+            "finding_id": finding.id,
+        }
+    )
+    try:
+        return generate_security_regression_test(req_confined, finding)
+    except HTTPException:
+        raise
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=_safe_nextgen_error_detail(exc)) from exc
+    except (HostileRepoError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=_safe_nextgen_error_detail(exc)) from exc
+
+
+@app.post("/api/nextgen/compliance/evaluate", response_model=ComplianceEvaluateResponse)
+def evaluate_nextgen_compliance(req: ComplianceEvaluateRequest):
+    """Evaluates continuous compliance posture across 5 frameworks for a confined workspace."""
+    confined_path = _resolve_nextgen_confined_path(req.project_path)
+    try:
+        findings = _get_active_or_custom_findings(confined_path)
+        return evaluate_compliance_posture(
+            confined_path,
+            findings=findings,
+            frameworks=req.frameworks,
+        )
+    except HTTPException:
+        raise
+    except (HostileRepoError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=_safe_nextgen_error_detail(exc)) from exc
+
+
+@app.get("/api/nextgen/custom-rules", response_model=List[CustomSecurityRule])
+def list_nextgen_custom_rules():
+    """Lists persisted custom security rules from the host vault."""
+    try:
+        return custom_rule_engine.list_rules()
+    except (HostileRepoError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=_safe_nextgen_error_detail(exc)) from exc
+
+
+@app.post("/api/nextgen/custom-rules", response_model=CustomSecurityRule, status_code=201)
+def create_nextgen_custom_rule(rule: CustomSecurityRule):
+    """Validates (ReDoS AST + ID hygiene) and atomically creates a custom security rule."""
+    try:
+        return custom_rule_engine.create_rule(rule)
+    except HostileRepoError as exc:
+        raise HTTPException(status_code=400, detail=_safe_nextgen_error_detail(exc)) from exc
+    except ValueError as exc:
+        msg = str(exc)
+        status = 409 if "already exists" in msg.lower() else 400
+        raise HTTPException(status_code=status, detail=_safe_nextgen_error_detail(msg)) from exc
+
+
+@app.put("/api/nextgen/custom-rules/{rule_id}", response_model=CustomSecurityRule)
+def update_nextgen_custom_rule(rule_id: str, rule: CustomSecurityRule):
+    """Updates an existing custom security rule after ReDoS AST validation."""
+    try:
+        return custom_rule_engine.update_rule(rule_id, rule)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=_safe_nextgen_error_detail(exc)) from exc
+    except (HostileRepoError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=_safe_nextgen_error_detail(exc)) from exc
+
+
+@app.delete("/api/nextgen/custom-rules/{rule_id}")
+def delete_nextgen_custom_rule(rule_id: str):
+    """Deletes a custom security rule from the host vault."""
+    try:
+        deleted = custom_rule_engine.delete_rule(rule_id)
+    except (HostileRepoError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=_safe_nextgen_error_detail(exc)) from exc
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Custom rule '{_sanitize_log(rule_id)}' not found.",
+        )
+    return {"deleted": True, "rule_id": rule_id}
+
+
+@app.post("/api/nextgen/custom-rules/test", response_model=CustomRuleTestResponse)
+def test_nextgen_custom_rule(req: CustomRuleTestRequest):
+    """Tests a custom security rule against inline sample code or a confined workspace."""
+    req_confined = req
+    if req.project_path is not None:
+        confined_path = _resolve_nextgen_confined_path(req.project_path)
+        req_confined = req.model_copy(update={"project_path": confined_path})
+    try:
+        return custom_rule_engine.test_rule(
+            req_confined,
+            workspace_confinement_fn=_resolve_confined_ev_project_path,
+        )
+    except HTTPException:
+        raise
+    except (HostileRepoError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=_safe_nextgen_error_detail(exc)) from exc
+
+
+@app.post("/api/nextgen/microservice-graph", response_model=MicroserviceGraphResponse)
+def build_nextgen_microservice_graph(req: MicroserviceGraphRequest):
+    """Stitches cross-repo microservice endpoints, outbound calls, and multi-hop attack paths."""
+    try:
+        confined_services = [
+            svc.model_copy(
+                update={"repo_path": _resolve_nextgen_confined_path(svc.repo_path)}
+            )
+            for svc in (req.services or [])
+        ]
+        req_confined = req.model_copy(update={"services": confined_services})
+        return stitch_microservice_attack_graph(
+            req_confined,
+            workspace_confinement_fn=_resolve_confined_ev_project_path,
+        )
+    except HTTPException:
+        raise
+    except (HostileRepoError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=_safe_nextgen_error_detail(exc)) from exc
+
 
 
 

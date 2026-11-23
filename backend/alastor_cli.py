@@ -19,12 +19,14 @@ import click
 import httpx
 
 import alastor_sdk
+from engine.frontier_ai_engine import scrub_raw_secrets_text
 from engine.hostile_repo_guard import (
     HostileRepoError,
     assert_safe_config_source,
     build_sandbox_docker_command,
     is_link_or_junction,
 )
+from engine.pr_delta_gate import validate_git_ref
 from models import (
     DoctorReport,
     EstimateReport,
@@ -36,6 +38,8 @@ from models import (
     FleetRunResponse,
     GcReport,
     GcRequest,
+    PrDeltaGateRequest,
+    PrDeltaGateResponse,
 )
 
 _AGENTS_BEGIN = "<!-- ALASTOR:BEGIN -->"
@@ -73,11 +77,61 @@ def _emit_json(data: Any) -> None:
 
 
 def _fail_exit2(message: str, as_json: bool = False) -> NoReturn:
+    safe_message = scrub_raw_secrets_text(str(message))
     if as_json:
-        click.echo(json.dumps({"error": message, "exit_code": 2}, indent=2))
+        click.echo(json.dumps({"error": safe_message, "exit_code": 2}, indent=2))
     else:
-        click.echo(f"Error: {message}", err=True)
+        click.echo(f"Error: {safe_message}", err=True)
     raise SystemExit(2)
+
+
+def _validate_out_md_target(raw_path: str) -> Tuple[str, str]:
+    cleaned = alastor_sdk._validate_clean_path_arg(raw_path, "out-md")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in cleaned):
+        raise ValueError("--out-md contains forbidden control characters")
+    if alastor_sdk._has_traversal_segment(cleaned):
+        raise ValueError(f"Path traversal '..' rejected in --out-md: {raw_path}")
+    if alastor_sdk._is_dotenv_filename(cleaned):
+        raise HostileRepoError(f"Refused writing --out-md to restricted .env target: {raw_path}")
+
+    abs_target = os.path.abspath(cleaned)
+    if os.path.lexists(abs_target):
+        if is_link_or_junction(abs_target):
+            raise HostileRepoError(f"Refusing to write --out-md through symlink/junction: {raw_path}")
+        if os.path.isdir(abs_target):
+            raise ValueError(f"--out-md target is a directory: {raw_path}")
+
+    parent_dir = os.path.dirname(abs_target)
+    probe = parent_dir
+    while probe and not os.path.lexists(probe):
+        next_probe = os.path.dirname(probe)
+        if next_probe == probe:
+            break
+        probe = next_probe
+    if probe and os.path.lexists(probe) and is_link_or_junction(probe):
+        raise HostileRepoError(f"Refusing to write --out-md under symlink/junction directory: {raw_path}")
+
+    parent_real = os.path.realpath(parent_dir)
+    real_target = os.path.realpath(abs_target)
+    try:
+        if os.path.commonpath([parent_real, real_target]) != parent_real:
+            raise HostileRepoError(f"Refusing symlink escape in --out-md path: {raw_path}")
+    except ValueError as exc:
+        raise HostileRepoError(f"Refusing escaping --out-md path: {raw_path}") from exc
+    return abs_target, real_target
+
+
+def _write_out_md_file(raw_path: str, content: str) -> str:
+    abs_target, real_target = _validate_out_md_target(raw_path)
+    parent_real = os.path.dirname(real_target)
+    os.makedirs(parent_real, exist_ok=True)
+    if os.path.lexists(abs_target) and is_link_or_junction(abs_target):
+        raise HostileRepoError(f"Refusing to write --out-md through symlink/junction: {raw_path}")
+    if os.path.lexists(real_target) and is_link_or_junction(real_target):
+        raise HostileRepoError(f"Refusing to write --out-md through symlink/junction: {raw_path}")
+    with open(real_target, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(content)
+    return real_target
 
 
 def _validate_server_url(raw_url: str) -> str:
@@ -773,6 +827,86 @@ def gc_cmd(
             f"reclaimed_bytes={rep.reclaimed_bytes}, kept_runs={rep.kept_runs}"
         )
     raise SystemExit(0)
+
+
+@cli.command("pr-gate")
+@click.option("--repo", required=True, help="Target local git repository directory.")
+@click.option("--base", "base_ref", default="HEAD~1", show_default=True, help="Base git ref for PR delta diff.")
+@click.option("--head", "head_ref", default="HEAD", show_default=True, help="Head git ref (or WORKTREE) for PR delta diff.")
+@click.option("--fail-on", "fail_on_severity", type=click.Choice(_SEVERITY_CHOICES, case_sensitive=False), default="HIGH", show_default=True, help="Block merge if newly introduced findings meet or exceed severity.")
+@click.option("--no-block-secrets", is_flag=True, default=False, help="Do not block merge on newly introduced secret findings below severity threshold.")
+@click.option("--no-block-ev", is_flag=True, default=False, help="Do not block merge on newly introduced EV-confirmed findings below severity threshold.")
+@click.option("--no-cpg-neighbors", is_flag=True, default=False, help="Disable 1-hop CPG blast-radius neighbor analysis.")
+@click.option("--out-md", "out_md_path", default=None, help="Optional Markdown file path to write PR summary.")
+@click.option("--server", "server_url", default=None, help="Optional remote ALASTOR server URL.")
+@click.option("--vault-dir", default=None, help="Host vault directory override.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit structured JSON output.")
+def pr_gate_cmd(
+    repo: str,
+    base_ref: str,
+    head_ref: str,
+    fail_on_severity: str,
+    no_block_secrets: bool,
+    no_block_ev: bool,
+    no_cpg_neighbors: bool,
+    out_md_path: Optional[str],
+    server_url: Optional[str],
+    vault_dir: Optional[str],
+    as_json: bool,
+) -> None:
+    """Evaluates PR/git-diff security delta gate (0=PASS, 1=BLOCK_MERGE, 2=ERROR)."""
+    norm_fail_on = fail_on_severity.upper()
+    try:
+        validate_git_ref(base_ref)
+        validate_git_ref(head_ref)
+        if base_ref == "WORKTREE":
+            raise ValueError("--base cannot be 'WORKTREE'; provide a valid commit or branch ref")
+        if out_md_path is not None:
+            _validate_out_md_target(out_md_path)
+
+        if server_url:
+            req_obj = PrDeltaGateRequest(
+                project_path=repo,
+                base_ref=base_ref,
+                head_ref=head_ref,
+                fail_on_new_severity=norm_fail_on,  # type: ignore[arg-type]
+                block_on_new_secrets=not no_block_secrets,
+                block_on_new_ev_confirmed=not no_block_ev,
+                include_cpg_neighbors=not no_cpg_neighbors,
+            )
+            raw = _remote_request(server_url, "POST", "/api/nextgen/pr-gate", req_obj.model_dump())
+            resp = PrDeltaGateResponse.model_validate(raw)
+        else:
+            resp = alastor_sdk.pr_gate(
+                repo_path=repo,
+                base_ref=base_ref,
+                head_ref=head_ref,
+                fail_on_new_severity=norm_fail_on,  # type: ignore[arg-type]
+                block_on_new_secrets=not no_block_secrets,
+                block_on_new_ev_confirmed=not no_block_ev,
+                include_cpg_neighbors=not no_cpg_neighbors,
+                vault_dir=vault_dir,
+            )
+
+        written_md: Optional[str] = None
+        if out_md_path is not None:
+            written_md = _write_out_md_file(out_md_path, resp.pr_markdown_summary)
+    except (httpx.HTTPError, HostileRepoError, ValueError, OSError) as exc:
+        _fail_exit2(str(exc), as_json=as_json)
+
+    if as_json:
+        _emit_json(resp)
+    else:
+        click.echo(
+            f"ALASTOR PR-Gate ({resp.base_ref}..{resp.head_ref}): decision={resp.gate_decision} "
+            f"new={resp.newly_introduced_count} blocking={resp.blocking_count} "
+            f"modified_ctx={resp.modified_context_count} pre_existing={resp.pre_existing_count}"
+        )
+        click.echo(f"  Reason: {resp.gate_reason}")
+        if written_md:
+            click.echo(f"  Markdown Summary: {written_md}")
+
+    raise SystemExit(1 if resp.gate_decision == "BLOCK_MERGE" else 0)
 
 
 def main() -> None:
