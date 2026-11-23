@@ -453,7 +453,7 @@ def scan_cmd(
                     raise HostileRepoError(f"Path traversal '..' rejected in --out: {out_dir}")
                 if is_link_or_junction(os.path.abspath(cleaned_out)):
                     raise HostileRepoError(f"Refusing symlink/junction --out: {out_dir}")
-                eff_out = os.path.realpath(cleaned_out)
+                eff_out = os.path.abspath(cleaned_out)
             cli_args: List[str] = [
                 "scan",
                 "--repo",

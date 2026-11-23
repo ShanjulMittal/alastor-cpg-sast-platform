@@ -135,8 +135,8 @@ def generate_squid_egress_config(allowed_llm_hosts: Sequence[str], port: int = 3
         "acl SSL_ports port 443",
         "acl CONNECT method CONNECT",
         (
-            "acl blocked_dst dst 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 "
-            "192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 ::1 fc00::/7 fe80::/10"
+            "acl blocked_dst dst 0.0.0.0/8 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 "
+            "192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 ::/128 ::1 fc00::/7 fe80::/10"
         ),
         f"acl allowed_llm dstdomain {' '.join(clean_hosts)}",
         "http_access deny !CONNECT",
@@ -211,14 +211,18 @@ def build_mediated_sandbox_plan(req: SandboxPlanRequest) -> SandboxExecutionPlan
             raise HostileRepoError(f"Refusing symlink/junction output_dir: {req.output_dir}")
         real_out = _validate_docker_mount_path(cleaned_out, "output_dir")
         try:
-            if os.path.commonpath([os.path.normcase(real_repo), os.path.normcase(abs_out)]) == os.path.normcase(real_repo):
-                rel_out = os.path.relpath(abs_out, real_repo)
-                if rel_out not in (".", ""):
-                    real_out = _resolve_confined_mount_child(
-                        real_repo, *[p for p in rel_out.split(os.sep) if p and p != "."], label="output_dir"
-                    )
+            in_repo = (
+                os.path.commonpath([os.path.normcase(real_repo), os.path.normcase(abs_out)])
+                == os.path.normcase(real_repo)
+            )
         except ValueError:
-            pass
+            in_repo = False
+        if in_repo:
+            rel_out = os.path.relpath(abs_out, real_repo)
+            if rel_out not in (".", ""):
+                real_out = _resolve_confined_mount_child(
+                    real_repo, *[p for p in rel_out.split(os.sep) if p and p != "."], label="output_dir"
+                )
     else:
         real_out = _resolve_confined_mount_child(
             real_repo, ".alastor_sandbox_out", label="output_dir"

@@ -178,8 +178,8 @@ class TestSandboxOrchestrator:
         assert "acl SSL_ports port 443" in lines
         assert "acl CONNECT method CONNECT" in lines
         assert (
-            "acl blocked_dst dst 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 "
-            "192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 ::1 fc00::/7 fe80::/10"
+            "acl blocked_dst dst 0.0.0.0/8 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 "
+            "192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 ::/128 ::1 fc00::/7 fe80::/10"
         ) in lines
         assert "acl allowed_llm dstdomain api.openai.com api.anthropic.com" in lines
         assert "http_access deny !CONNECT" in lines
@@ -745,6 +745,27 @@ class TestV51SdkAndCliWiring:
         finally:
             _remove_dir_link(repo_junc)
             _remove_dir_link(out_junc)
+
+    def test_cli_scan_sandbox_rejects_intermediate_out_symlink(self, tmp_path: Path):
+        from alastor_cli import cli
+
+        repo = tmp_path / "cli_repo_interm"
+        _create_sample_vuln_repo(repo)
+        outside = tmp_path / "outside_interm"
+        (outside / "sub").mkdir(parents=True)
+        link_dir = repo / "link_dir"
+        _create_dir_link(link_dir, outside)
+        runner = CliRunner()
+        try:
+            res = runner.invoke(
+                cli,
+                ["scan", "--repo", str(repo), "--out", str(link_dir / "sub"), "--sandbox", "--json"],
+            )
+            assert res.exit_code == 2, res.output
+            err_data = json.loads(res.output)
+            assert "symlink" in err_data["error"].lower() or "junction" in err_data["error"].lower()
+        finally:
+            _remove_dir_link(link_dir)
 
 
 # ---------------------------------------------------------------------------

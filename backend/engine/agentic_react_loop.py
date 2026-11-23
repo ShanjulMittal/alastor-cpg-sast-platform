@@ -1752,6 +1752,8 @@ def run_agentic_react_patch(
             history_entries.append(f"[Initial Callers] {callers_summary}")
 
         safe_orig_code = _sanitize_text(original_code[:6000])
+        if len(original_code) > 6000:
+            safe_orig_code += "\n# ... [TRUNCATED AT 6000 CHARS — use read_code_slice for remaining lines]"
         safe_title = _sanitize_text(eff_finding.title)
         safe_desc = _sanitize_text(eff_finding.description)
         safe_rem = _sanitize_text(eff_finding.remediation or "")
