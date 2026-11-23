@@ -26,7 +26,14 @@ from compiler.scanner import scan_directory_with_telemetry
 from database.checkpoint_store import CheckpointStore
 from database.graph_store import EmbeddedGraphStore, GraphStoreManager
 from database.neo4j_client import Neo4jClient
-from engine.adversarial_verifier import validate_patch_with_panel
+from engine.adversarial_verifier import (
+    validate_patch_with_panel,
+    verify_findings_adversarially,
+)
+from engine.agentic_react_loop import (
+    run_agentic_react_hunt,
+    run_agentic_react_patch,
+)
 from engine.api_operations_engine import ApiOperationsEngine
 from engine.compliance_and_rules_engine import evaluate_compliance as _evaluate_compliance_engine
 from engine.enterprise_manager import EnterpriseManager
@@ -39,7 +46,6 @@ from engine.fleet_runner import (
     _map_pasta_verdict_to_fleet,
     _normalize_stop_after,
 )
-from engine.adversarial_verifier import verify_findings_adversarially
 from engine.frontier_ai_engine import FrontierAiEngine, scrub_raw_secrets_text
 from engine.hostile_repo_guard import (
     HostileRepoError,
@@ -55,6 +61,10 @@ from engine.remediation_patcher import (
     batch_apply_workspace_patches,
     preview_finding_remediation,
 )
+from engine.sandbox_orchestrator import (
+    build_mediated_sandbox_plan,
+    inspect_sandbox_images,
+)
 from engine.sar_report_generator import (
     SarReportBundle,
     generate_sar_docx_bytes,
@@ -69,6 +79,10 @@ from engine.scanner_fusion_engine import (
 from engine.security_playbooks import classify_repo_kinds_and_baselines
 from engine.security_test_generator import generate_security_regression_test
 from models import (
+    AgenticHuntRequest,
+    AgenticHuntResponse,
+    AgenticPatchRequest,
+    AgenticPatchResponse,
     ComplianceEvaluateResponse,
     ComplianceFrameworkId,
     DoctorCheckItem,
@@ -88,6 +102,9 @@ from models import (
     PatchPanelValidateRequest,
     PrDeltaGateRequest,
     PrDeltaGateResponse,
+    SandboxExecutionPlan,
+    SandboxImageStatus,
+    SandboxPlanRequest,
     ScannerFormatType,
     ScannerFusionResponse,
     SecurityTestGenerateRequest,
@@ -638,6 +655,36 @@ def doctor(vault_dir: Optional[str] = None, check_neo4j: bool = False) -> Doctor
     pub_ai = FrontierAiEngine(vault_dir=vdir).get_public_config()
     has_key = bool(pub_ai.has_api_key)
 
+    img_status: SandboxImageStatus = inspect_sandbox_images()
+    if img_status.ready_for_mediated_mode:
+        sandbox_chk_status: Literal["OK", "WARN", "FAIL"] = "OK"
+        sandbox_chk_detail = (
+            f"alastor-sandbox:local ({img_status.sandbox_image.label_version}) and "
+            f"alastor-egress:local ({img_status.egress_image.label_version}) match "
+            f"{img_status.expected_version}"
+        )
+    else:
+        sandbox_chk_status = "WARN"
+        if not img_status.docker_available:
+            sandbox_chk_detail = (
+                f"Docker unavailable for sandbox image inspection (expected {img_status.expected_version}); "
+                "build alastor-sandbox:local and alastor-egress:local from docker/sandbox/."
+            )
+        else:
+            issues = []
+            for img in (img_status.sandbox_image, img_status.egress_image):
+                if not img.present:
+                    issues.append(f"{img.image_name}=missing")
+                elif not img.version_matches:
+                    issues.append(
+                        f"{img.image_name}=drift({img.label_version or 'unlabeled'}!={img.expected_version})"
+                    )
+            sandbox_chk_detail = (
+                f"Sandbox images require build/rebuild for {img_status.expected_version}: "
+                + ", ".join(issues)
+                + f" (run `docker build -f docker/sandbox/Dockerfile --build-arg ALASTOR_IMAGE_VERSION={img_status.expected_version} -t alastor-sandbox:local .`)"
+            )
+
     checks: List[DoctorCheckItem] = [
         DoctorCheckItem(
             name="python",
@@ -663,6 +710,11 @@ def doctor(vault_dir: Optional[str] = None, check_neo4j: bool = False) -> Doctor
             name="docker",
             status="OK" if docker_available else "WARN",
             detail="docker available for --sandbox" if docker_available else "docker not found (optional)",
+        ),
+        DoctorCheckItem(
+            name="sandbox_images",
+            status=sandbox_chk_status,
+            detail=sandbox_chk_detail,
         ),
         DoctorCheckItem(
             name="vault",
@@ -1408,10 +1460,100 @@ def stitch_microservices(
     )
 
 
+def _resolve_confined_sdk_repo_dir(repo_path: str) -> str:
+    cleaned = _validate_clean_path_arg(repo_path, "repo_path")
+    if _has_traversal_segment(cleaned):
+        raise HostileRepoError(f"Path traversal '..' rejected in repo_path: {repo_path}")
+    if is_link_or_junction(os.path.abspath(cleaned)):
+        raise HostileRepoError(f"Refusing symlink/junction repo_path: {repo_path}")
+    return _resolve_existing_repo_dir(cleaned)
+
+
+def agentic_hunt(
+    repo_path: str,
+    playbook_lenses: Optional[List[str]] = None,
+    focus_goal: Optional[str] = None,
+    max_turns: int = 8,
+    max_tool_calls: int = 16,
+    use_byok_llm: bool = True,
+    run_s6_verify: bool = True,
+    vault_dir: Optional[str] = None,
+) -> AgenticHuntResponse:
+    """Runs the bounded Multi-Turn ReAct CPG-Tool-Calling Agentic Hunter (or $0 deterministic fallback)."""
+    real_repo = _resolve_confined_sdk_repo_dir(repo_path)
+    vdir = _resolve_vault_dir(vault_dir)
+    ai_engine = FrontierAiEngine(vault_dir=vdir) if use_byok_llm else None
+    req = AgenticHuntRequest(
+        project_path=real_repo,
+        playbook_lenses=playbook_lenses,
+        focus_goal=focus_goal,
+        max_turns=max_turns,
+        max_tool_calls=max_tool_calls,
+        use_byok_llm=use_byok_llm,
+        run_s6_verify=run_s6_verify,
+    )
+    return run_agentic_react_hunt(req, ai_engine=ai_engine, graph_store=None)
+
+
+def agentic_patch(
+    repo_path: str,
+    finding: Finding,
+    max_turns: int = 8,
+    max_refinement_rounds: int = 3,
+    use_byok_llm: bool = True,
+    vault_dir: Optional[str] = None,
+) -> AgenticPatchResponse:
+    """Runs the Iterative S10->S11 ReAct Auto-Patcher for a target Finding (or $0 deterministic fallback)."""
+    if finding is None:
+        raise ValueError("finding is required for agentic_patch")
+    real_repo = _resolve_confined_sdk_repo_dir(repo_path)
+    vdir = _resolve_vault_dir(vault_dir)
+    ai_engine = FrontierAiEngine(vault_dir=vdir) if use_byok_llm else None
+    req = AgenticPatchRequest(
+        project_path=real_repo,
+        finding_id=finding.id,
+        finding=finding,
+        max_turns=max_turns,
+        max_refinement_rounds=max_refinement_rounds,
+        use_byok_llm=use_byok_llm,
+    )
+    return run_agentic_react_patch(req, finding=finding, ai_engine=ai_engine, graph_store=None)
+
+
+def build_sandbox_plan(
+    repo_path: str,
+    egress_mode: Literal["none", "mediated"] = "none",
+    allowed_llm_hosts: Optional[List[str]] = None,
+    output_dir: Optional[str] = None,
+    cli_args: Optional[List[str]] = None,
+) -> SandboxExecutionPlan:
+    """Builds a hardened single- or dual-container mediated-egress Docker sandbox execution plan."""
+    if egress_mode not in ("none", "mediated"):
+        raise HostileRepoError(f"Unsupported sandbox egress_mode: {egress_mode!r}")
+    real_repo = _resolve_confined_sdk_repo_dir(repo_path)
+    if output_dir is not None and output_dir != "":
+        cleaned_out = _validate_clean_path_arg(output_dir, "output_dir")
+        if _has_traversal_segment(cleaned_out):
+            raise HostileRepoError(f"Path traversal '..' rejected in output_dir: {output_dir}")
+        if is_link_or_junction(os.path.abspath(cleaned_out)):
+            raise HostileRepoError(f"Refusing symlink/junction output_dir: {output_dir}")
+    req = SandboxPlanRequest(
+        project_path=real_repo,
+        output_dir=output_dir,
+        egress_mode=egress_mode,
+        allowed_llm_hosts=list(allowed_llm_hosts or []),
+        cli_args=cli_args,
+    )
+    return build_mediated_sandbox_plan(req)
+
+
 __all__ = [
     "FleetOptions",
     "ScanOptions",
     "ScanResult",
+    "agentic_hunt",
+    "agentic_patch",
+    "build_sandbox_plan",
     "doctor",
     "estimate",
     "ev_replay",

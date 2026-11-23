@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from typing import Any, Dict, List, NoReturn, Optional, Tuple
+from typing import Any, Dict, List, Literal, NoReturn, Optional, Tuple
 from urllib.parse import quote as url_quote, urlsplit
 
 import click
@@ -21,12 +21,18 @@ import httpx
 import alastor_sdk
 from engine.frontier_ai_engine import scrub_raw_secrets_text
 from engine.hostile_repo_guard import (
+    _DOCKER_IMAGE_RE,
     HostileRepoError,
+    _validate_no_control_chars,
     assert_safe_config_source,
-    build_sandbox_docker_command,
     is_link_or_junction,
 )
 from engine.pr_delta_gate import validate_git_ref
+from engine.sandbox_orchestrator import (
+    SANDBOX_IMAGE_NAME,
+    build_mediated_sandbox_plan,
+    validate_mediated_llm_host,
+)
 from models import (
     DoctorReport,
     EstimateReport,
@@ -40,6 +46,7 @@ from models import (
     GcRequest,
     PrDeltaGateRequest,
     PrDeltaGateResponse,
+    SandboxPlanRequest,
 )
 
 _AGENTS_BEGIN = "<!-- ALASTOR:BEGIN -->"
@@ -387,7 +394,9 @@ def estimate_cmd(
 @click.option("--stop-after", default=None, help="Stop pipeline after stage (e.g. s0, s1, s2, s3, s6, s8, s9).")
 @click.option("--sandbox", is_flag=True, default=False, help="Build hardened Docker sandbox command.")
 @click.option("--execute-sandbox", is_flag=True, default=False, help="Execute the hardened Docker sandbox command.")
-@click.option("--sandbox-image", default="alastor-scanner:v5", show_default=True, help="Docker image for --sandbox.")
+@click.option("--sandbox-image", default=SANDBOX_IMAGE_NAME, show_default=True, help="Docker image for --sandbox.")
+@click.option("--egress", "egress_mode", type=click.Choice(["none", "mediated"], case_sensitive=False), default="none", show_default=True, help="Sandbox network egress mode (none or mediated via Squid Unix socket).")
+@click.option("--allow-llm-host", "allowed_llm_hosts", multiple=True, help="Validated public LLM API hostname allowed over HTTPS CONNECT when --egress=mediated.")
 @click.option("--fail-on", "fail_on_severity", type=click.Choice(_SEVERITY_CHOICES, case_sensitive=False), default=None, help="Fail with exit 1 if active findings meet or exceed severity.")
 @click.option("--format", "output_format", type=click.Choice(_FORMAT_CHOICES, case_sensitive=False), default="json", show_default=True, help="Artifact output format when --out is specified.")
 @click.option("--out", "out_dir", default=None, help="Output directory for generated report artifact.")
@@ -408,6 +417,8 @@ def scan_cmd(
     sandbox: bool,
     execute_sandbox: bool,
     sandbox_image: str,
+    egress_mode: str,
+    allowed_llm_hosts: Tuple[str, ...],
     fail_on_severity: Optional[str],
     output_format: str,
     out_dir: Optional[str],
@@ -424,6 +435,7 @@ def scan_cmd(
 
     norm_fmt = output_format.lower()
     norm_fail_on = fail_on_severity.upper() if fail_on_severity else None
+    norm_egress: Literal["none", "mediated"] = "mediated" if egress_mode.lower() == "mediated" else "none"
 
     if sandbox:
         if not repo:
@@ -431,6 +443,8 @@ def scan_cmd(
         try:
             if config_file:
                 assert_safe_config_source(config_file, repo)
+            for host in allowed_llm_hosts:
+                validate_mediated_llm_host(host)
             real_repo = alastor_sdk._resolve_existing_repo_dir(repo)
             eff_out = os.path.realpath(out_dir) if out_dir else os.path.abspath("alastor-out")
             cli_args: List[str] = [
@@ -450,23 +464,47 @@ def scan_cmd(
                 cli_args.extend(["--stop-after", stop_after])
             if norm_fail_on:
                 cli_args.extend(["--fail-on", norm_fail_on])
-            argv = build_sandbox_docker_command(
-                repo_path=real_repo,
-                output_dir=eff_out,
-                image=sandbox_image,
-                cli_args=cli_args,
+
+            plan = build_mediated_sandbox_plan(
+                SandboxPlanRequest(
+                    project_path=real_repo,
+                    output_dir=eff_out,
+                    egress_mode=norm_egress,
+                    allowed_llm_hosts=list(allowed_llm_hosts),
+                    cli_args=cli_args,
+                )
             )
+            if sandbox_image != SANDBOX_IMAGE_NAME:
+                _validate_no_control_chars(sandbox_image, "sandbox_image")
+                if any(ch.isspace() for ch in sandbox_image) or sandbox_image.startswith("-") or not _DOCKER_IMAGE_RE.match(sandbox_image):
+                    raise HostileRepoError(f"Invalid Docker image reference: {sandbox_image}")
+                updated_cmd = [
+                    sandbox_image if tok == SANDBOX_IMAGE_NAME else tok
+                    for tok in plan.scanner_docker_cmd
+                ]
+                plan = plan.model_copy(update={"scanner_docker_cmd": updated_cmd})
+
+            argv = plan.scanner_docker_cmd
             if not execute_sandbox:
                 payload = {
                     "sandbox_dry_run": True,
                     "docker_argv": argv,
                     "command": " ".join(argv),
+                    **plan.model_dump(),
                 }
                 if as_json:
                     _emit_json(payload)
                 else:
+                    if plan.egress_docker_cmd:
+                        click.echo(f"# Egress proxy sidecar:\n{' '.join(plan.egress_docker_cmd)}")
                     click.echo(" ".join(argv))
                 raise SystemExit(0)
+
+            if norm_egress == "mediated":
+                _fail_exit2(
+                    "--execute-sandbox supports --egress none; for mediated egress, start the egress sidecar and run the emitted scanner command.",
+                    as_json=as_json,
+                )
 
             proc = _run_sandbox_docker(argv)
             if as_json:

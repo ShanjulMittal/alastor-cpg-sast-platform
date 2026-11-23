@@ -101,12 +101,23 @@ from models import (
     CustomRuleTestResponse,
     MicroserviceGraphRequest,
     MicroserviceGraphResponse,
+    AgenticHuntRequest,
+    AgenticHuntResponse,
+    AgenticPatchRequest,
+    AgenticPatchResponse,
+    SandboxPlanRequest,
+    SandboxExecutionPlan,
 )
 import alastor_sdk
 from database.neo4j_client import Neo4jClient
 from database.batch_ingestor import BatchIngestor
 from database.checkpoint_store import CheckpointStore
 from database.graph_store import GraphStoreManager
+from engine.agentic_react_loop import (
+    run_agentic_react_hunt,
+    run_agentic_react_patch,
+)
+from engine.sandbox_orchestrator import build_mediated_sandbox_plan
 from engine.fleet_runner import FleetRunner, _is_remote_repo_syntax, parse_fleet_csv
 from engine.hostile_repo_guard import HostileRepoError, is_link_or_junction, validate_clone_url
 from engine.rule_executor import RuleExecutor
@@ -6024,6 +6035,241 @@ def build_nextgen_microservice_graph(req: MicroserviceGraphRequest):
             req_confined,
             workspace_confinement_fn=_resolve_confined_ev_project_path,
         )
+    except HTTPException:
+        raise
+    except (HostileRepoError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=_safe_nextgen_error_detail(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# 19. ALASTOR v5.1 — Multi-Turn ReAct Agent & Dual Docker Egress Sandbox Routes
+# ---------------------------------------------------------------------------
+def _resolve_active_graph_store_for_target(confined_path: str) -> Optional[Any]:
+    """Returns `graph_store_mgr` only when `confined_path` matches the active scanned workspace."""
+    norm_req = os.path.normcase(os.path.realpath(confined_path))
+    norm_cur = os.path.normcase(
+        os.path.realpath(current_scan_dir or enterprise_mgr.platform_root)
+    )
+    if norm_req != norm_cur:
+        return None
+    try:
+        if isinstance(graph_store_mgr, GraphStoreManager):
+            saved_root = graph_store_mgr.get_meta("last_scan_root")
+            counts = graph_store_mgr.get_counts()
+            if (
+                not saved_root
+                or os.path.normcase(os.path.realpath(str(saved_root))) != norm_req
+                or counts.get("nodes", 0) <= 0
+            ):
+                return None
+        return graph_store_mgr
+    except Exception:
+        return None
+
+
+def _resolve_confined_sandbox_output_dir(
+    raw_output_dir: Optional[str],
+    confined_project_path: str,
+) -> Optional[str]:
+    """Confines an optional sandbox `output_dir` within `_get_ai_allowed_roots()` (HTTP 400 on violation)."""
+    if raw_output_dir is None or raw_output_dir == "":
+        return None
+    raw = str(raw_output_dir)
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        raise HTTPException(status_code=400, detail="Invalid output_dir supplied.")
+    cleaned = raw.strip()
+    if not cleaned or cleaned.startswith("-") or "://" in cleaned:
+        raise HTTPException(status_code=400, detail="Invalid output_dir supplied.")
+    segs = [s for s in cleaned.replace("\\", "/").split("/") if s]
+    if any(s == ".." for s in segs):
+        raise HTTPException(
+            status_code=400,
+            detail="Path traversal segments ('..') are not permitted in output_dir.",
+        )
+
+    abs_cand = os.path.abspath(
+        cleaned if os.path.isabs(cleaned) else os.path.join(confined_project_path, cleaned)
+    )
+    if os.path.lexists(abs_cand) and is_link_or_junction(abs_cand):
+        raise HTTPException(
+            status_code=400,
+            detail="Symlink or junction output_dir is not permitted.",
+        )
+
+    probe = os.path.dirname(abs_cand)
+    while probe and not os.path.lexists(probe):
+        next_probe = os.path.dirname(probe)
+        if next_probe == probe:
+            break
+        probe = next_probe
+    if probe and os.path.lexists(probe) and is_link_or_junction(probe):
+        raise HTTPException(
+            status_code=400,
+            detail="output_dir traverses through a symlink or junction directory.",
+        )
+
+    cand_real = os.path.realpath(abs_cand)
+    if os.path.lexists(cand_real) and not os.path.isdir(cand_real):
+        raise HTTPException(
+            status_code=400,
+            detail="Requested output_dir must be a directory.",
+        )
+
+    for raw_allowed in _get_ai_allowed_roots():
+        if not raw_allowed:
+            continue
+        allowed_real = os.path.realpath(raw_allowed)
+        try:
+            if os.path.commonpath([allowed_real, cand_real]) == allowed_real:
+                return cand_real
+        except ValueError:
+            continue
+    raise HTTPException(
+        status_code=400,
+        detail="Requested output_dir is outside permitted workspace roots.",
+    )
+
+
+def _resolve_agentic_patch_finding(
+    confined_path: str,
+    inline_finding: Optional[Finding],
+    finding_id: Optional[str],
+) -> Finding:
+    """Resolves a target `Finding` from inline payload or confined workspace/cache lookup."""
+    if inline_finding is not None:
+        return inline_finding
+    clean_fid = (finding_id or "").strip()
+    if not clean_fid:
+        raise HTTPException(
+            status_code=400,
+            detail="Either finding or finding_id must be supplied.",
+        )
+    workspace_findings = _get_active_or_custom_findings(confined_path)
+    finding = next((f for f in workspace_findings if f.id == clean_fid), None)
+    if finding is not None:
+        return finding
+
+    norm_req = os.path.normcase(os.path.realpath(confined_path))
+    norm_cur = os.path.normcase(
+        os.path.realpath(current_scan_dir or enterprise_mgr.platform_root)
+    )
+    if norm_req == norm_cur:
+        raw_match: Optional[Finding] = None
+        with _findings_lock:
+            for pool in (
+                _cached_findings or (),
+                _cached_external_findings or (),
+                _cached_cognitive_findings or (),
+            ):
+                hit = next((f for f in pool if f.id == clean_fid), None)
+                if hit is not None:
+                    raw_match = hit.model_copy(deep=True)
+                    break
+        if raw_match is not None:
+            return _correlate_ev_status_onto_findings(confined_path, [raw_match])[0]
+
+    snap_cog_findings, snap_cog_dir = _snapshot_cached_cognitive()
+    if snap_cog_findings and snap_cog_dir:
+        try:
+            norm_cog = os.path.normcase(os.path.realpath(snap_cog_dir))
+        except Exception:
+            norm_cog = ""
+        if norm_cog and norm_cog == norm_req:
+            hit = next((f for f in snap_cog_findings if f.id == clean_fid), None)
+            if hit is not None:
+                return _correlate_ev_status_onto_findings(
+                    confined_path, [hit.model_copy(deep=True)]
+                )[0]
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"Finding '{_sanitize_log(clean_fid)}' not found in confined workspace.",
+    )
+
+
+@app.post("/api/cognitive/agentic-hunt", response_model=AgenticHuntResponse)
+def run_cognitive_agentic_hunt(req: AgenticHuntRequest):
+    """Runs the opt-in Multi-Turn ReAct CPG-Tool-Calling Agentic Hunter on a confined workspace."""
+    global _cached_cognitive_findings, _cached_cognitive_dir
+    confined_path = _resolve_nextgen_confined_path(req.project_path)
+    req_confined = req.model_copy(update={"project_path": confined_path})
+    active_graph_store = _resolve_active_graph_store_for_target(confined_path)
+
+    try:
+        hunt_resp = run_agentic_react_hunt(
+            req_confined,
+            ai_engine=frontier_ai_engine if req.use_byok_llm else None,
+            graph_store=active_graph_store,
+        )
+    except HTTPException:
+        raise
+    except (HostileRepoError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=_safe_nextgen_error_detail(exc)) from exc
+
+    if hunt_resp.findings:
+        scrubbed = _scrub_cognitive_findings(hunt_resp.findings, [])
+        hunt_resp.findings = _redact_findings_for_active_rbac(scrubbed)
+
+        norm_target = os.path.normcase(os.path.realpath(confined_path))
+        with _findings_lock:
+            norm_existing_cog = (
+                os.path.normcase(os.path.realpath(_cached_cognitive_dir))
+                if _cached_cognitive_dir
+                else ""
+            )
+            if norm_existing_cog != norm_target:
+                _cached_cognitive_findings = []
+                _cached_cognitive_dir = confined_path
+            seen_cog_ids = {f.id for f in _cached_cognitive_findings}
+            for nf in scrubbed:
+                if nf.id not in seen_cog_ids:
+                    seen_cog_ids.add(nf.id)
+                    _cached_cognitive_findings.append(nf.model_copy(deep=True))
+
+    return hunt_resp
+
+
+@app.post("/api/cognitive/agentic-patch", response_model=AgenticPatchResponse)
+def run_cognitive_agentic_patch(req: AgenticPatchRequest):
+    """Runs the Iterative S10->S11 ReAct Auto-Patcher for a target finding inside a confined workspace."""
+    confined_path = _resolve_nextgen_confined_path(req.project_path)
+    active_graph_store = _resolve_active_graph_store_for_target(confined_path)
+    try:
+        finding = _resolve_agentic_patch_finding(
+            confined_path, req.finding, req.finding_id
+        )
+        req_confined = req.model_copy(
+            update={
+                "project_path": confined_path,
+                "finding": finding,
+                "finding_id": finding.id,
+            }
+        )
+        return run_agentic_react_patch(
+            req_confined,
+            finding=finding,
+            ai_engine=frontier_ai_engine if req.use_byok_llm else None,
+            graph_store=active_graph_store,
+        )
+    except HTTPException:
+        raise
+    except (HostileRepoError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=_safe_nextgen_error_detail(exc)) from exc
+
+
+@app.post("/api/fleet/sandbox-plan", response_model=SandboxExecutionPlan)
+def build_fleet_sandbox_plan(req: SandboxPlanRequest):
+    """Generates a hardened single- or dual-container mediated-egress Docker sandbox plan."""
+    confined_path = _resolve_nextgen_confined_path(req.project_path)
+    confined_out = _resolve_confined_sandbox_output_dir(req.output_dir, confined_path)
+    req_confined = req.model_copy(
+        update={
+            "project_path": confined_path,
+            "output_dir": confined_out,
+        }
+    )
+    try:
+        return build_mediated_sandbox_plan(req_confined)
     except HTTPException:
         raise
     except (HostileRepoError, ValueError) as exc:
