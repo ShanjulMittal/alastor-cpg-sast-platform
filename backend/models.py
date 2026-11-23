@@ -2390,6 +2390,109 @@ class MicroserviceGraphResponse(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# 19. ALASTOR v5.1 ReAct Agent & Dual Docker Egress-Proxy Sandbox Models
+# ---------------------------------------------------------------------------
+class AgenticTraceStep(BaseModel):
+    turn: int
+    tool_name: str
+    tool_args: Dict[str, Any] = Field(default_factory=dict)
+    observation_summary: str
+    duration_ms: float = 0.0
+    blocked_reason: Optional[str] = None
+
+
+class AgenticHuntRequest(BaseModel):
+    project_path: str
+    playbook_lenses: Optional[List[str]] = None
+    focus_goal: Optional[str] = None
+    max_turns: int = Field(default=8, ge=1, le=20)
+    max_tool_calls: int = Field(default=16, ge=1, le=40)
+    use_byok_llm: bool = True
+    run_s6_verify: bool = True
+
+
+class AgenticHuntResponse(BaseModel):
+    project_path: str
+    execution_mode: Literal["BYOK_REACT_MULTI_TURN", "DETERMINISTIC_FALLBACK"]
+    turns_used: int
+    tool_calls_used: int
+    stop_reason: Literal[
+        "SUBMITTED",
+        "MAX_TURNS",
+        "MAX_TOOL_CALLS",
+        "LOOP_DETECTED",
+        "FALLBACK_COMPLETE",
+        "ERROR",
+    ]
+    findings: List[Finding] = Field(default_factory=list)
+    s6_verified_count: int = 0
+    trace: List[AgenticTraceStep] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class AgenticPatchRequest(BaseModel):
+    project_path: str
+    finding_id: Optional[str] = None
+    finding: Optional[Finding] = None
+    max_turns: int = Field(default=8, ge=1, le=20)
+    max_refinement_rounds: int = Field(default=3, ge=1, le=5)
+    use_byok_llm: bool = True
+
+
+class AgenticPatchResponse(BaseModel):
+    project_path: str
+    finding_id: str
+    execution_mode: Literal["BYOK_REACT_ITERATIVE", "DETERMINISTIC_FALLBACK"]
+    rounds_used: int
+    turns_used: int
+    tool_calls_used: int
+    final_status: Literal["APPROVED", "REJECTED", "NEEDS_HUMAN_REVIEW"]
+    patched_code: str = ""
+    rationale: str = ""
+    s11_panel: Optional[PatchPanelValidateResponse] = None
+    trace: List[AgenticTraceStep] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class SandboxImageInfo(BaseModel):
+    image_name: str
+    present: bool
+    label_version: Optional[str] = None
+    expected_version: str
+    version_matches: bool = False
+    detail: str = ""
+
+
+class SandboxImageStatus(BaseModel):
+    docker_available: bool
+    expected_version: str
+    sandbox_image: SandboxImageInfo
+    egress_image: SandboxImageInfo
+    ready_for_none_mode: bool
+    ready_for_mediated_mode: bool
+
+
+class SandboxPlanRequest(BaseModel):
+    project_path: str
+    output_dir: Optional[str] = None
+    egress_mode: Literal["none", "mediated"] = "none"
+    allowed_llm_hosts: List[str] = Field(default_factory=list)
+    cli_args: Optional[List[str]] = None
+
+
+class SandboxExecutionPlan(BaseModel):
+    egress_mode: Literal["none", "mediated"]
+    allowed_llm_hosts: List[str] = Field(default_factory=list)
+    squid_config: Optional[str] = None
+    egress_docker_cmd: Optional[List[str]] = None
+    scanner_docker_cmd: List[str] = Field(default_factory=list)
+    build_commands: List[str] = Field(default_factory=list)
+    security_invariants: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+
 
 
 
