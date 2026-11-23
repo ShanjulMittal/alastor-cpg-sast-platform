@@ -453,6 +453,75 @@ class TestPrDeltaGate:
         assert res.newly_introduced_count >= 1
         assert "app.py" in res.changed_files
 
+    def test_worktree_detects_untracked_new_file_and_rejects_worktree_as_base_ref(self, tmp_path: Path):
+        repo = tmp_path / "untracked_worktree_repo"
+        _init_git_repo(repo)
+        (repo / "requirements.txt").write_text("mkdocs==1.6.0\n", encoding="utf-8")
+        (repo / "clean.py").write_text("def ok(): return 1\n", encoding="utf-8")
+        _commit_all(repo, "clean base")
+
+        # Reject base_ref="WORKTREE"
+        with pytest.raises(ValueError):
+            evaluate_pr_delta_gate(
+                PrDeltaGateRequest(
+                    project_path=str(repo),
+                    base_ref="WORKTREE",
+                    head_ref="HEAD",
+                )
+            )
+
+        # Untracked brand-new vulnerable file (not git-added) must be caught as NEWLY_INTRODUCED
+        (repo / "untracked_vuln.py").write_text(
+            "import subprocess\n"
+            "def bad(cmd: str):\n"
+            "    return subprocess.run(cmd, shell=True)\n",
+            encoding="utf-8",
+        )
+        res = evaluate_pr_delta_gate(
+            PrDeltaGateRequest(
+                project_path=str(repo),
+                base_ref="HEAD",
+                head_ref="WORKTREE",
+            )
+        )
+        assert "untracked_vuln.py" in res.changed_files
+        assert res.newly_introduced_count >= 1
+        assert res.gate_decision == "BLOCK_MERGE"
+        assert any(
+            a.filepath == "untracked_vuln.py" and a.classification == "NEWLY_INTRODUCED"
+            for a in res.annotations
+        )
+
+    def test_diff_noprefix_and_mnemonic_prefix_config_do_not_break_gate(self, tmp_path: Path):
+        repo = tmp_path / "prefix_cfg_repo"
+        _init_git_repo(repo)
+        (repo / "requirements.txt").write_text("mkdocs==1.6.0\n", encoding="utf-8")
+        (repo / "base.py").write_text("def safe(): return 1\n", encoding="utf-8")
+        _commit_all(repo, "base")
+
+        # Set hostile-style user/repo diff prefix overrides
+        _git(repo, "config", "--local", "diff.noprefix", "true")
+        _git(repo, "config", "--local", "diff.mnemonicPrefix", "true")
+
+        (repo / "b_file.py").write_text(
+            "import subprocess\n"
+            "def exec_bad(x: str):\n"
+            "    return subprocess.check_output(x, shell=True)\n",
+            encoding="utf-8",
+        )
+        _commit_all(repo, "add b_file")
+
+        res = evaluate_pr_delta_gate(
+            PrDeltaGateRequest(
+                project_path=str(repo),
+                base_ref="HEAD~1",
+                head_ref="HEAD",
+            )
+        )
+        assert "b_file.py" in res.changed_files
+        assert res.newly_introduced_count >= 1
+        assert res.gate_decision == "BLOCK_MERGE"
+
     def test_cpg_1hop_neighbors_and_modified_context_classification(self, tmp_path: Path):
         repo = tmp_path / "cpg_neighbor_repo"
         _init_git_repo(repo)
@@ -927,3 +996,84 @@ class TestSecurityTestGenerator:
         )
         assert proc.returncode == 0, f"Generated pytest suite failed:\n{proc.stdout}\n{proc.stderr}"
         assert "10 passed" in proc.stdout
+
+    def test_pytest_docstring_code_injection_blocked_for_malicious_filepath(self, tmp_path: Path):
+        repo = tmp_path / "inject_repo"
+        repo.mkdir()
+        malicious_fp = 'x"""; __import__("os").system("id"); """.py'
+        finding = Finding(
+            id="f-inject-1",
+            rule_id="RULE-89",
+            severity="HIGH",
+            cwe_id="CWE-89",
+            title='Bad """ title',
+            best_fix_location=BestFixLocation(
+                filepath=malicious_fp,
+                line=5,
+                code_snippet='x"""; __import__("os").system("id")',
+            ),
+        )
+        resp = generate_security_regression_test(
+            SecurityTestGenerateRequest(
+                project_path=str(repo),
+                finding_id=finding.id,
+                framework="pytest",
+                write_to_workspace=False,
+            ),
+            finding,
+        )
+        assert resp.syntax_valid is True
+        tree = ast.parse(resp.test_code)
+        fn_defs = [n for n in tree.body if isinstance(n, ast.FunctionDef)]
+        assert [fn.name for fn in fn_defs] == ["_build_parameterized_user_query", resp.test_name]
+        # Verify zero injected calls (`__import__`, `os.system`, etc.) exist in parsed AST
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name):
+                    assert node.func.id not in ("__import__", "eval", "exec")
+                elif isinstance(node.func, ast.Attribute):
+                    assert node.func.attr != "system"
+        doc = ast.get_docstring(fn_defs[-1]) or ""
+        assert '"""' not in doc
+        assert "__import__" in doc or "Regression guard for CWE-89" in doc
+        # Ensure the function body does NOT contain an injected Expr(Call) before `conn = sqlite3.connect(...)`
+        assert isinstance(fn_defs[-1].body[1], ast.Assign)
+
+    def test_multiple_go_tests_same_cwe_have_zero_duplicate_package_symbols(self, tmp_path: Path):
+        import re as _re
+
+        repo = tmp_path / "go_multi_repo"
+        repo.mkdir()
+        top_decl_rx = _re.compile(r"^(?:func|type|var|const)\s+([A-Za-z_][A-Za-z0-9_]*)", _re.MULTILINE)
+
+        for cwe_id in ("CWE-89", "CWE-78", "CWE-502"):
+            f1 = Finding(
+                id=f"go-a-{cwe_id.lower()}",
+                rule_id=f"RULE-{cwe_id}",
+                severity="HIGH",
+                cwe_id=cwe_id,
+                title=f"First {cwe_id}",
+                best_fix_location=BestFixLocation(filepath="pkg/one.go", line=10),
+            )
+            f2 = Finding(
+                id=f"go-b-{cwe_id.lower()}",
+                rule_id=f"RULE-{cwe_id}",
+                severity="HIGH",
+                cwe_id=cwe_id,
+                title=f"Second {cwe_id}",
+                best_fix_location=BestFixLocation(filepath="pkg/two.go", line=22),
+            )
+            r1 = generate_security_regression_test(
+                SecurityTestGenerateRequest(project_path=str(repo), framework="go_test"),
+                f1,
+            )
+            r2 = generate_security_regression_test(
+                SecurityTestGenerateRequest(project_path=str(repo), framework="go_test"),
+                f2,
+            )
+            assert r1.syntax_valid is True and r2.syntax_valid is True
+            decls_1 = top_decl_rx.findall(r1.test_code)
+            decls_2 = top_decl_rx.findall(r2.test_code)
+            assert decls_1 == [r1.test_name]
+            assert decls_2 == [r2.test_name]
+            assert set(decls_1).isdisjoint(set(decls_2))

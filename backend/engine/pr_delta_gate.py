@@ -538,11 +538,29 @@ def evaluate_pr_delta_gate(
     real_repo = _validate_repo_dir(req.project_path)
     base_ref = validate_git_ref(req.base_ref)
     head_ref = validate_git_ref(req.head_ref)
+    if base_ref == "WORKTREE":
+        raise ValueError("base_ref cannot be 'WORKTREE'; provide a valid commit or branch ref")
 
     if head_ref == "WORKTREE":
-        diff_args = ["diff", "--unified=0", "--no-renames", base_ref, "--"]
+        diff_args = [
+            "diff",
+            "--unified=0",
+            "--no-renames",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            base_ref,
+            "--",
+        ]
     else:
-        diff_args = ["diff", "--unified=0", "--no-renames", f"{base_ref}..{head_ref}", "--"]
+        diff_args = [
+            "diff",
+            "--unified=0",
+            "--no-renames",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            f"{base_ref}..{head_ref}",
+            "--",
+        ]
 
     diff_proc = run_hardened_git(real_repo, diff_args)
     if diff_proc.returncode != 0:
@@ -557,6 +575,25 @@ def evaluate_pr_delta_gate(
         diff_proc.stdout or ""
     )
     changed_files_set = set(changed_files)
+
+    if head_ref == "WORKTREE":
+        ls_proc = run_hardened_git(real_repo, ["ls-files", "--others", "--exclude-standard", "-z"])
+        if ls_proc.returncode != 0:
+            err_detail = scrub_raw_secrets_text(
+                (ls_proc.stderr or ls_proc.stdout or "").strip()
+            )
+            raise ValueError(
+                f"Hardened git ls-files failed (exit {ls_proc.returncode}): {err_detail}"
+            )
+        for raw_untracked in (ls_proc.stdout or "").split("\x00"):
+            norm_untracked = _normalize_repo_relpath(raw_untracked, real_repo)
+            if not norm_untracked:
+                continue
+            if norm_untracked not in changed_files_set:
+                changed_files_set.add(norm_untracked)
+                changed_files.append(norm_untracked)
+            added_lines_by_file.setdefault(norm_untracked, set())
+            newly_added_files.add(norm_untracked)
 
     all_nodes: List[CPGNode] = []
     all_edges: List[CPGEdge] = []

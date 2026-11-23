@@ -213,6 +213,14 @@ def _safe_comment(text: str, extra_secrets: Sequence[str], max_len: int = 160) -
     return one_line[:max_len]
 
 
+def _safe_docstring_text(text: str, extra_secrets: Sequence[str], max_len: int = 160) -> str:
+    """Sanitizes untrusted metadata before embedding inside Python triple-quoted docstrings."""
+    scrubbed = scrub_raw_secrets_text(text or "", extra_raw_secrets=extra_secrets)
+    one_line = re.sub(r"[\r\n\x00]+", " ", scrubbed)
+    cleaned = one_line.replace("\\", "/").replace('"', "").replace("'", "").strip()
+    return cleaned[:max_len]
+
+
 def _render_pytest_test(
     *,
     cwe_id: str,
@@ -225,6 +233,8 @@ def _render_pytest_test(
     title: str,
     snippet: str,
 ) -> str:
+    doc_cwe = _safe_docstring_text(cwe_id, (), max_len=24) or "CWE-20"
+    doc_filepath = _safe_docstring_text(filepath, (), max_len=140) or "app.py"
     header = "\n".join(
         [
             f"# ALASTOR Security Regression Test ({cwe_id})",
@@ -250,14 +260,14 @@ def _render_pytest_test(
 
     bodies: Dict[str, str] = {
         "CWE-89": f'''def _build_parameterized_user_query(user_id: str):
-    """Reference parameterized SQL contract preventing {cwe_id} string interpolation."""
+    """Reference parameterized SQL contract preventing {doc_cwe} string interpolation."""
     if not isinstance(user_id, str) or not user_id.strip():
         raise ValueError("user_id must be a non-empty string")
     return ("SELECT id, username FROM users WHERE id = ?", (user_id,))
 
 
 def {test_name}() -> None:
-    """Regression guard for {cwe_id} at {filepath}:{line}."""
+    """Regression guard for {doc_cwe} at {doc_filepath}:{line}."""
     conn = sqlite3.connect(":memory:")
     try:
         conn.execute("CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT)")
@@ -280,14 +290,14 @@ def {test_name}() -> None:
 
 
 def _build_safe_argv(executable: str, user_arg: str):
-    """Reference shell-free argv builder preventing {cwe_id} command injection."""
+    """Reference shell-free argv builder preventing {doc_cwe} command injection."""
     if not _SAFE_ARG_RE.match(user_arg):
         raise ValueError(f"Blocked shell metacharacters in argument: {{user_arg!r}}")
     return [executable, "--input", shlex.quote(user_arg)]
 
 
 def {test_name}() -> None:
-    """Regression guard for {cwe_id} at {filepath}:{line}."""
+    """Regression guard for {doc_cwe} at {doc_filepath}:{line}."""
     for payload in ("ok; rm -rf /", "$(whoami)", "arg && cat /etc/passwd", "a|b"):
         with pytest.raises(ValueError):
             _build_safe_argv("/usr/bin/echo", payload)
@@ -298,7 +308,7 @@ def {test_name}() -> None:
     assert "release-v5.0" in argv[-1]
 ''',
         "CWE-79": f'''def _render_safe_html_and_href(untrusted_text: str, untrusted_url: str) -> str:
-    """Reference contextual HTML escaping & URL scheme allowlist for {cwe_id}."""
+    """Reference contextual HTML escaping & URL scheme allowlist for {doc_cwe}."""
     escaped_text = html.escape(untrusted_text, quote=True)
     parsed = urlparse((untrusted_url or "").strip())
     if parsed.scheme.lower() not in ("http", "https"):
@@ -308,7 +318,7 @@ def {test_name}() -> None:
 
 
 def {test_name}() -> None:
-    """Regression guard for {cwe_id} at {filepath}:{line}."""
+    """Regression guard for {doc_cwe} at {doc_filepath}:{line}."""
     rendered = _render_safe_html_and_href("<script>alert(1)</script>", "https://example.com/docs")
     assert "<script>" not in rendered
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in rendered
@@ -318,7 +328,7 @@ def {test_name}() -> None:
             _render_safe_html_and_href("click", bad_url)
 ''',
         "CWE-22": f'''def _resolve_confined_path(base_dir: str, relative_path: str) -> str:
-    """Reference realpath + commonpath workspace confinement for {cwe_id}."""
+    """Reference realpath + commonpath workspace confinement for {doc_cwe}."""
     if not relative_path or "\\x00" in relative_path:
         raise ValueError("Invalid path")
     real_base = os.path.realpath(base_dir)
@@ -329,7 +339,7 @@ def {test_name}() -> None:
 
 
 def {test_name}(tmp_path) -> None:
-    """Regression guard for {cwe_id} at {filepath}:{line}."""
+    """Regression guard for {doc_cwe} at {doc_filepath}:{line}."""
     safe_root = tmp_path / "uploads"
     safe_root.mkdir()
     for payload in ("../../etc/passwd", "../secret.txt", "..\\\\..\\\\Windows\\\\win.ini", "/etc/passwd"):
@@ -343,7 +353,7 @@ def {test_name}(tmp_path) -> None:
 
 
 def _validate_outbound_url(raw_url: str) -> str:
-    """Reference SSRF URL validation rejecting private/link-local/metadata endpoints ({cwe_id})."""
+    """Reference SSRF URL validation rejecting private/link-local/metadata endpoints ({doc_cwe})."""
     parsed = urlparse((raw_url or "").strip())
     if parsed.scheme.lower() != "https":
         raise ValueError("Only HTTPS outbound URLs are permitted")
@@ -360,7 +370,7 @@ def _validate_outbound_url(raw_url: str) -> str:
 
 
 def {test_name}() -> None:
-    """Regression guard for {cwe_id} at {filepath}:{line}."""
+    """Regression guard for {doc_cwe} at {doc_filepath}:{line}."""
     for bad_url in (
         "http://169.254.169.254/latest/meta-data/",
         "https://127.0.0.1:8080/admin",
@@ -373,7 +383,7 @@ def {test_name}() -> None:
     assert _validate_outbound_url("https://api.example.com/v1/status") == "https://api.example.com/v1/status"
 ''',
         "CWE-639": f'''def _authorize_resource_access(requester_id: str, owner_id: str, roles=None) -> bool:
-    """Reference object-level authorization guard preventing {cwe_id} IDOR/BOLA."""
+    """Reference object-level authorization guard preventing {doc_cwe} IDOR/BOLA."""
     role_set = set(roles or ())
     if not requester_id or not owner_id:
         raise PermissionError("Missing principal or resource owner")
@@ -383,14 +393,14 @@ def {test_name}() -> None:
 
 
 def {test_name}() -> None:
-    """Regression guard for {cwe_id} at {filepath}:{line}."""
+    """Regression guard for {doc_cwe} at {doc_filepath}:{line}."""
     with pytest.raises(PermissionError):
         _authorize_resource_access("user-attacker", "user-victim", roles=["USER"])
 
     assert _authorize_resource_access("user-victim", "user-victim", roles=["USER"]) is True
 ''',
         "CWE-502": f'''def _safe_deserialize_payload(raw_bytes: bytes):
-    """Reference safe JSON deserialization rejecting untrusted binary/pickle payloads ({cwe_id})."""
+    """Reference safe JSON deserialization rejecting untrusted binary/pickle payloads ({doc_cwe})."""
     if raw_bytes.startswith((b"\\x80\\x02", b"\\x80\\x03", b"\\x80\\x04", b"\\x80\\x05", b"cos\\n")):
         raise ValueError("Blocked unsafe pickle opcode stream")
     text = raw_bytes.decode("utf-8")
@@ -400,7 +410,7 @@ def {test_name}() -> None:
 
 
 def {test_name}() -> None:
-    """Regression guard for {cwe_id} at {filepath}:{line}."""
+    """Regression guard for {doc_cwe} at {doc_filepath}:{line}."""
     for bad_payload in (b"\\x80\\x04\\x95\\x00", b"cos\\nsystem\\n", b'{{"cmd": "!!python/object/apply:os.system"}}'):
         with pytest.raises(ValueError):
             _safe_deserialize_payload(bad_payload)
@@ -418,7 +428,7 @@ def {test_name}() -> None:
 
 
 def _assert_no_hardcoded_secret(candidate_source: str, env_var: str = "APP_API_TOKEN") -> str:
-    """Reference secret-hygiene guard ensuring runtime injection instead of hardcoded tokens ({cwe_id})."""
+    """Reference secret-hygiene guard ensuring runtime injection instead of hardcoded tokens ({doc_cwe})."""
     for rx in _KNOWN_CREDENTIAL_PATTERNS:
         if rx.search(candidate_source):
             raise ValueError("Hardcoded credential pattern detected in source")
@@ -426,7 +436,7 @@ def _assert_no_hardcoded_secret(candidate_source: str, env_var: str = "APP_API_T
 
 
 def {test_name}() -> None:
-    """Regression guard for {cwe_id} at {filepath}:{line}."""
+    """Regression guard for {doc_cwe} at {doc_filepath}:{line}."""
     synthetic_leak = "TOKEN = '" + "ghp_" + ("0" * 36) + "'"
     with pytest.raises(ValueError):
         _assert_no_hardcoded_secret(synthetic_leak)
@@ -438,7 +448,7 @@ def {test_name}() -> None:
 
 
 def _evaluate_cors_origin(origin: str, allow_credentials: bool = True):
-    """Reference strict CORS allowlist rejecting wildcard/arbitrary reflection ({cwe_id})."""
+    """Reference strict CORS allowlist rejecting wildcard/arbitrary reflection ({doc_cwe})."""
     clean = (origin or "").strip()
     if clean == "*" and allow_credentials:
         raise ValueError("Wildcard CORS with Allow-Credentials=true is forbidden")
@@ -448,7 +458,7 @@ def _evaluate_cors_origin(origin: str, allow_credentials: bool = True):
 
 
 def {test_name}() -> None:
-    """Regression guard for {cwe_id} at {filepath}:{line}."""
+    """Regression guard for {doc_cwe} at {doc_filepath}:{line}."""
     with pytest.raises(ValueError):
         _evaluate_cors_origin("*", allow_credentials=True)
     with pytest.raises(PermissionError):
@@ -460,7 +470,7 @@ def {test_name}() -> None:
 
 
 def _validate_boundary_input(raw_value: str, max_len: int = 128) -> str:
-    """Reference strict boundary validation guard for {cwe_id}."""
+    """Reference strict boundary validation guard for {doc_cwe}."""
     if not isinstance(raw_value, str) or not raw_value.strip():
         raise ValueError("Input must be a non-empty string")
     if len(raw_value) > max_len or _CONTROL_CHARS_RX.search(raw_value):
@@ -469,7 +479,7 @@ def _validate_boundary_input(raw_value: str, max_len: int = 128) -> str:
 
 
 def {test_name}() -> None:
-    """Regression guard for {cwe_id} at {filepath}:{line}."""
+    """Regression guard for {doc_cwe} at {doc_filepath}:{line}."""
     for bad in ("", "bad\\x00input", "x" * 256):
         with pytest.raises(ValueError):
             _validate_boundary_input(bad)
@@ -713,24 +723,18 @@ def _render_go_test(
 
     go_blocks: Dict[str, str] = {
         "CWE-89": f'''import (
+\t"errors"
 \t"strings"
 \t"testing"
 )
 
-func buildParameterizedSQL(userID string) (string, []any, error) {{
-\tif strings.TrimSpace(userID) == "" {{
-\t\treturn "", nil, errInvalidInput
-\t}}
-\treturn "SELECT id, username FROM users WHERE id = $1", []any{{userID}}, nil
-}}
-
-type staticErr string
-
-func (e staticErr) Error() string {{ return string(e) }}
-
-const errInvalidInput = staticErr("invalid input")
-
 func {test_name}(t *testing.T) {{
+\tbuildParameterizedSQL := func(userID string) (string, []any, error) {{
+\t\tif strings.TrimSpace(userID) == "" {{
+\t\t\treturn "", nil, errors.New("invalid input")
+\t\t}}
+\t\treturn "SELECT id, username FROM users WHERE id = $1", []any{{userID}}, nil
+\t}}
 \tpayload := "' OR 1=1 --"
 \tsql, params, err := buildParameterizedSQL(payload)
 \tif err != nil {{
@@ -746,14 +750,13 @@ func {test_name}(t *testing.T) {{
 \t"testing"
 )
 
-func isSafeCLIArg(arg string) bool {{
-\tif arg == "" || strings.ContainsAny(arg, ";&|$`\\n\\r") {{
-\t\treturn false
-\t}}
-\treturn true
-}}
-
 func {test_name}(t *testing.T) {{
+\tisSafeCLIArg := func(arg string) bool {{
+\t\tif arg == "" || strings.ContainsAny(arg, ";&|$`\\n\\r") {{
+\t\t\treturn false
+\t\t}}
+\t\treturn true
+\t}}
 \tfor _, bad := range []string{{"ok; rm -rf /", "$(whoami)", "a|b"}} {{
 \t\tif isSafeCLIArg(bad) {{
 \t\t\tt.Fatalf("expected metacharacter payload to be rejected: %s", bad)
@@ -783,12 +786,11 @@ func {test_name}(t *testing.T) {{
 \t"testing"
 )
 
-func isConfinedRelPath(rel string) bool {{
-\tcleaned := filepath.Clean(rel)
-\treturn rel != "" && !filepath.IsAbs(cleaned) && cleaned != ".." && !strings.HasPrefix(cleaned, ".."+string(filepath.Separator))
-}}
-
 func {test_name}(t *testing.T) {{
+\tisConfinedRelPath := func(rel string) bool {{
+\t\tcleaned := filepath.Clean(rel)
+\t\treturn rel != "" && !filepath.IsAbs(cleaned) && cleaned != ".." && !strings.HasPrefix(cleaned, ".."+string(filepath.Separator))
+\t}}
 \tif isConfinedRelPath("../../etc/passwd") || isConfinedRelPath("/etc/passwd") {{
 \t\tt.Fatalf("expected traversal path to be blocked")
 \t}}
@@ -802,16 +804,15 @@ func {test_name}(t *testing.T) {{
 \t"testing"
 )
 
-func isAllowedOutboundURL(raw string) bool {{
-\tu, err := url.Parse(raw)
-\tif err != nil || u.Scheme != "https" {{
-\t\treturn false
-\t}}
-\thost := u.Hostname()
-\treturn host != "" && host != "169.254.169.254" && host != "127.0.0.1" && host != "localhost"
-}}
-
 func {test_name}(t *testing.T) {{
+\tisAllowedOutboundURL := func(raw string) bool {{
+\t\tu, err := url.Parse(raw)
+\t\tif err != nil || u.Scheme != "https" {{
+\t\t\treturn false
+\t\t}}
+\t\thost := u.Hostname()
+\t\treturn host != "" && host != "169.254.169.254" && host != "127.0.0.1" && host != "localhost"
+\t}}
 \tif isAllowedOutboundURL("http://169.254.169.254/latest/meta-data/") || isAllowedOutboundURL("https://127.0.0.1/admin") {{
 \t\tt.Fatalf("expected SSRF target to be blocked")
 \t}}
@@ -822,11 +823,10 @@ func {test_name}(t *testing.T) {{
 ''',
         "CWE-639": f'''import "testing"
 
-func authorizeResourceOwner(requesterID string, ownerID string) bool {{
-\treturn requesterID != "" && requesterID == ownerID
-}}
-
 func {test_name}(t *testing.T) {{
+\tauthorizeResourceOwner := func(requesterID string, ownerID string) bool {{
+\t\treturn requesterID != "" && requesterID == ownerID
+\t}}
 \tif authorizeResourceOwner("attacker-1", "victim-2") {{
 \t\tt.Fatalf("expected cross-tenant IDOR access to be denied")
 \t}}
@@ -837,26 +837,20 @@ func {test_name}(t *testing.T) {{
 ''',
         "CWE-502": f'''import (
 \t"encoding/json"
+\t"errors"
 \t"strings"
 \t"testing"
 )
 
-func safeDecodeStrictJSON(raw string) (map[string]any, error) {{
-\tif strings.Contains(raw, "!!python/") || strings.Contains(raw, "\\x80\\x04") {{
-\t\treturn nil, errUnsafePayload
-\t}}
-\tvar out map[string]any
-\terr := json.Unmarshal([]byte(raw), &out)
-\treturn out, err
-}}
-
-type deserErr string
-
-func (e deserErr) Error() string {{ return string(e) }}
-
-const errUnsafePayload = deserErr("unsafe deserialization payload")
-
 func {test_name}(t *testing.T) {{
+\tsafeDecodeStrictJSON := func(raw string) (map[string]any, error) {{
+\t\tif strings.Contains(raw, "!!python/") || strings.Contains(raw, "\\x80\\x04") {{
+\t\t\treturn nil, errors.New("unsafe deserialization payload")
+\t\t}}
+\t\tvar out map[string]any
+\t\terr := json.Unmarshal([]byte(raw), &out)
+\t\treturn out, err
+\t}}
 \tif _, err := safeDecodeStrictJSON("!!python/object/apply:os.system"); err == nil {{
 \t\tt.Fatalf("expected unsafe deserialization payload to be rejected")
 \t}}
@@ -867,14 +861,13 @@ func {test_name}(t *testing.T) {{
 ''',
         "CWE-942": f'''import "testing"
 
-func isTrustedCORSOrigin(origin string, allowCredentials bool) bool {{
-\tif origin == "*" && allowCredentials {{
-\t\treturn false
-\t}}
-\treturn origin == "https://app.example.com"
-}}
-
 func {test_name}(t *testing.T) {{
+\tisTrustedCORSOrigin := func(origin string, allowCredentials bool) bool {{
+\t\tif origin == "*" && allowCredentials {{
+\t\t\treturn false
+\t\t}}
+\t\treturn origin == "https://app.example.com"
+\t}}
 \tif isTrustedCORSOrigin("*", true) || isTrustedCORSOrigin("https://evil.example", true) {{
 \t\tt.Fatalf("expected untrusted or wildcard credentialed CORS origin to be rejected")
 \t}}
@@ -888,11 +881,10 @@ func {test_name}(t *testing.T) {{
 \t"testing"
 )
 
-func containsHardcodedCredentialPrefix(line string) bool {{
-\treturn strings.Contains(line, "ghp_") || strings.Contains(line, "AKIA") || strings.Contains(line, "sk-ant-")
-}}
-
 func {test_name}(t *testing.T) {{
+\tcontainsHardcodedCredentialPrefix := func(line string) bool {{
+\t\treturn strings.Contains(line, "ghp_") || strings.Contains(line, "AKIA") || strings.Contains(line, "sk-ant-")
+\t}}
 \tsynthetic := "token := " + `"` + "ghp_" + strings.Repeat("0", 36) + `"`
 \tif !containsHardcodedCredentialPrefix(synthetic) {{
 \t\tt.Fatalf("expected hardcoded token pattern to be detected")
@@ -907,11 +899,10 @@ func {test_name}(t *testing.T) {{
 \t"testing"
 )
 
-func isSafeBoundaryInput(val string) bool {{
-\treturn strings.TrimSpace(val) != "" && !strings.ContainsRune(val, '\\x00')
-}}
-
 func {test_name}(t *testing.T) {{
+\tisSafeBoundaryInput := func(val string) bool {{
+\t\treturn strings.TrimSpace(val) != "" && !strings.ContainsRune(val, '\\x00')
+\t}}
 \tif isSafeBoundaryInput("") || isSafeBoundaryInput("bad\\x00input") {{
 \t\tt.Fatalf("expected invalid boundary input to be rejected")
 \t}}
@@ -986,20 +977,54 @@ def _has_balanced_delimiters(code: str) -> bool:
     return not stack and in_quote is None and not in_regex
 
 
+_FORBIDDEN_PY_BUILTIN_NAMES = frozenset({"__import__", "eval", "exec", "compile"})
+_FORBIDDEN_PY_ATTR_NAMES = frozenset({"__import__", "eval", "exec", "system", "popen"})
+
+
+def _validate_python_ast_integrity(tree: ast.Module, expected_test_name: str) -> Optional[str]:
+    for stmt in tree.body:
+        if not isinstance(stmt, (ast.Import, ast.ImportFrom, ast.Assign, ast.FunctionDef)):
+            return f"Unexpected top-level AST statement in generated pytest module: {type(stmt).__name__}"
+        if isinstance(stmt, ast.FunctionDef):
+            if stmt.name != expected_test_name and not stmt.name.startswith("_"):
+                return f"Unexpected top-level function in generated pytest module: {stmt.name}"
+            if not stmt.body or not (
+                isinstance(stmt.body[0], ast.Expr)
+                and isinstance(stmt.body[0].value, ast.Constant)
+                and isinstance(stmt.body[0].value.value, str)
+            ):
+                return f"Function {stmt.name} missing expected leading docstring"
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            if isinstance(fn, ast.Name) and fn.id in _FORBIDDEN_PY_BUILTIN_NAMES:
+                return f"Forbidden call in generated pytest AST: {fn.id}"
+            if isinstance(fn, ast.Attribute) and fn.attr in _FORBIDDEN_PY_ATTR_NAMES:
+                return f"Forbidden attribute call in generated pytest AST: {fn.attr}"
+    return None
+
+
 def _validate_generated_syntax(
     framework: ResolvedTestFramework,
     code: str,
+    expected_test_name: Optional[str] = None,
 ) -> Tuple[bool, List[str]]:
     warnings: List[str] = []
     if not code.strip():
         return False, ["Generated test code is empty"]
     if framework == "pytest":
         try:
-            ast.parse(code)
-            return True, warnings
+            tree = ast.parse(code)
         except SyntaxError as exc:
             warnings.append(f"Generated Python syntax check failed: {exc}")
             return False, warnings
+        if expected_test_name:
+            integrity_err = _validate_python_ast_integrity(tree, expected_test_name)
+            if integrity_err:
+                warnings.append(integrity_err)
+                return False, warnings
+        return True, warnings
     if framework in ("jest", "vitest"):
         ok = "describe(" in code and "expect(" in code and _has_balanced_delimiters(code)
         if not ok:
@@ -1181,7 +1206,7 @@ def generate_security_regression_test(
         )
 
     test_code = scrub_raw_secrets_text(raw_code, extra_raw_secrets=raw_secrets)
-    syntax_valid, warnings = _validate_generated_syntax(resolved_fw, test_code)
+    syntax_valid, warnings = _validate_generated_syntax(resolved_fw, test_code, expected_test_name=test_name)
 
     written_to_disk = False
     written_path: Optional[str] = None
