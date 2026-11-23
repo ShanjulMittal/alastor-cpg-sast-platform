@@ -918,3 +918,295 @@ class TestFastApiFleetAndFusionRoutes:
         with mock.patch("alastor_cli.alastor_sdk.ev_replay", return_value=vuln_replay):
             r_ev_fail = runner.invoke(cli, ["ev-replay", "--repo", str(repo), "--json"])
         assert r_ev_fail.exit_code == 1
+
+
+class TestTask3ReviewRegressionFixes:
+    def test_validate_external_report_rejects_in_repo_and_host_symlink_escapes(self, tmp_path: Path):
+        import alastor_sdk
+        from alastor_sdk import ScanOptions
+        from engine.hostile_repo_guard import HostileRepoError
+
+        repo = tmp_path / "repo_sym"
+        _create_clean_repo(repo)
+        outside = tmp_path / "outside_reports"
+        outside.mkdir()
+        ext_report = outside / "semgrep.json"
+        ext_report.write_text(json.dumps({"results": [], "errors": []}), encoding="utf-8")
+
+        junc_dir = repo / "link_dir"
+        if os.name == "nt":
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(junc_dir), str(outside)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        else:
+            os.symlink(str(outside), str(junc_dir), target_is_directory=True)
+
+        vault = tmp_path / "vault"
+        try:
+            # Relative path inside repo traversing symlink/junction MUST fail closed (never fallback to host read)
+            with pytest.raises(HostileRepoError):
+                alastor_sdk.scan(
+                    ScanOptions(
+                        repo=str(repo),
+                        fusion_reports=["link_dir/semgrep.json"],
+                        vault_dir=str(vault),
+                    )
+                )
+
+            # Out-of-repo host report symlink/junction leaf MUST fail closed
+            with mock.patch("alastor_sdk.is_link_or_junction", return_value=True):
+                with pytest.raises(HostileRepoError):
+                    alastor_sdk.scan(
+                        ScanOptions(
+                            repo=str(repo),
+                            fusion_reports=[str(ext_report)],
+                            vault_dir=str(vault),
+                        )
+                    )
+        finally:
+            if junc_dir.exists() or os.path.islink(junc_dir):
+                if os.name == "nt":
+                    os.rmdir(junc_dir)
+                else:
+                    os.unlink(junc_dir)
+
+    def test_remediate_fix_requires_verified_checkpoint_and_rejects_cross_repo_run_id(self, tmp_path: Path):
+        import sqlite3
+        import alastor_sdk
+        from alastor_sdk import ScanOptions
+        from database.checkpoint_store import CheckpointStore
+        from engine.hostile_repo_guard import HostileRepoError, get_repo_commit_sha
+
+        repo_a = tmp_path / "repo_a"
+        repo_b = tmp_path / "repo_b"
+        _create_vuln_repo(repo_a)
+        _create_vuln_repo(repo_b)
+        vault = tmp_path / "vault"
+
+        res_a = alastor_sdk.scan(ScanOptions(repo=str(repo_a), vault_dir=str(vault), resume=False))
+        assert res_a.total_findings >= 1
+
+        # Cross-repo run_id ownership check in both remediate() and validate()
+        with pytest.raises(HostileRepoError):
+            alastor_sdk.remediate(str(repo_b), run_id=res_a.run_id, mode="report-only", vault_dir=str(vault))
+        with pytest.raises(HostileRepoError):
+            alastor_sdk.validate(str(repo_b), run_id=res_a.run_id, vault_dir=str(vault))
+
+        # Run marked COMPLETED with valid host_fingerprint/commit_sha but NO findings checkpoint stage -> MUST fail closed
+        sha_b = get_repo_commit_sha(str(repo_b))
+        store = CheckpointStore(str(vault))
+        try:
+            empty_run = store.create_or_get_run(str(repo_b), commit_sha=sha_b)
+            store.save_stage(empty_run.run_id, "S0_CPG", "COMPLETED", {"nodes": 1})
+            store.mark_run_status(empty_run.run_id, "COMPLETED", summary={"total_findings": 0})
+        finally:
+            store.close()
+
+        orig_b = (repo_b / "app.py").read_text(encoding="utf-8")
+        with pytest.raises(HostileRepoError):
+            alastor_sdk.remediate(str(repo_b), run_id=empty_run.run_id, mode="fix", vault_dir=str(vault))
+        assert (repo_b / "app.py").read_text(encoding="utf-8") == orig_b
+
+        # Tampering S3_FUSION payload in SQLite on completed run_a MUST fail closed rather than falling back
+        with sqlite3.connect(str(vault / "checkpoints.db")) as raw_conn:
+            raw_conn.execute(
+                "UPDATE stage_checkpoints SET payload_json = ? WHERE run_id = ? AND stage_name = ?",
+                ('{"findings": []}', res_a.run_id, "S3_FUSION"),
+            )
+            raw_conn.commit()
+
+        orig_a = (repo_a / "app.py").read_text(encoding="utf-8")
+        with pytest.raises(HostileRepoError):
+            alastor_sdk.remediate(str(repo_a), run_id=res_a.run_id, mode="fix", vault_dir=str(vault))
+        assert (repo_a / "app.py").read_text(encoding="utf-8") == orig_a
+
+    def test_scan_stop_after_skips_extra_fusion_and_persists_external_fusion_checkpoints(self, tmp_path: Path):
+        import alastor_sdk
+        from alastor_sdk import ScanOptions
+        from database.checkpoint_store import CheckpointStore
+        from models import BestFixLocation, Finding
+
+        repo = tmp_path / "repo_stop"
+        _create_medium_repo(repo)
+        vault = tmp_path / "vault"
+
+        ext_report = tmp_path / "outside_semgrep.json"
+        ext_report.write_text(
+            json.dumps(
+                {
+                    "results": [
+                        {
+                            "check_id": "python.sqli.ext",
+                            "path": "helper.py",
+                            "start": {"line": 2, "col": 5},
+                            "end": {"line": 2, "col": 20},
+                            "extra": {
+                                "message": "External SQLi",
+                                "severity": "ERROR",
+                                "metadata": {"cwe": ["CWE-89"]},
+                            },
+                        }
+                    ],
+                    "errors": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        injected = Finding(
+            id="INJ-CRIT-1",
+            rule_id="EXT-CUSTOM-CMDI",
+            severity="CRITICAL",
+            title="Injected Command Injection",
+            cwe_id="CWE-78",
+            source_engine="CUSTOM",
+            best_fix_location=BestFixLocation(node_id="n1", filepath="helper.py", line=2, code_snippet="greet"),
+        )
+
+        # 1. stop_after="s1" MUST NOT fuse extra_external or evaluate PASTA -> stays PARTIAL & NO_GO_HOLD_RELEASE
+        res_s1 = alastor_sdk.scan(
+            ScanOptions(
+                repo=str(repo),
+                stop_after="s1",
+                fusion_reports=[str(ext_report)],
+                injected_findings=[injected],
+                vault_dir=str(vault),
+                resume=False,
+            )
+        )
+        assert res_s1.status == "PARTIAL"
+        assert res_s1.go_live_decision == "NO_GO_HOLD_RELEASE"
+        assert res_s1.exit_code == 1
+        assert not any(f.id == "INJ-CRIT-1" for f in res_s1.findings)
+
+        store = CheckpointStore(str(vault))
+        try:
+            run_s1_meta = store.get_run(res_s1.run_id)
+            assert run_s1_meta is not None and run_s1_meta.status == "PARTIAL"
+            assert store.get_stage(res_s1.run_id, "S3_FUSION") is None
+            assert store.get_stage(res_s1.run_id, "S6_VERIFY") is None
+        finally:
+            store.close()
+
+        # 2. Full scan persists out-of-repo fusion & S6 checkpoints and preserves them on --resume
+        res_full = alastor_sdk.scan(
+            ScanOptions(
+                repo=str(repo),
+                fusion_reports=[str(ext_report)],
+                vault_dir=str(vault),
+                resume=False,
+            )
+        )
+        assert res_full.total_findings == 1
+        store = CheckpointStore(str(vault))
+        try:
+            s3 = store.get_stage(res_full.run_id, "S3_FUSION")
+            s6 = store.get_stage(res_full.run_id, "S6_VERIFY")
+            run_meta = store.get_run(res_full.run_id)
+            assert s3 is not None and len(s3[1]["findings"]) == 1
+            assert s6 is not None and s6[1]["total_verified"] >= 1
+            assert run_meta is not None and run_meta.summary["total_findings"] == 1
+        finally:
+            store.close()
+
+        res_resumed = alastor_sdk.scan(
+            ScanOptions(
+                repo=str(repo),
+                run_id=res_full.run_id,
+                vault_dir=str(vault),
+                resume=True,
+            )
+        )
+        assert "S3_FUSION" in res_resumed.resumed_stages
+        assert res_resumed.total_findings == 1
+
+    def test_remote_server_blocks_redirects_empty_results_and_handles_run_id_and_disallowed_flags(self, tmp_path: Path):
+        from alastor_cli import cli
+
+        repo = tmp_path / "repo_remote"
+        _create_clean_repo(repo)
+        out_dir = tmp_path / "out"
+        outside_rep = tmp_path / "outside.json"
+        outside_rep.write_text(json.dumps({"results": [], "errors": []}), encoding="utf-8")
+
+        runner = CliRunner()
+
+        # 1. 3xx redirect MUST be rejected (exit 2)
+        redir_resp = mock.MagicMock()
+        redir_resp.status_code = 302
+        redir_resp.is_redirect = True
+        redir_client = mock.MagicMock()
+        redir_client.__enter__.return_value = redir_client
+        redir_client.__exit__.return_value = None
+        redir_client.get.return_value = redir_resp
+        with mock.patch("alastor_cli.httpx.Client", return_value=redir_client):
+            r_redir = runner.invoke(cli, ["doctor", "--server", "http://127.0.0.1:8000", "--json"])
+        assert r_redir.exit_code == 2
+
+        # 2. Empty repo_results from /api/fleet/run MUST exit 2 cleanly (no IndexError)
+        empty_fleet_resp = mock.MagicMock()
+        empty_fleet_resp.status_code = 200
+        empty_fleet_resp.is_redirect = False
+        empty_fleet_resp.raise_for_status.return_value = None
+        empty_fleet_resp.json.return_value = {
+            "fleet_run_id": "fleet-empty",
+            "manifest_name": "m",
+            "status": "COMPLETED",
+            "total_repos": 0,
+            "completed_repos": 0,
+            "failed_repos": 0,
+            "created_at": "2026-11-23T00:00:00+00:00",
+            "repo_results": [],
+            "app_rollups": [],
+        }
+        empty_client = mock.MagicMock()
+        empty_client.__enter__.return_value = empty_client
+        empty_client.__exit__.return_value = None
+        empty_client.post.return_value = empty_fleet_resp
+        with mock.patch("alastor_cli.httpx.Client", return_value=empty_client):
+            r_empty = runner.invoke(cli, ["scan", "--repo", str(repo), "--server", "http://127.0.0.1:8000", "--json"])
+        assert r_empty.exit_code == 2
+
+        # 3. --run-id with --server dispatches to POST /api/fleet/checkpoints/{run_id}/resume
+        resume_resp = mock.MagicMock()
+        resume_resp.status_code = 200
+        resume_resp.is_redirect = False
+        resume_resp.raise_for_status.return_value = None
+        resume_resp.json.return_value = {
+            "repo": str(repo),
+            "app_group": "default",
+            "run_id": "run-xyz123",
+            "status": "RESUMED_COMPLETED",
+            "total_findings": 0,
+            "go_live_decision": "GO_LIVE_APPROVED",
+            "resumed_stages": ["S0_CPG"],
+        }
+        resume_client = mock.MagicMock()
+        resume_client.__enter__.return_value = resume_client
+        resume_client.__exit__.return_value = None
+        resume_client.post.return_value = resume_resp
+        with mock.patch("alastor_cli.httpx.Client", return_value=resume_client):
+            r_res = runner.invoke(
+                cli,
+                ["scan", "--repo", str(repo), "--run-id", "run-xyz123", "--server", "http://127.0.0.1:8000", "--json"],
+            )
+        assert r_res.exit_code == 0, r_res.output
+        assert resume_client.post.call_args.args[0] == "/api/fleet/checkpoints/run-xyz123/resume"
+
+        # 4. --out or out-of-repo --fusion-report with --server fails fast with exit 2
+        assert (
+            runner.invoke(
+                cli,
+                ["scan", "--repo", str(repo), "--out", str(out_dir), "--server", "http://127.0.0.1:8000"],
+            ).exit_code
+            == 2
+        )
+        assert (
+            runner.invoke(
+                cli,
+                ["scan", "--repo", str(repo), "--fusion-report", str(outside_rep), "--server", "http://127.0.0.1:8000"],
+            ).exit_code
+            == 2
+        )

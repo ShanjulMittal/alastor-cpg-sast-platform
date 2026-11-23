@@ -13,7 +13,7 @@ import json
 import os
 import subprocess
 from typing import Any, Dict, List, NoReturn, Optional, Tuple
-from urllib.parse import urlsplit
+from urllib.parse import quote as url_quote, urlsplit
 
 import click
 import httpx
@@ -30,6 +30,7 @@ from models import (
     EstimateReport,
     EvReplayRequest,
     EvReplayResponse,
+    FleetRepoResult,
     FleetRepoSpec,
     FleetRunRequest,
     FleetRunResponse,
@@ -116,11 +117,42 @@ def _remote_request(
             resp = client.get(path)
         else:
             resp = client.post(path, json=json_body or {})
+        status_code = getattr(resp, "status_code", None)
+        if (isinstance(status_code, int) and 300 <= status_code < 400) or (
+            getattr(resp, "is_redirect", False) is True
+        ):
+            raise ValueError(
+                f"Refused HTTP {status_code} redirect from remote server endpoint {path}"
+            )
         resp.raise_for_status()
         data = resp.json()
         if not isinstance(data, dict):
             raise ValueError(f"Unexpected response payload from server endpoint {path}")
         return data
+
+
+def _compute_remote_repo_exit_code(
+    repo_res: FleetRepoResult,
+    norm_fail_on: Optional[str],
+) -> int:
+    if repo_res.status == "FAILED":
+        return 2
+    if repo_res.go_live_decision == "NO_GO_HOLD_RELEASE":
+        return 1
+    if norm_fail_on:
+        sev_counts = {
+            "CRITICAL": repo_res.critical_count,
+            "HIGH": repo_res.high_count,
+            "MEDIUM": repo_res.medium_count,
+            "LOW": repo_res.low_count,
+        }
+        thresh = _SEVERITY_RANK[norm_fail_on]
+        return (
+            1
+            if any(_SEVERITY_RANK[s] >= thresh and cnt > 0 for s, cnt in sev_counts.items())
+            else 0
+        )
+    return 0
 
 
 def _install_agents_md(target_dir: str, force: bool = False) -> Tuple[str, str]:
@@ -403,8 +435,16 @@ def scan_cmd(
         except (HostileRepoError, ValueError, OSError) as exc:
             _fail_exit2(str(exc), as_json=as_json)
 
+    if server_url and out_dir:
+        _fail_exit2(
+            "--out is not supported with --server; run locally or export via /api/export/sar-report.",
+            as_json=as_json,
+        )
+
     # Fleet CSV mode
     if repo_file:
+        if run_id:
+            _fail_exit2("--run-id cannot be combined with --repo-file.", as_json=as_json)
         try:
             if server_url:
                 csv_text = alastor_sdk._read_confined_host_file(repo_file, label="repo-file")
@@ -458,41 +498,62 @@ def scan_cmd(
         if server_url:
             if config_file:
                 assert_safe_config_source(config_file, repo)
-            req_obj = FleetRunRequest(
-                manifest_name=f"cli-{os.path.basename(os.path.abspath(repo))}",
-                repos=[
-                    FleetRepoSpec(
-                        repo=repo,
-                        app_group=app_group,
-                        fusion_reports=list(fusion_reports),
-                        profile=profile,
-                    )
-                ],
-                group_by_app=group_by_app,
-                resume=resume,
-                stop_after=stop_after,
-            )
-            raw = _remote_request(server_url, "POST", "/api/fleet/run", req_obj.model_dump())
-            fleet_resp = FleetRunResponse.model_validate(raw)
-            repo_res = fleet_resp.repo_results[0]
-            if repo_res.status == "FAILED":
-                exit_code = 2
-            elif repo_res.go_live_decision == "NO_GO_HOLD_RELEASE":
-                exit_code = 1
-            elif norm_fail_on:
-                sev_counts = {
-                    "CRITICAL": repo_res.critical_count,
-                    "HIGH": repo_res.high_count,
-                    "MEDIUM": repo_res.medium_count,
-                    "LOW": repo_res.low_count,
-                }
-                thresh = _SEVERITY_RANK[norm_fail_on]
-                exit_code = 1 if any(
-                    _SEVERITY_RANK[s] >= thresh and cnt > 0 for s, cnt in sev_counts.items()
-                ) else 0
+            if run_id is not None:
+                if fusion_reports:
+                    raise ValueError("--fusion-report cannot be combined with --run-id in --server mode")
+                clean_run_id = run_id.strip()
+                if (
+                    not clean_run_id
+                    or any(ch in clean_run_id for ch in ("\r", "\n", "\x00", "/", "\\"))
+                    or ".." in clean_run_id
+                ):
+                    raise ValueError("Invalid --run-id for remote checkpoint resume")
+                raw = _remote_request(
+                    server_url,
+                    "POST",
+                    f"/api/fleet/checkpoints/{url_quote(clean_run_id, safe='')}/resume",
+                    {"stop_after": stop_after},
+                )
+                repo_res = FleetRepoResult.model_validate(raw)
             else:
-                exit_code = 0
+                real_repo = os.path.realpath(repo)
+                for rp in fusion_reports:
+                    cleaned_rp = alastor_sdk._validate_clean_path_arg(rp, "fusion_report")
+                    if alastor_sdk._has_traversal_segment(cleaned_rp):
+                        raise ValueError(f"Path traversal '..' rejected in --fusion-report: {rp}")
+                    if os.path.isdir(real_repo):
+                        in_repo_cand = alastor_sdk._validate_repo_relative_no_links(cleaned_rp, real_repo)
+                        if in_repo_cand is None:
+                            raise ValueError(
+                                f"Out-of-repo --fusion-report '{rp}' is not supported with --server; "
+                                "pass a repo-relative path or call /api/fusion/import."
+                            )
+                    elif os.path.isabs(cleaned_rp):
+                        raise ValueError(
+                            f"Absolute --fusion-report '{rp}' is not supported with --server when repo is remote; "
+                            "pass a repo-relative path or call /api/fusion/import."
+                        )
+                req_obj = FleetRunRequest(
+                    manifest_name=f"cli-{os.path.basename(os.path.abspath(repo))}",
+                    repos=[
+                        FleetRepoSpec(
+                            repo=repo,
+                            app_group=app_group,
+                            fusion_reports=list(fusion_reports),
+                            profile=profile,
+                        )
+                    ],
+                    group_by_app=group_by_app,
+                    resume=resume,
+                    stop_after=stop_after,
+                )
+                raw = _remote_request(server_url, "POST", "/api/fleet/run", req_obj.model_dump())
+                fleet_resp = FleetRunResponse.model_validate(raw)
+                if not fleet_resp.repo_results:
+                    _fail_exit2("Remote server returned no repository results.", as_json=as_json)
+                repo_res = fleet_resp.repo_results[0]
 
+            exit_code = _compute_remote_repo_exit_code(repo_res, norm_fail_on)
             if as_json:
                 _emit_json(repo_res)
             else:

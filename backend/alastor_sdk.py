@@ -9,6 +9,7 @@ or config inside scanned target repositories.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import platform
@@ -32,10 +33,12 @@ from engine.exploit_chain_engine import synthesize_exploit_chains
 from engine.exploit_verification_engine import ExploitVerificationEngine
 from engine.fleet_runner import (
     FleetRunner,
+    _apply_s6_verdicts_to_findings,
     _build_cpg_for_repo,
     _map_pasta_verdict_to_fleet,
     _normalize_stop_after,
 )
+from engine.adversarial_verifier import verify_findings_adversarially
 from engine.frontier_ai_engine import FrontierAiEngine, scrub_raw_secrets_text
 from engine.hostile_repo_guard import (
     HostileRepoError,
@@ -196,48 +199,82 @@ def _load_safe_external_config(config_file: str, repo_path: str) -> Dict[str, An
     return {}
 
 
-def _is_strictly_inside_without_links(candidate_path: str, real_repo: str) -> bool:
-    abs_cand = os.path.abspath(candidate_path)
+def _validate_repo_relative_no_links(raw_path: str, real_repo: str) -> Optional[str]:
+    """
+    If `raw_path` targets or traverses inside `real_repo`, rejects any symlink/NTFS junction
+    at intermediate or leaf components (failing closed with `HostileRepoError`).
+    Returns the canonical path inside `real_repo` if lexically inside `real_repo`, else None.
+    """
+    abs_cand = os.path.abspath(
+        raw_path if os.path.isabs(raw_path) else os.path.join(real_repo, raw_path)
+    )
     try:
-        if os.path.commonpath([real_repo, abs_cand]) != real_repo:
-            return False
+        in_repo_lex = os.path.commonpath([real_repo, abs_cand]) == real_repo
     except ValueError:
-        return False
+        in_repo_lex = False
+
+    if not in_repo_lex:
+        return None
+
     rel = os.path.relpath(abs_cand, real_repo)
     if rel in (".", "") or rel.startswith(".."):
-        return False
+        raise HostileRepoError(f"Fusion report must target a file inside repository: {raw_path}")
+
     cursor = real_repo
     for part in rel.split(os.sep):
         if not part or part == ".":
             continue
         cursor = os.path.join(cursor, part)
         if os.path.lexists(cursor) and is_link_or_junction(cursor):
-            return False
+            raise HostileRepoError(
+                f"Refused symlink/junction path component inside repository: {raw_path}"
+            )
+
     real_cand = os.path.realpath(abs_cand)
     try:
-        return os.path.commonpath([real_repo, real_cand]) == real_repo and real_cand != real_repo
-    except ValueError:
-        return False
+        if os.path.commonpath([real_repo, real_cand]) != real_repo or real_cand == real_repo:
+            raise HostileRepoError(f"Fusion report escapes repository root: {raw_path}")
+    except ValueError as exc:
+        raise HostileRepoError(f"Fusion report escapes repository root: {raw_path}") from exc
+
+    return real_cand
 
 
 def _validate_external_report_file(raw_report: str, real_repo: str) -> Tuple[str, bool]:
     cleaned = _validate_clean_path_arg(raw_report, "fusion_report")
     if _has_traversal_segment(cleaned):
         raise ValueError(f"Path traversal '..' rejected in fusion report path: {raw_report}")
-    cand = cleaned if os.path.isabs(cleaned) else os.path.join(real_repo, cleaned)
-    if not os.path.exists(cand) and not os.path.isabs(cleaned):
-        cand_cwd = os.path.abspath(cleaned)
-        if os.path.exists(cand_cwd):
-            cand = cand_cwd
-    real_cand = os.path.realpath(cand)
-    if _is_dotenv_filename(real_cand):
+
+    # Fail closed immediately if a relative or absolute path touches any symlink/junction inside real_repo
+    in_repo_real = _validate_repo_relative_no_links(cleaned, real_repo)
+    if in_repo_real is not None and os.path.lexists(
+        cleaned if os.path.isabs(cleaned) else os.path.join(real_repo, cleaned)
+    ):
+        cand_real = in_repo_real
+        inside_repo = True
+    else:
+        if os.path.isabs(cleaned):
+            cand_abs = os.path.abspath(cleaned)
+        else:
+            cand_abs = os.path.abspath(cleaned)
+        if os.path.lexists(cand_abs) and is_link_or_junction(cand_abs):
+            raise HostileRepoError(f"Refused symlink/junction fusion report path: {raw_report}")
+        parent_real = os.path.realpath(os.path.dirname(cand_abs))
+        cand_real = os.path.realpath(cand_abs)
+        try:
+            if os.path.commonpath([parent_real, cand_real]) != parent_real:
+                raise HostileRepoError(f"Refused symlink escape in fusion report path: {raw_report}")
+        except ValueError as exc:
+            raise HostileRepoError(f"Refused escaping fusion report path: {raw_report}") from exc
+        inside_repo = False
+
+    if _is_dotenv_filename(cand_real):
         raise ValueError(f"Refused reading restricted .env file as fusion report: {raw_report}")
-    if not os.path.isfile(real_cand):
+    if not os.path.isfile(cand_real):
         raise ValueError(f"Fusion report file not found: {raw_report}")
-    if os.path.getsize(real_cand) > _MAX_REPORT_BYTES:
+    if os.path.getsize(cand_real) > _MAX_REPORT_BYTES:
         raise ValueError(f"Fusion report exceeds 50MB limit: {raw_report}")
-    inside_repo = _is_strictly_inside_without_links(cand, real_repo)
-    return real_cand, inside_repo
+    return cand_real, inside_repo
 
 
 def _build_sarif_2_1_dict(findings: List[Finding]) -> Dict[str, Any]:
@@ -449,14 +486,43 @@ def _load_findings_for_repo_or_run(
     store: CheckpointStore,
     real_repo: str,
     run_id: Optional[str] = None,
+    require_checkpoint: bool = False,
 ) -> Tuple[Optional[str], List[Finding]]:
-    resolved_run_id = run_id
-    if resolved_run_id is None:
+    resolved_run_id: Optional[str] = None
+    if run_id is not None:
+        resolved_run_id = run_id.strip()
+        if not resolved_run_id:
+            raise HostileRepoError("run_id cannot be empty or whitespace")
+        run_summary = store.get_run(resolved_run_id)
+        if run_summary is None:
+            raise HostileRepoError(
+                f"Checkpoint run '{resolved_run_id}' not found in local host checkpoint store"
+            )
+        if os.path.normcase(os.path.realpath(run_summary.repo_path)) != os.path.normcase(real_repo):
+            raise HostileRepoError(
+                f"Checkpoint run '{resolved_run_id}' belongs to '{run_summary.repo_path}', not '{real_repo}'"
+            )
+    else:
         runs = store.list_runs(repo_path=real_repo, limit=1)
         if runs:
             resolved_run_id = runs[0].run_id
+            run_summary = runs[0]
+        else:
+            run_summary = None
 
     if resolved_run_id:
+        valid_stage_names = {s.stage_name for s in (run_summary.stages if run_summary else [])}
+        # If a full pipeline completed S9_REPORTS or S6_VERIFY, require S3_FUSION integrity too
+        if (
+            run_summary is not None
+            and run_summary.status == "COMPLETED"
+            and ("S9_REPORTS" in valid_stage_names or "S6_VERIFY" in valid_stage_names)
+            and store.get_stage(resolved_run_id, "S3_FUSION") is None
+        ):
+            raise HostileRepoError(
+                f"Checkpoint stage 'S3_FUSION' for run '{resolved_run_id}' is missing or failed integrity verification"
+            )
+
         for stage_name in ("S3_FUSION", "S2_SECRETS_SCA", "S1_RULES"):
             ckpt = store.get_stage(resolved_run_id, stage_name)
             if ckpt is None or ckpt[0].status != "COMPLETED":
@@ -464,9 +530,27 @@ def _load_findings_for_repo_or_run(
             payload = ckpt[1]
             raw_list = payload.get("findings") if isinstance(payload, dict) else payload
             if isinstance(raw_list, list):
-                return resolved_run_id, [Finding.model_validate(item) for item in raw_list]
+                loaded_findings = [Finding.model_validate(item) for item in raw_list]
+                s6_ckpt = store.get_stage(resolved_run_id, "S6_VERIFY")
+                if s6_ckpt is not None and s6_ckpt[0].status == "COMPLETED" and isinstance(s6_ckpt[1], dict):
+                    loaded_findings = _apply_s6_verdicts_to_findings(loaded_findings, s6_ckpt[1])
+                elif (
+                    require_checkpoint
+                    and run_summary is not None
+                    and "S9_REPORTS" in valid_stage_names
+                    and s6_ckpt is None
+                ):
+                    raise HostileRepoError(
+                        f"Checkpoint stage 'S6_VERIFY' for run '{resolved_run_id}' is missing or failed integrity verification"
+                    )
+                return resolved_run_id, loaded_findings
 
-    # Deterministic in-memory fallback scan (zero writes to checkpoints or target repo)
+    if require_checkpoint:
+        raise HostileRepoError(
+            f"No verified findings checkpoint stage (S3_FUSION/S2_SECRETS_SCA/S1_RULES) found for run '{resolved_run_id or 'none'}'"
+        )
+
+    # Deterministic in-memory fallback scan (read-only modes only; zero writes to checkpoints or target repo)
     with tempfile.TemporaryDirectory() as tmp_dir:
         gstore = EmbeddedGraphStore(os.path.join(tmp_dir, "cpg.db"))
         try:
@@ -649,18 +733,34 @@ def scan(options: ScanOptions) -> ScanResult:
     real_repo = _resolve_existing_repo_dir(options.repo)
     vdir = _resolve_vault_dir(options.vault_dir)
     commit_sha = get_repo_commit_sha(real_repo)
+    target_stop_stage = _normalize_stop_after(options.stop_after)
 
     in_repo_reports: List[str] = []
     out_repo_imported: List[Finding] = []
+    out_repo_hashes: List[str] = []
     for rp in options.fusion_reports:
         resolved_rp, inside_repo = _validate_external_report_file(rp, real_repo)
         if inside_repo:
             in_repo_reports.append(os.path.relpath(resolved_rp, real_repo).replace("\\", "/"))
         else:
-            with open(resolved_rp, "r", encoding="utf-8", errors="replace") as fh:
-                report_text = fh.read()
+            report_text = _read_confined_host_file(resolved_rp, label="fusion_report")
+            out_repo_hashes.append(hashlib.sha256(report_text.encode("utf-8", errors="replace")).hexdigest())
             _, parsed = parse_external_scanner_report(report_text, repo_root=real_repo)
             out_repo_imported.extend(parsed)
+
+    extra_external = list(out_repo_imported) + list(options.injected_findings)
+    external_fp = ""
+    if extra_external:
+        ext_mat = "|".join(out_repo_hashes) + "||" + "|".join(
+            f"{f.id}:{f.rule_id}:{f.severity}:{f.cwe_id or ''}" for f in options.injected_findings
+        )
+        external_fp = hashlib.sha256(ext_mat.encode("utf-8")).hexdigest()
+
+    stages_before_fusion = {"S0_CPG", "S1_RULES", "S2_SECRETS_SCA"}
+    stages_before_s6 = stages_before_fusion | {"S3_FUSION"}
+    reached_s3 = target_stop_stage not in stages_before_fusion
+    reached_s6 = target_stop_stage not in stages_before_s6
+    reached_s9 = target_stop_stage is None or target_stop_stage == "S9_REPORTS"
 
     store = CheckpointStore(vdir)
     try:
@@ -677,48 +777,168 @@ def scan(options: ScanOptions) -> ScanResult:
             stop_after=options.stop_after,
             run_id=options.run_id,
         )
+
+        if repo_res.status == "FAILED":
+            return ScanResult(
+                exit_code=2,
+                run_id=repo_res.run_id,
+                repo_path=real_repo,
+                commit_sha=commit_sha,
+                status=repo_res.status,
+                go_live_decision="NO_GO_HOLD_RELEASE",
+                total_findings=0,
+                corroborated_count=0,
+                resumed_stages=list(repo_res.resumed_stages),
+                findings=[],
+                output_files=[],
+                error=repo_res.error or "Scan failed",
+            )
+
+        corroborated_count = repo_res.corroborated_count
+        go_live_decision = repo_res.go_live_decision
+
+        if reached_s3 and extra_external:
+            s3_existing = store.get_stage(repo_res.run_id, "S3_FUSION")
+            s3_meta = dict(s3_existing[0].metadata) if s3_existing is not None else {}
+            prev_ext_fp = s3_meta.get("external_fp")
+            already_fused_same_ext = (
+                "S3_FUSION" in repo_res.resumed_stages and prev_ext_fp == external_fp
+            )
+
+            if not already_fused_same_ext:
+                base_findings = findings
+                reloaded_from_s2 = False
+                if prev_ext_fp and prev_ext_fp != external_fp:
+                    s2_ckpt = store.get_stage(repo_res.run_id, "S2_SECRETS_SCA")
+                    if s2_ckpt is not None and isinstance(s2_ckpt[1], list):
+                        base_findings = [Finding.model_validate(item) for item in s2_ckpt[1]]
+                        reloaded_from_s2 = True
+                        corroborated_count = 0
+                        for in_rel in in_repo_reports:
+                            in_abs = os.path.join(real_repo, in_rel)
+                            in_text = _read_confined_host_file(in_abs, label="fusion_report")
+                            det_fmt, in_parsed = parse_external_scanner_report(in_text, repo_root=real_repo)
+                            in_resp = fuse_findings_with_cpg(
+                                imported=in_parsed,
+                                native_findings=base_findings,
+                                graph_store=None,
+                                project_path=real_repo,
+                                run_s6_verify=False,
+                                detected_format=det_fmt,
+                                correlate_cpg=True,
+                            )
+                            base_findings = in_resp.findings
+                            corroborated_count += in_resp.corroborated_count
+
+                fusion_resp = fuse_findings_with_cpg(
+                    imported=extra_external,
+                    native_findings=base_findings,
+                    graph_store=None,
+                    project_path=real_repo,
+                    run_s6_verify=False,
+                    correlate_cpg=True,
+                )
+                findings = [scrub_finding_secrets(f, clear_raw_secret=True) for f in fusion_resp.findings]
+                corroborated_count += fusion_resp.corroborated_count
+                s3_meta["fusion_reports_count"] = len(options.fusion_reports)
+                s3_meta["corroborated_count"] = corroborated_count
+                s3_meta["external_fp"] = external_fp
+                store.save_stage(
+                    repo_res.run_id,
+                    "S3_FUSION",
+                    "COMPLETED",
+                    payload={
+                        "findings": [f.model_dump() for f in findings],
+                        "corroborated_count": corroborated_count,
+                        "warnings": list(fusion_resp.warnings),
+                    },
+                    metadata=s3_meta,
+                )
+
+                if reached_s6:
+                    s6_existing = store.get_stage(repo_res.run_id, "S6_VERIFY")
+                    s6_meta = dict(s6_existing[0].metadata) if s6_existing is not None else {}
+                    s6_ids = [f.id for f in findings] if len(findings) > 50 else None
+                    s6_resp = verify_findings_adversarially(
+                        target_dir=real_repo,
+                        findings=findings,
+                        ai_engine=None,
+                        finding_ids=s6_ids,
+                        use_ai=False,
+                        max_batch=max(1, min(50, len(findings) or 1)),
+                    )
+                    s6_payload = s6_resp.model_dump()
+                    findings = _apply_s6_verdicts_to_findings(findings, s6_payload)
+                    s6_meta["total_verified"] = s6_resp.total_verified
+                    s6_meta["external_fp"] = external_fp
+                    store.save_stage(
+                        repo_res.run_id,
+                        "S6_VERIFY",
+                        "COMPLETED",
+                        payload=s6_payload,
+                        metadata=s6_meta,
+                    )
+
+                active_now = [f for f in findings if f.triage_status not in ("NOT_EXPLOITABLE", "RESOLVED")]
+                crit_cnt = sum(1 for f in active_now if f.severity == "CRITICAL")
+                high_cnt = sum(1 for f in active_now if f.severity == "HIGH")
+                med_cnt = sum(1 for f in active_now if f.severity == "MEDIUM")
+                low_cnt = sum(1 for f in active_now if f.severity in ("LOW", "INFO"))
+                ev_cnt = sum(1 for f in active_now if f.ev_status == "RUNTIME_EXPLOIT_CONFIRMED")
+
+                if reached_s9:
+                    pasta_resp = PastaThreatEngine(vault_dir=vdir).evaluate_pasta(
+                        target_dir=real_repo,
+                        findings=findings,
+                    )
+                    go_live_decision = _map_pasta_verdict_to_fleet(pasta_resp.golive_verdict)
+                    if ev_cnt > 0 or crit_cnt > 0:
+                        go_live_decision = "NO_GO_HOLD_RELEASE"
+                    s9_existing = store.get_stage(repo_res.run_id, "S9_REPORTS")
+                    s9_meta = dict(s9_existing[0].metadata) if s9_existing is not None else {}
+                    s9_meta["go_live_decision"] = go_live_decision
+                    s9_meta["external_fp"] = external_fp
+                    store.save_stage(
+                        repo_res.run_id,
+                        "S9_REPORTS",
+                        "COMPLETED",
+                        payload={
+                            "go_live_decision": go_live_decision,
+                            "golive_verdict": pasta_resp.golive_verdict,
+                            "residual_risk_score": pasta_resp.residual_risk_score,
+                            "mandatory_pre_golive_count": pasta_resp.mandatory_pre_golive_count,
+                        },
+                        metadata=s9_meta,
+                    )
+                else:
+                    go_live_decision = "NO_GO_HOLD_RELEASE"
+
+                store.mark_run_status(
+                    repo_res.run_id,
+                    "PARTIAL"
+                    if (target_stop_stage is not None and target_stop_stage != "S9_REPORTS")
+                    else "COMPLETED",
+                    summary={
+                        "total_findings": len(active_now),
+                        "critical_count": crit_cnt,
+                        "high_count": high_cnt,
+                        "medium_count": med_cnt,
+                        "low_count": low_cnt,
+                        "corroborated_count": corroborated_count,
+                        "ev_confirmed_count": ev_cnt,
+                        "go_live_decision": go_live_decision,
+                        "resumed_stages": list(repo_res.resumed_stages),
+                        "reloaded_from_s2": reloaded_from_s2,
+                    },
+                )
     finally:
         store.close()
 
-    if repo_res.status == "FAILED":
-        return ScanResult(
-            exit_code=2,
-            run_id=repo_res.run_id,
-            repo_path=real_repo,
-            commit_sha=commit_sha,
-            status=repo_res.status,
-            go_live_decision="NO_GO_HOLD_RELEASE",
-            total_findings=0,
-            corroborated_count=0,
-            resumed_stages=list(repo_res.resumed_stages),
-            findings=[],
-            output_files=[],
-            error=repo_res.error or "Scan failed",
-        )
-
-    corroborated_count = repo_res.corroborated_count
-    go_live_decision = repo_res.go_live_decision
-    extra_external = list(out_repo_imported) + list(options.injected_findings)
-    if extra_external:
-        fusion_resp = fuse_findings_with_cpg(
-            imported=extra_external,
-            native_findings=findings,
-            graph_store=None,
-            project_path=real_repo,
-            run_s6_verify=True,
-            correlate_cpg=True,
-        )
-        findings = [scrub_finding_secrets(f, clear_raw_secret=True) for f in fusion_resp.findings]
-        corroborated_count += fusion_resp.corroborated_count
-        if go_live_decision != "NO_GO_HOLD_RELEASE" and _normalize_stop_after(options.stop_after) is None:
-            pasta_resp = PastaThreatEngine(vault_dir=vdir).evaluate_pasta(
-                target_dir=real_repo,
-                findings=findings,
-            )
-            go_live_decision = _map_pasta_verdict_to_fleet(pasta_resp.golive_verdict)
-            active = [f for f in findings if f.triage_status not in ("NOT_EXPLOITABLE", "RESOLVED")]
-            if any(f.ev_status == "RUNTIME_EXPLOIT_CONFIRMED" or f.severity == "CRITICAL" for f in active):
-                go_live_decision = "NO_GO_HOLD_RELEASE"
+    effective_status = (
+        "PARTIAL"
+        if (target_stop_stage is not None and target_stop_stage != "S9_REPORTS")
+        else repo_res.status
+    )
 
     safe_findings = [scrub_finding_secrets(f, clear_raw_secret=True) for f in findings]
     active_findings = [f for f in safe_findings if f.triage_status not in ("NOT_EXPLOITABLE", "RESOLVED")]
@@ -731,7 +951,7 @@ def scan(options: ScanOptions) -> ScanResult:
             repo_path=real_repo,
             run_id=repo_res.run_id,
             commit_sha=commit_sha,
-            status=repo_res.status,
+            status=effective_status,
             go_live_decision=go_live_decision,
             corroborated_count=corroborated_count,
             findings=safe_findings,
@@ -752,7 +972,7 @@ def scan(options: ScanOptions) -> ScanResult:
         run_id=repo_res.run_id,
         repo_path=real_repo,
         commit_sha=commit_sha,
-        status=repo_res.status,
+        status=effective_status,
         go_live_decision=go_live_decision,
         total_findings=len(active_findings),
         corroborated_count=corroborated_count,
@@ -894,7 +1114,12 @@ def remediate(
             ok, _ = store.verify_host_provenance(run_id.strip(), real_repo, current_sha)
             provenance_verified = ok
 
-        resolved_run_id, findings = _load_findings_for_repo_or_run(store, real_repo, run_id=run_id)
+        resolved_run_id, findings = _load_findings_for_repo_or_run(
+            store,
+            real_repo,
+            run_id=run_id,
+            require_checkpoint=(mode == "fix"),
+        )
     finally:
         store.close()
 
@@ -971,7 +1196,12 @@ def validate(
 
     store = CheckpointStore(vdir)
     try:
-        resolved_run_id, findings = _load_findings_for_repo_or_run(store, real_repo, run_id=run_id)
+        resolved_run_id, findings = _load_findings_for_repo_or_run(
+            store,
+            real_repo,
+            run_id=run_id,
+            require_checkpoint=False,
+        )
     finally:
         store.close()
 
