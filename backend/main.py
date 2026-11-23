@@ -18,9 +18,10 @@ from pathlib import Path
 from urllib.parse import urlparse, quote as url_quote
 from typing import List, Optional, Dict, Any, Tuple
 import requests as http_requests
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse, Response
+from pydantic import BaseModel
 import html as html_lib
 
 from models import (
@@ -77,10 +78,26 @@ from models import (
     EvReplayRequest,
     EvReplayResponse,
     EvReplayListResponse,
+    DoctorReport,
+    EstimateReport,
+    ScanRunCheckpointSummary,
+    ScannerFusionRequest,
+    ScannerFusionResponse,
+    FleetRepoSpec,
+    FleetRepoResult,
+    FleetRunRequest,
+    FleetRunResponse,
+    FleetRunListResponse,
+    GcRequest,
+    GcReport,
 )
+import alastor_sdk
 from database.neo4j_client import Neo4jClient
 from database.batch_ingestor import BatchIngestor
+from database.checkpoint_store import CheckpointStore
 from database.graph_store import GraphStoreManager
+from engine.fleet_runner import FleetRunner, _is_remote_repo_syntax, parse_fleet_csv
+from engine.hostile_repo_guard import HostileRepoError, validate_clone_url
 from engine.rule_executor import RuleExecutor
 from engine.community_detector import detect_code_communities, build_community_graph_view
 from engine.vuln_extractor import VulnExtractorEngine
@@ -189,6 +206,9 @@ frontier_ai_engine = FrontierAiEngine(
 secret_validator_engine = get_secret_validator_engine(enterprise_mgr.platform_root)
 api_operations_engine = get_api_operations_engine()
 ev_engine = ExploitVerificationEngine(
+    vault_dir=os.path.join(enterprise_mgr.platform_root, ".alastor_vault")
+)
+checkpoint_store = CheckpointStore(
     vault_dir=os.path.join(enterprise_mgr.platform_root, ".alastor_vault")
 )
 current_scan_dir: str = enterprise_mgr.platform_root
@@ -5562,6 +5582,167 @@ def delete_exploit_verification_replay(
         )
     _sync_cached_findings_ev_status(target_dir, clear_stale=True)
     return {"deleted": True, "replay_id": replay_id}
+
+
+# ---------------------------------------------------------------------------
+# 17. ALASTOR v5.0 Pillar 4 — Fleet Batch Runner, Checkpoints, GC & Scanner Fusion
+# ---------------------------------------------------------------------------
+class FleetEstimateRequest(BaseModel):
+    project_path: Optional[str] = None
+
+
+class FleetCheckpointResumeRequest(BaseModel):
+    stop_after: Optional[str] = None
+
+
+@app.get("/api/fleet/doctor", response_model=DoctorReport)
+def get_fleet_doctor(check_neo4j: bool = Query(False)):
+    """Returns runtime readiness across Python, 18 parsers, GraphStore backend, tools, vault, and BYOK presence."""
+    doc = alastor_sdk.doctor(vault_dir=checkpoint_store.vault_dir, check_neo4j=check_neo4j)
+    active_backend = "NEO4J" if graph_store_mgr.mode == "NEO4J_APOC" else "EMBEDDED_SQLITE_WAL"
+    if doc.graph_backend != active_backend:
+        doc = doc.model_copy(update={"graph_backend": active_backend})
+    return doc
+
+
+@app.post("/api/fleet/estimate", response_model=EstimateReport)
+def estimate_fleet_workspace(req: FleetEstimateRequest = Body(default_factory=FleetEstimateRequest)):
+    """Estimates scannable files, LOC, languages, repo kinds, and runtime/AI cost ($0 spend) for a confined workspace."""
+    target_dir = _resolve_confined_ev_project_path(req.project_path)
+    try:
+        return alastor_sdk.estimate(target_dir, vault_dir=checkpoint_store.vault_dir)
+    except (HostileRepoError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=_sanitize_log(exc)) from exc
+
+
+@app.post("/api/fusion/import", response_model=ScannerFusionResponse)
+def import_external_scanner_report(req: ScannerFusionRequest):
+    """Parses, scrubs, CPG-correlates, and merges an external scanner report into the confined workspace."""
+    global _cached_findings, _cached_findings_time
+    target_dir = _resolve_confined_ev_project_path(req.project_path)
+    norm_req = os.path.normcase(os.path.realpath(target_dir))
+    norm_cur = os.path.normcase(os.path.realpath(current_scan_dir or enterprise_mgr.platform_root))
+    is_active_ws = norm_req == norm_cur
+
+    native_findings = _resolve_findings_for_project_target(target_dir)
+    try:
+        fusion_resp = alastor_sdk.fuse_scanner_report(
+            repo_path=target_dir,
+            report_json=req.report_json,
+            source_format=req.source_format,
+            native_findings=native_findings,
+            graph_store=graph_store_mgr if is_active_ws else None,
+            run_s6_verify=req.run_s6_verify,
+            correlate_cpg=req.correlate_cpg,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=_sanitize_log(exc)) from exc
+
+    if is_active_ws:
+        with _findings_lock:
+            norm_cur_now = os.path.normcase(
+                os.path.realpath(current_scan_dir or enterprise_mgr.platform_root)
+            )
+            if norm_req == norm_cur_now:
+                _cached_findings = [f.model_copy(deep=True) for f in fusion_resp.findings]
+                _cached_findings_time = time.time()
+
+    fusion_resp.findings = _redact_findings_for_active_rbac(fusion_resp.findings)
+    return fusion_resp
+
+
+@app.post("/api/fleet/run", response_model=FleetRunResponse)
+def run_fleet_batch(req: FleetRunRequest):
+    """Executes a confined multi-repository batch fleet scan with SQLite checkpoints and App-Group Go-Live rollups."""
+    try:
+        for spec in req.repos or []:
+            raw_r = str(spec.repo or "").strip()
+            if not raw_r:
+                raise HTTPException(status_code=400, detail="Repository path cannot be empty.")
+            if _is_remote_repo_syntax(raw_r):
+                validate_clone_url(raw_r)
+            else:
+                _resolve_confined_ev_project_path(raw_r)
+
+        if req.csv_content and req.csv_content.strip():
+            csv_specs = parse_fleet_csv(req.csv_content)
+            for spec in csv_specs:
+                if not _is_remote_repo_syntax(spec.repo):
+                    _resolve_confined_ev_project_path(spec.repo)
+
+        runner = FleetRunner(
+            vault_dir=checkpoint_store.vault_dir,
+            checkpoint_store=checkpoint_store,
+            workspace_confinement_fn=_resolve_confined_ev_project_path,
+        )
+        return runner.run_fleet(req)
+    except HTTPException:
+        raise
+    except (HostileRepoError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=_sanitize_log(exc)) from exc
+
+
+@app.get("/api/fleet/runs", response_model=FleetRunListResponse)
+def list_fleet_batch_runs(limit: int = Query(30, ge=1, le=500)):
+    """Lists persisted fleet batch scan summaries from the host SQLite checkpoint store."""
+    return checkpoint_store.list_fleet_runs(limit=limit)
+
+
+@app.get("/api/fleet/checkpoints", response_model=List[ScanRunCheckpointSummary])
+def list_fleet_checkpoints(
+    project_path: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+):
+    """Lists host SQLite scan run checkpoints, optionally filtered by a confined workspace path."""
+    confined_repo: Optional[str] = None
+    if project_path is not None and project_path.strip():
+        confined_repo = _resolve_confined_ev_project_path(project_path)
+    return checkpoint_store.list_runs(repo_path=confined_repo, limit=limit)
+
+
+@app.post("/api/fleet/checkpoints/{run_id}/resume", response_model=FleetRepoResult)
+def resume_fleet_checkpoint(
+    run_id: str,
+    req: Optional[FleetCheckpointResumeRequest] = Body(default=None),
+):
+    """Resumes an existing confined checkpointed scan run from its last verified SQLite stage."""
+    clean_run_id = (run_id or "").strip()
+    if not clean_run_id or any(ch in clean_run_id for ch in ("\r", "\n", "\x00")):
+        raise HTTPException(status_code=400, detail="Invalid checkpoint run_id.")
+
+    run_summary = checkpoint_store.get_run(clean_run_id)
+    if run_summary is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Checkpoint run '{_sanitize_log(clean_run_id)}' not found.",
+        )
+
+    confined_repo = _resolve_confined_ev_project_path(run_summary.repo_path)
+    runner = FleetRunner(
+        vault_dir=checkpoint_store.vault_dir,
+        checkpoint_store=checkpoint_store,
+        workspace_confinement_fn=_resolve_confined_ev_project_path,
+    )
+    repo_res, _ = runner.run_single_repo(
+        spec=FleetRepoSpec(repo=confined_repo, app_group=run_summary.app_group),
+        resume=True,
+        stop_after=req.stop_after if req else None,
+        run_id=clean_run_id,
+    )
+    if repo_res.status == "FAILED" and repo_res.error and "Unknown stop_after" in repo_res.error:
+        raise HTTPException(status_code=400, detail=_sanitize_log(repo_res.error))
+    return repo_res
+
+
+@app.post("/api/fleet/gc", response_model=GcReport)
+def run_fleet_checkpoint_gc(req: GcRequest):
+    """Runs retention garbage collection over SQLite scan checkpoints and orphaned temp CPG workspaces."""
+    return checkpoint_store.gc(
+        older_than_days=req.older_than_days,
+        keep_last=req.keep_last,
+        dry_run=req.dry_run,
+        temp_workspaces_parent=os.path.join(checkpoint_store.vault_dir, "_fleet_cpg_tmp"),
+    )
 
 
 

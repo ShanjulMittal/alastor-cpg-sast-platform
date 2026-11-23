@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alastor-sast"
+version = "5.0.0"
+description = "ALASTOR Enterprise Deterministic CPG, Cognitive Security, Live Exploit Verification & Batch Fleet SAST Platform"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.6",
+    "pydantic>=2.9.2",
+    "httpx>=0.27.2",
+    "requests>=2.32.0",
+    "python-docx>=1.1.2",
+    "reportlab>=4.2.5",
+    "tree-sitter>=0.26.1",
+    "tree-sitter-language-pack>=0.13.0",
+]
+
+[project.scripts]
+alastor = "alastor_cli:main"
+
+[tool.setuptools]
+py-modules = ["alastor_cli", "alastor_sdk", "models", "main"]
+packages = ["compiler", "database", "engine"]
