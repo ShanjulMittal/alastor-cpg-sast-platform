@@ -451,7 +451,8 @@ export type AspmSubSection =
   | "SAST_PLUS"
   | "RULES_ENGINE"
   | "GOVERNANCE"
-  | "EXPORTS";
+  | "EXPORTS"
+  | "NEXTGEN_V5";
 
 export type AiDrawerTab =
   | "VALIDATE"

@@ -1179,6 +1179,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     const mappedExecTab: ExecutiveAspmTab =
       sec === "GOVERNANCE"
         ? "RACI"
+        : sec === "NEXTGEN_V5"
+        ? "NEXTGEN_V5"
         : sec === "SAST_PLUS"
         ? sastPlusCompatibleTabs.includes(curExecTab)
           ? curExecTab
@@ -1274,6 +1276,17 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       });
       persistUiPrefs(get);
       get().fetchSastPlusSuite();
+      return;
+    }
+    if (section === "NEXTGEN_V5") {
+      set({
+        aspmSubSection: section,
+        primaryStage: "ASPM_GOVERNANCE",
+        workspaceViewMode: "EXECUTIVE_ASPM",
+        executiveAspmTab: "NEXTGEN_V5",
+      });
+      persistUiPrefs(get);
+      void get().loadCustomRulesAction();
       return;
     }
     set({
@@ -1587,6 +1600,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         ? "POSTURE"
         : tab === "RACI"
         ? "GOVERNANCE"
+        : tab === "NEXTGEN_V5"
+        ? "NEXTGEN_V5"
         : "SAST_PLUS";
     set((state) => ({
       executiveAspmTab: tab,
@@ -2078,9 +2093,14 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
         if (
           parsed.aspmSubSection &&
-          ["POSTURE", "SAST_PLUS", "RULES_ENGINE", "GOVERNANCE", "EXPORTS"].includes(
-            parsed.aspmSubSection
-          )
+          [
+            "POSTURE",
+            "SAST_PLUS",
+            "RULES_ENGINE",
+            "GOVERNANCE",
+            "EXPORTS",
+            "NEXTGEN_V5",
+          ].includes(parsed.aspmSubSection)
         ) {
           updates.aspmSubSection = parsed.aspmSubSection;
         }

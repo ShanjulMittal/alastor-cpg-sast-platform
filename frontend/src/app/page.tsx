@@ -103,6 +103,22 @@ const ApiOperationsExplorerView = dynamic(
   }
 );
 
+const NextGenAppSecStudio = dynamic(
+  () =>
+    import("@/components/NextGenAppSecStudio").then(
+      (mod) => mod.NextGenAppSecStudio
+    ),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex flex-col items-center justify-center h-full bg-[#f8fafc] text-slate-700 font-mono text-xs gap-2">
+        <Loader2 className="w-5 h-5 animate-spin text-indigo-700" />
+        <span>Loading ALASTOR v5.0 Next-Gen AppSec Studio...</span>
+      </div>
+    ),
+  }
+);
+
 function escapeHtml(val: unknown): string {
   return String(val ?? "")
     .replace(/&/g, "&amp;")
@@ -651,6 +667,11 @@ export default function AuditPage() {
       label: "5. Export Center",
       icon: <Download className="w-3.5 h-3.5" />,
       badge: "SARIF / HTML / CSV",
+    },
+    {
+      id: "NEXTGEN_V5",
+      label: "Next-Gen AppSec (v5)",
+      icon: <Sparkles className="w-3.5 h-3.5" />,
     },
   ];
 
@@ -1710,6 +1731,12 @@ export default function AuditPage() {
                       </div>
                     </div>
                   </div>
+                </div>
+              )}
+
+              {aspmSubSection === "NEXTGEN_V5" && (
+                <div className="flex-1 overflow-y-auto bg-[#f8fafc]">
+                  <NextGenAppSecStudio />
                 </div>
               )}
             </div>
