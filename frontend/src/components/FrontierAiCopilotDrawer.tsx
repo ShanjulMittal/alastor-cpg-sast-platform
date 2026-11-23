@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useAuditStore } from "@/store/useAuditStore";
 import {
   AiDrawerTab,
@@ -167,19 +167,26 @@ export function FrontierAiCopilotDrawer() {
   const [testGenFramework, setTestGenFramework] =
     useState<TestFrameworkType>("auto");
   const [allowTestOverwrite, setAllowTestOverwrite] = useState<boolean>(false);
+  const prevFindingIdRef = useRef<string | null>(selectedFinding?.id ?? null);
 
   useEffect(() => {
-    setAllowTestOverwrite(false);
+    const nextId = selectedFinding?.id ?? null;
+    if (prevFindingIdRef.current !== nextId) {
+      prevFindingIdRef.current = nextId;
+      setAllowTestOverwrite(false);
+      clearGeneratedSecurityTest();
+      return;
+    }
     const st = useAuditStore.getState();
     if (
       st.generatedSecurityTest &&
-      st.generatedSecurityTest.finding_id !== selectedFinding?.id
+      st.generatedSecurityTest.finding_id !== nextId
     ) {
       clearGeneratedSecurityTest();
-    } else if (!selectedFinding && st.drawerSecurityTestError) {
+    } else if (!nextId && st.drawerSecurityTestError) {
       clearGeneratedSecurityTest();
     }
-  }, [selectedFinding?.id, selectedFinding, clearGeneratedSecurityTest]);
+  }, [selectedFinding?.id, clearGeneratedSecurityTest]);
 
   useEffect(() => {
     void fetchAiConfigState();

@@ -253,6 +253,20 @@ function resetNextgenSlice(prevEpoch: number) {
   };
 }
 
+function resolveLocalNextgenProjectPath(
+  explicit?: string | null,
+  projectPath?: string | null,
+  appTreeRoot?: string | null
+): string {
+  for (const candidate of [explicit, projectPath, appTreeRoot]) {
+    const trimmed = (candidate || "").trim();
+    if (isLikelyLocalProjectPath(trimmed)) {
+      return trimmed;
+    }
+  }
+  return "";
+}
+
 const VALID_APP_THEMES: AppThemeId[] = [
   "olympian-light",
   "athena-parchment",
@@ -1844,6 +1858,14 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
     set((state) => ({
       ...(matchedFinding ? { selectedFinding: matchedFinding } : {}),
+      ...(matchedFinding && matchedFinding.id !== state.selectedFinding?.id
+        ? {
+            patchPanelResult: null,
+            patchPanelError: null,
+            generatedSecurityTest: null,
+            drawerSecurityTestError: null,
+          }
+        : {}),
       activeFilepath: targetFilepath,
       activeStartLine: targetLine,
       activeEndLine: targetLine,
@@ -2505,7 +2527,12 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           ideLayoutMode: "SPLIT_BOTH",
           isSidebarCollapsed: false,
           ...(findingChanged
-            ? { patchPanelResult: null, patchPanelError: null }
+            ? {
+                patchPanelResult: null,
+                patchPanelError: null,
+                generatedSecurityTest: null,
+                drawerSecurityTestError: null,
+              }
             : {}),
           ...(state.graphViewMode === "APP_TREE"
             ? { graphViewMode: "FINDING_PATH" as GraphViewMode }
@@ -2607,7 +2634,12 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         const updatedSel = curSel ? data.find((f) => f.id === curSel.id) || data[0] || null : data[0] || null;
         set({ findings: data });
         if (data.length === 0) {
-          set({ selectedFinding: null, selectedGraphNodeId: null });
+          set({
+            selectedFinding: null,
+            selectedGraphNodeId: null,
+            generatedSecurityTest: null,
+            drawerSecurityTestError: null,
+          });
         } else if (updatedSel && (!curSel || curSel.id !== updatedSel.id)) {
           const firstNode =
             updatedSel.path_nodes && updatedSel.path_nodes.length > 0
@@ -2617,6 +2649,10 @@ export const useAuditStore = create<AuditState>((set, get) => ({
             selectedFinding: updatedSel,
             activePathStepIndex: 0,
             remediationPreview: null,
+            patchPanelResult: null,
+            patchPanelError: null,
+            generatedSecurityTest: null,
+            drawerSecurityTestError: null,
             selectedGraphNodeId: firstNode ? firstNode.id : null,
             activeFilepath: firstNode ? firstNode.filepath : null,
             activeStartLine: firstNode ? firstNode.start_line : null,
@@ -4563,12 +4599,11 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
   runPrDeltaGateAction: async (req) => {
     const epoch = get()._nextgenEpoch;
-    const targetPath = (
-      req.project_path ??
-      get().projectPath ??
-      get().appTree?.root_path ??
-      ""
-    ).trim();
+    const targetPath = resolveLocalNextgenProjectPath(
+      req.project_path,
+      get().projectPath,
+      get().appTree?.root_path
+    );
     if (!targetPath) {
       set({
         isRunningPrGate: false,
@@ -4604,12 +4639,11 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   generateSecurityTestAction: async (req) => {
     const epoch = get()._nextgenEpoch;
     const targetFindingId = req.finding_id ?? req.finding?.id ?? null;
-    const targetPath = (
-      req.project_path ??
-      get().projectPath ??
-      get().appTree?.root_path ??
-      ""
-    ).trim();
+    const targetPath = resolveLocalNextgenProjectPath(
+      req.project_path,
+      get().projectPath,
+      get().appTree?.root_path
+    );
     if (!targetPath) {
       set({
         isGeneratingSecurityTest: false,
@@ -4665,12 +4699,11 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
   evaluateComplianceAction: async (frameworks, projectPath) => {
     const epoch = get()._nextgenEpoch;
-    const targetPath = (
-      projectPath ??
-      get().projectPath ??
-      get().appTree?.root_path ??
-      ""
-    ).trim();
+    const targetPath = resolveLocalNextgenProjectPath(
+      projectPath,
+      get().projectPath,
+      get().appTree?.root_path
+    );
     if (!targetPath) {
       set({
         isEvaluatingCompliance: false,
@@ -4773,21 +4806,25 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     const hasSample = req.sample_code !== undefined && req.sample_code !== null;
     const targetPath = hasSample
       ? undefined
-      : (
-          req.project_path ??
-          get().projectPath ??
-          get().appTree?.root_path ??
-          ""
-        ).trim();
+      : resolveLocalNextgenProjectPath(
+          req.project_path,
+          get().projectPath,
+          get().appTree?.root_path
+        );
     if (!hasSample && !targetPath) {
       set({
         isTestingCustomRule: false,
+        customRuleTestResult: null,
         nextgenError:
           "Select or scan a local workspace before testing a custom rule against workspace files.",
       });
       return null;
     }
-    set({ isTestingCustomRule: true, nextgenError: null });
+    set({
+      isTestingCustomRule: true,
+      customRuleTestResult: null,
+      nextgenError: null,
+    });
     try {
       const res = await testCustomSecurityRule({
         rule: req.rule,
@@ -4812,7 +4849,11 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         "Custom rule sandbox test failed.";
       console.error("Failed to test custom rule:", err);
       if (get()._nextgenEpoch === epoch) {
-        set({ isTestingCustomRule: false, nextgenError: msg });
+        set({
+          isTestingCustomRule: false,
+          customRuleTestResult: null,
+          nextgenError: msg,
+        });
       }
       return null;
     }

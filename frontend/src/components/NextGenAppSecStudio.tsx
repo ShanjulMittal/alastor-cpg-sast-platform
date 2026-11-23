@@ -12,10 +12,13 @@ import ReactFlow, {
   NodeProps,
   Position,
   ReactFlowProvider,
+  useEdgesState,
+  useNodesState,
   useReactFlow,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import { useAuditStore } from "@/store/useAuditStore";
+import { isLikelyLocalProjectPath } from "@/lib/api";
 import {
   ComplianceControlResult,
   ComplianceFrameworkId,
@@ -253,20 +256,28 @@ interface MicroserviceCanvasProps {
 }
 
 const MicroserviceGraphCanvasInner: React.FC<MicroserviceCanvasProps> = ({
-  nodes,
-  edges,
+  nodes: propNodes,
+  edges: propEdges,
 }) => {
   const { fitView } = useReactFlow();
+  const [nodes, setNodes, onNodesChange] =
+    useNodesState<MicroserviceGraphNodeData>(propNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(propEdges);
 
   useEffect(() => {
-    if (nodes.length === 0) return;
+    setNodes(propNodes);
+    setEdges(propEdges);
+  }, [propNodes, propEdges, setNodes, setEdges]);
+
+  useEffect(() => {
+    if (propNodes.length === 0) return;
     const timer = window.setTimeout(() => {
       try {
         fitView({ padding: 0.22, duration: 240 });
       } catch {}
     }, 40);
     return () => window.clearTimeout(timer);
-  }, [nodes, edges, fitView]);
+  }, [propNodes, propEdges, fitView]);
 
   return (
     <div className="w-full h-[420px] bg-[#f8fafc] border border-slate-200 rounded-xl overflow-hidden relative">
@@ -283,6 +294,8 @@ const MicroserviceGraphCanvasInner: React.FC<MicroserviceCanvasProps> = ({
       <ReactFlow
         nodes={nodes}
         edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
         nodeTypes={microserviceNodeTypes}
         edgeTypes={microserviceEdgeTypes}
         fitView
@@ -351,7 +364,13 @@ export const NextGenAppSecStudio: React.FC = () => {
   );
   const clearNextgenError = useAuditStore((s) => s.clearNextgenError);
 
-  const effectiveProjectPath = (projectPath || appTreeRoot || "").trim();
+  const effectiveProjectPath = useMemo(() => {
+    const p1 = (projectPath || "").trim();
+    const p2 = (appTreeRoot || "").trim();
+    if (isLikelyLocalProjectPath(p1)) return p1;
+    if (isLikelyLocalProjectPath(p2)) return p2;
+    return "";
+  }, [projectPath, appTreeRoot]);
 
   // Sub-view switcher
   const [subView, setSubView] = useState<StudioSubView>("PR_GATE");
