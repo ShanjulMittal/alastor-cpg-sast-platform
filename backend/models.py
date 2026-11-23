@@ -2173,6 +2173,223 @@ class GcReport(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# 18. Pillar 5 Next-Gen AppSec Models (PR Delta Gate, Security Test Generator,
+#     Continuous Compliance Autopilot, Custom Rule Studio & Cross-Repo Graph)
+# ---------------------------------------------------------------------------
+PrDeltaClassification = Literal["NEWLY_INTRODUCED", "MODIFIED_CONTEXT", "PRE_EXISTING"]
+
+
+class PrDeltaGateRequest(BaseModel):
+    project_path: str
+    base_ref: str = "HEAD~1"
+    head_ref: str = "HEAD"
+    fail_on_new_severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"] = "HIGH"
+    block_on_new_secrets: bool = True
+    block_on_new_ev_confirmed: bool = True
+    include_cpg_neighbors: bool = True
+
+
+class PrDeltaAnnotation(BaseModel):
+    finding_id: str
+    classification: PrDeltaClassification
+    severity: str
+    rule_id: str
+    cwe_id: str = ""
+    filepath: str
+    line: int
+    title: str
+    message: str
+
+
+class PrDeltaGateResponse(BaseModel):
+    project_path: str
+    base_ref: str
+    head_ref: str
+    gate_decision: Literal["PASS", "BLOCK_MERGE"]
+    gate_reason: str
+    changed_files: List[str] = Field(default_factory=list)
+    impacted_neighbor_files: List[str] = Field(default_factory=list)
+    newly_introduced_count: int = 0
+    modified_context_count: int = 0
+    pre_existing_count: int = 0
+    blocking_count: int = 0
+    annotations: List[PrDeltaAnnotation] = Field(default_factory=list)
+    newly_introduced_findings: List[Finding] = Field(default_factory=list)
+    pr_markdown_summary: str = ""
+
+
+TestFrameworkType = Literal["auto", "pytest", "jest", "vitest", "go_test"]
+
+
+class SecurityTestGenerateRequest(BaseModel):
+    project_path: str
+    finding_id: Optional[str] = None
+    finding: Optional[Finding] = None
+    framework: TestFrameworkType = "auto"
+    write_to_workspace: bool = False
+    overwrite: bool = False
+
+
+class SecurityTestGenerateResponse(BaseModel):
+    project_path: str
+    finding_id: str
+    cwe_id: str
+    framework: Literal["pytest", "jest", "vitest", "go_test"]
+    suggested_relative_path: str
+    test_name: str
+    test_code: str
+    syntax_valid: bool
+    written_to_disk: bool = False
+    written_path: Optional[str] = None
+    run_command_hint: str
+    warnings: List[str] = Field(default_factory=list)
+
+
+ComplianceFrameworkId = Literal[
+    "PCI_DSS_4_0",
+    "SOC2",
+    "ISO_27001",
+    "HIPAA",
+    "OWASP_ASVS_5_0",
+]
+
+
+class ComplianceControlResult(BaseModel):
+    control_id: str
+    title: str
+    description: str
+    status: Literal["PASS", "WARNING", "FAIL"]
+    matched_finding_ids: List[str] = Field(default_factory=list)
+    matched_cwes: List[str] = Field(default_factory=list)
+    evidence_summary: str
+
+
+class ComplianceFrameworkReport(BaseModel):
+    framework_id: ComplianceFrameworkId
+    framework_name: str
+    version: str
+    score_percent: float
+    status: Literal["COMPLIANT", "AT_RISK", "NON_COMPLIANT"]
+    passed_controls: int
+    warning_controls: int
+    failed_controls: int
+    total_controls: int
+    controls: List[ComplianceControlResult] = Field(default_factory=list)
+
+
+class ComplianceEvaluateRequest(BaseModel):
+    project_path: str
+    frameworks: Optional[List[ComplianceFrameworkId]] = None
+
+
+class ComplianceEvaluateResponse(BaseModel):
+    project_path: str
+    evaluated_at: str
+    total_findings_evaluated: int
+    overall_score_percent: float
+    frameworks: List[ComplianceFrameworkReport] = Field(default_factory=list)
+
+
+class CustomSecurityRule(BaseModel):
+    rule_id: str
+    name: str
+    severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] = "HIGH"
+    cwe_id: str = "CWE-20"
+    languages: List[str] = Field(default_factory=lambda: ["python", "javascript", "typescript"])
+    pattern: str
+    anti_pattern: Optional[str] = None
+    description: str = ""
+    remediation: str = ""
+    enabled: bool = True
+    compliance_controls: List[str] = Field(default_factory=list)
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class CustomRuleTestRequest(BaseModel):
+    rule: CustomSecurityRule
+    sample_code: Optional[str] = None
+    sample_language: str = "python"
+    project_path: Optional[str] = None
+
+
+class CustomRuleMatchItem(BaseModel):
+    filepath: str
+    line: int
+    matched_excerpt: str
+    suppressed_by_anti_pattern: bool = False
+
+
+class CustomRuleTestResponse(BaseModel):
+    rule_id: str
+    regex_safe: bool
+    matches_count: int
+    suppressed_count: int = 0
+    matches: List[CustomRuleMatchItem] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class MicroserviceRepoInput(BaseModel):
+    service_name: str
+    repo_path: str
+    base_url_hint: Optional[str] = None
+
+
+class MicroserviceEndpointItem(BaseModel):
+    service_name: str
+    protocol: Literal["HTTP", "GRPC", "QUEUE"]
+    method: str
+    normalized_path: str
+    raw_path: str
+    filepath: str
+    line: int
+    linked_finding_ids: List[str] = Field(default_factory=list)
+
+
+class MicroserviceCallEdge(BaseModel):
+    edge_id: str
+    source_service: str
+    target_service: str
+    protocol: Literal["HTTP", "GRPC", "QUEUE"]
+    method: str
+    normalized_path: str
+    caller_filepath: str
+    caller_line: int
+    callee_filepath: str
+    callee_line: int
+    confidence: float = 0.85
+
+
+class CrossServiceAttackPath(BaseModel):
+    path_id: str
+    title: str
+    composite_severity: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+    hop_count: int
+    services: List[str] = Field(default_factory=list)
+    finding_ids: List[str] = Field(default_factory=list)
+    narrative: str
+
+
+class MicroserviceGraphRequest(BaseModel):
+    services: List[MicroserviceRepoInput]
+    scan_findings: bool = True
+
+
+class MicroserviceGraphResponse(BaseModel):
+    services_analyzed: int
+    total_inbound_endpoints: int
+    total_outbound_calls: int
+    stitched_edges_count: int
+    cross_service_attack_paths_count: int
+    endpoints: List[MicroserviceEndpointItem] = Field(default_factory=list)
+    edges: List[MicroserviceCallEdge] = Field(default_factory=list)
+    attack_paths: List[CrossServiceAttackPath] = Field(default_factory=list)
+    reactflow_nodes: List[Dict[str, Any]] = Field(default_factory=list)
+    reactflow_edges: List[Dict[str, Any]] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
 
 
 
