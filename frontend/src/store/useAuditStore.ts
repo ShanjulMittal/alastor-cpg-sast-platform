@@ -83,6 +83,17 @@ import {
   FleetRepoResult,
   GcRequest,
   GcReport,
+  PrDeltaGateRequest,
+  PrDeltaGateResponse,
+  SecurityTestGenerateRequest,
+  SecurityTestGenerateResponse,
+  ComplianceFrameworkId,
+  ComplianceEvaluateResponse,
+  CustomSecurityRule,
+  CustomRuleTestRequest,
+  CustomRuleTestResponse,
+  MicroserviceGraphRequest,
+  MicroserviceGraphResponse,
 } from "@/types/cpg";
 import {
   BACKEND_URL,
@@ -128,6 +139,15 @@ import {
   listFleetCheckpoints,
   resumeFleetCheckpoint,
   runFleetGc,
+  runPrDeltaGate,
+  generateSecurityTest,
+  evaluateCompliance,
+  listCustomSecurityRules,
+  createCustomSecurityRule,
+  updateCustomSecurityRule,
+  deleteCustomSecurityRule,
+  testCustomSecurityRule,
+  stitchMicroserviceGraph,
 } from "@/lib/api";
 
 export const UI_PREFS_STORAGE_KEY = "alastor_ui_prefs_v4";
@@ -213,6 +233,23 @@ function resetFleetSlice(prevEpoch: number) {
     isImportingFusion: false,
     isLoadingCheckpoints: false,
     fleetError: null,
+  };
+}
+
+function resetNextgenSlice(prevEpoch: number) {
+  return {
+    _nextgenEpoch: prevEpoch + 1,
+    prDeltaResult: null,
+    generatedSecurityTest: null,
+    complianceReport: null,
+    customRuleTestResult: null,
+    isRunningPrGate: false,
+    isGeneratingSecurityTest: false,
+    isEvaluatingCompliance: false,
+    isTestingCustomRule: false,
+    isStitchingMicroservices: false,
+    nextgenError: null,
+    drawerSecurityTestError: null,
   };
 }
 
@@ -448,6 +485,25 @@ interface AuditState {
   isResumingCheckpoint: boolean;
   isRunningGc: boolean;
   fleetError: string | null;
+
+  // Pillar 5: Next-Gen AppSec (PR Delta Gate, Security Test Generator,
+  // Compliance Autopilot, Custom Rule Studio & Cross-Repo Microservice Graph)
+  _nextgenEpoch: number;
+  prDeltaResult: PrDeltaGateResponse | null;
+  generatedSecurityTest: SecurityTestGenerateResponse | null;
+  complianceReport: ComplianceEvaluateResponse | null;
+  customRules: CustomSecurityRule[];
+  customRuleTestResult: CustomRuleTestResponse | null;
+  microserviceGraph: MicroserviceGraphResponse | null;
+  isRunningPrGate: boolean;
+  isGeneratingSecurityTest: boolean;
+  isEvaluatingCompliance: boolean;
+  isLoadingCustomRules: boolean;
+  isSavingCustomRule: boolean;
+  isTestingCustomRule: boolean;
+  isStitchingMicroservices: boolean;
+  nextgenError: string | null;
+  drawerSecurityTestError: string | null;
 
   // UI Simplicity, Layout & Command Palette State
   uiDensityMode: "SIMPLE_CLEAN" | "PRO_DETAILED";
@@ -755,6 +811,32 @@ interface AuditState {
     refreshCheckpointsProjectPath?: string
   ) => Promise<void>;
   clearFleetError: () => void;
+  runPrDeltaGateAction: (
+    req: Omit<PrDeltaGateRequest, "project_path"> & { project_path?: string }
+  ) => Promise<PrDeltaGateResponse | null>;
+  generateSecurityTestAction: (
+    req: Omit<SecurityTestGenerateRequest, "project_path"> & {
+      project_path?: string;
+    }
+  ) => Promise<SecurityTestGenerateResponse | null>;
+  evaluateComplianceAction: (
+    frameworks?: ComplianceFrameworkId[],
+    projectPath?: string
+  ) => Promise<ComplianceEvaluateResponse | null>;
+  loadCustomRulesAction: () => Promise<CustomSecurityRule[]>;
+  saveCustomRuleAction: (
+    rule: CustomSecurityRule,
+    isUpdate?: boolean
+  ) => Promise<CustomSecurityRule | null>;
+  deleteCustomRuleAction: (ruleId: string) => Promise<boolean>;
+  testCustomRuleAction: (
+    req: CustomRuleTestRequest
+  ) => Promise<CustomRuleTestResponse | null>;
+  stitchMicroserviceGraphAction: (
+    req: MicroserviceGraphRequest
+  ) => Promise<MicroserviceGraphResponse | null>;
+  clearNextgenError: () => void;
+  clearGeneratedSecurityTest: () => void;
   triggerScan: (
     targetPath?: string,
     options?: GitRepoScanOptions
@@ -901,6 +983,23 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   isResumingCheckpoint: false,
   isRunningGc: false,
   fleetError: null,
+
+  _nextgenEpoch: 0,
+  prDeltaResult: null,
+  generatedSecurityTest: null,
+  complianceReport: null,
+  customRules: [],
+  customRuleTestResult: null,
+  microserviceGraph: null,
+  isRunningPrGate: false,
+  isGeneratingSecurityTest: false,
+  isEvaluatingCompliance: false,
+  isLoadingCustomRules: false,
+  isSavingCustomRule: false,
+  isTestingCustomRule: false,
+  isStitchingMicroservices: false,
+  nextgenError: null,
+  drawerSecurityTestError: null,
 
   uiDensityMode: "SIMPLE_CLEAN",
   ideLayoutMode: "SPLIT_BOTH",
@@ -1507,6 +1606,8 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       get().fetchDeepDiveAnalytics();
     } else if (tab === "RACI") {
       get().fetchRaciGovernance();
+    } else if (tab === "NEXTGEN_V5") {
+      void get().loadCustomRulesAction();
     } else {
       get().fetchSastPlusSuite();
     }
@@ -1994,6 +2095,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
             "ACADEMY",
             "ANALYTICS",
             "RACI",
+            "NEXTGEN_V5",
           ].includes(parsed.executiveAspmTab)
         ) {
           updates.executiveAspmTab = parsed.executiveAspmTab;
@@ -2111,6 +2213,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
             isLoadingPasta: false,
             ...resetEvSlice(state._evEpoch),
             ...resetFleetSlice(state._fleetEpoch),
+            ...resetNextgenSlice(state._nextgenEpoch),
           }
     );
   },
@@ -2263,7 +2366,12 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       activePathStepIndex: 0,
       remediationPreview: null,
       ...(state.selectedFinding?.id !== finding.id
-        ? { patchPanelResult: null, patchPanelError: null }
+        ? {
+            patchPanelResult: null,
+            patchPanelError: null,
+            generatedSecurityTest: null,
+            drawerSecurityTestError: null,
+          }
         : {}),
       selectedGraphNodeId: firstNode ? firstNode.id : null,
       activeFilepath: firstNode ? firstNode.filepath : null,
@@ -2295,7 +2403,12 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     set((state) => ({
       selectedFinding: finding,
       ...(state.selectedFinding?.id !== finding.id
-        ? { patchPanelResult: null, patchPanelError: null }
+        ? {
+            patchPanelResult: null,
+            patchPanelError: null,
+            generatedSecurityTest: null,
+            drawerSecurityTestError: null,
+          }
         : {}),
       selectedGraphNodeId: bfl.node_id || null,
       activeFilepath: bfl.filepath,
@@ -2747,6 +2860,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       patchPanelError: null,
       ...resetEvSlice(state._evEpoch),
       ...resetFleetSlice(state._fleetEpoch),
+      ...resetNextgenSlice(state._nextgenEpoch),
       ...(existingProj?.target_path ? { projectPath: existingProj.target_path } : {}),
     }));
 
@@ -2800,6 +2914,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           patchPanelError: null,
           ...resetEvSlice(state._evEpoch),
           ...resetFleetSlice(state._fleetEpoch),
+          ...resetNextgenSlice(state._nextgenEpoch),
         }));
         if (needsScan) {
           const hasLocalCheckout =
@@ -4421,6 +4536,293 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     }
   },
 
+  clearNextgenError: () => set({ nextgenError: null }),
+
+  clearGeneratedSecurityTest: () =>
+    set({ generatedSecurityTest: null, drawerSecurityTestError: null }),
+
+  runPrDeltaGateAction: async (req) => {
+    const epoch = get()._nextgenEpoch;
+    const targetPath = (
+      req.project_path ??
+      get().projectPath ??
+      get().appTree?.root_path ??
+      ""
+    ).trim();
+    if (!targetPath) {
+      set({
+        isRunningPrGate: false,
+        nextgenError:
+          "Select or scan a local repository workspace before evaluating the PR Delta Gate.",
+      });
+      return null;
+    }
+    set({ isRunningPrGate: true, nextgenError: null });
+    try {
+      const res = await runPrDeltaGate({
+        ...req,
+        project_path: targetPath,
+      });
+      if (get()._nextgenEpoch !== epoch) return null;
+      set({
+        prDeltaResult: res,
+        isRunningPrGate: false,
+        nextgenError: null,
+      });
+      return res;
+    } catch (err: any) {
+      const msg =
+        err?.detail || err?.message || "Failed to evaluate PR Delta Security Gate.";
+      console.error("Failed to run PR Delta Gate:", err);
+      if (get()._nextgenEpoch === epoch) {
+        set({ isRunningPrGate: false, nextgenError: msg });
+      }
+      return null;
+    }
+  },
+
+  generateSecurityTestAction: async (req) => {
+    const epoch = get()._nextgenEpoch;
+    const targetFindingId = req.finding_id ?? req.finding?.id ?? null;
+    const targetPath = (
+      req.project_path ??
+      get().projectPath ??
+      get().appTree?.root_path ??
+      ""
+    ).trim();
+    if (!targetPath) {
+      set({
+        isGeneratingSecurityTest: false,
+        drawerSecurityTestError:
+          "Select or scan a local workspace before generating a security regression test.",
+      });
+      return null;
+    }
+    set({ isGeneratingSecurityTest: true, drawerSecurityTestError: null });
+    try {
+      const res = await generateSecurityTest({
+        ...req,
+        project_path: targetPath,
+      });
+      if (get()._nextgenEpoch !== epoch) return null;
+      if (
+        targetFindingId &&
+        get().selectedFinding?.id &&
+        get().selectedFinding?.id !== targetFindingId
+      ) {
+        set({ isGeneratingSecurityTest: false });
+        return null;
+      }
+      set({
+        generatedSecurityTest: res,
+        isGeneratingSecurityTest: false,
+        drawerSecurityTestError: null,
+      });
+      return res;
+    } catch (err: any) {
+      const msg =
+        err?.detail ||
+        err?.message ||
+        "Failed to generate security regression unit test.";
+      console.error("Failed to generate security regression test:", err);
+      if (get()._nextgenEpoch === epoch) {
+        if (
+          targetFindingId &&
+          get().selectedFinding?.id &&
+          get().selectedFinding?.id !== targetFindingId
+        ) {
+          set({ isGeneratingSecurityTest: false });
+        } else {
+          set({
+            isGeneratingSecurityTest: false,
+            drawerSecurityTestError: msg,
+          });
+        }
+      }
+      return null;
+    }
+  },
+
+  evaluateComplianceAction: async (frameworks, projectPath) => {
+    const epoch = get()._nextgenEpoch;
+    const targetPath = (
+      projectPath ??
+      get().projectPath ??
+      get().appTree?.root_path ??
+      ""
+    ).trim();
+    if (!targetPath) {
+      set({
+        isEvaluatingCompliance: false,
+        nextgenError:
+          "Select or scan a local workspace before evaluating compliance posture.",
+      });
+      return null;
+    }
+    set({ isEvaluatingCompliance: true, nextgenError: null });
+    try {
+      const res = await evaluateCompliance({
+        project_path: targetPath,
+        ...(frameworks && frameworks.length > 0 ? { frameworks } : {}),
+      });
+      if (get()._nextgenEpoch !== epoch) return null;
+      set({
+        complianceReport: res,
+        isEvaluatingCompliance: false,
+        nextgenError: null,
+      });
+      return res;
+    } catch (err: any) {
+      const msg =
+        err?.detail ||
+        err?.message ||
+        "Failed to evaluate continuous compliance posture.";
+      console.error("Failed to evaluate compliance:", err);
+      if (get()._nextgenEpoch === epoch) {
+        set({ isEvaluatingCompliance: false, nextgenError: msg });
+      }
+      return null;
+    }
+  },
+
+  loadCustomRulesAction: async () => {
+    set({ isLoadingCustomRules: true });
+    try {
+      const rules = await listCustomSecurityRules();
+      const normalized = Array.isArray(rules) ? rules : [];
+      set({
+        customRules: normalized,
+        isLoadingCustomRules: false,
+      });
+      return normalized;
+    } catch (err: any) {
+      const msg =
+        err?.detail || err?.message || "Failed to load custom security rules.";
+      console.error("Failed to load custom security rules:", err);
+      set({ isLoadingCustomRules: false, nextgenError: msg });
+      return [];
+    }
+  },
+
+  saveCustomRuleAction: async (rule, isUpdate = false) => {
+    set({ isSavingCustomRule: true, nextgenError: null });
+    try {
+      const saved = isUpdate
+        ? await updateCustomSecurityRule(rule.rule_id, rule)
+        : await createCustomSecurityRule(rule);
+      const refreshed = await listCustomSecurityRules();
+      set({
+        customRules: Array.isArray(refreshed) ? refreshed : [],
+        isSavingCustomRule: false,
+        nextgenError: null,
+      });
+      return saved;
+    } catch (err: any) {
+      const msg =
+        err?.detail || err?.message || "Failed to save custom security rule.";
+      console.error("Failed to save custom security rule:", err);
+      set({ isSavingCustomRule: false, nextgenError: msg });
+      return null;
+    }
+  },
+
+  deleteCustomRuleAction: async (ruleId) => {
+    set({ isSavingCustomRule: true, nextgenError: null });
+    try {
+      await deleteCustomSecurityRule(ruleId);
+      const refreshed = await listCustomSecurityRules();
+      set({
+        customRules: Array.isArray(refreshed) ? refreshed : [],
+        isSavingCustomRule: false,
+        nextgenError: null,
+      });
+      return true;
+    } catch (err: any) {
+      const msg =
+        err?.detail ||
+        err?.message ||
+        `Failed to delete custom rule '${ruleId}'.`;
+      console.error("Failed to delete custom security rule:", err);
+      set({ isSavingCustomRule: false, nextgenError: msg });
+      return false;
+    }
+  },
+
+  testCustomRuleAction: async (req) => {
+    const epoch = get()._nextgenEpoch;
+    const hasSample = req.sample_code !== undefined && req.sample_code !== null;
+    const targetPath = hasSample
+      ? undefined
+      : (
+          req.project_path ??
+          get().projectPath ??
+          get().appTree?.root_path ??
+          ""
+        ).trim();
+    if (!hasSample && !targetPath) {
+      set({
+        isTestingCustomRule: false,
+        nextgenError:
+          "Select or scan a local workspace before testing a custom rule against workspace files.",
+      });
+      return null;
+    }
+    set({ isTestingCustomRule: true, nextgenError: null });
+    try {
+      const res = await testCustomSecurityRule({
+        rule: req.rule,
+        ...(hasSample
+          ? {
+              sample_code: req.sample_code,
+              sample_language: req.sample_language || "python",
+            }
+          : { project_path: targetPath }),
+      });
+      if (get()._nextgenEpoch !== epoch) return null;
+      set({
+        customRuleTestResult: res,
+        isTestingCustomRule: false,
+        nextgenError: null,
+      });
+      return res;
+    } catch (err: any) {
+      const msg =
+        err?.detail ||
+        err?.message ||
+        "Custom rule sandbox test failed.";
+      console.error("Failed to test custom rule:", err);
+      if (get()._nextgenEpoch === epoch) {
+        set({ isTestingCustomRule: false, nextgenError: msg });
+      }
+      return null;
+    }
+  },
+
+  stitchMicroserviceGraphAction: async (req) => {
+    const epoch = get()._nextgenEpoch;
+    set({ isStitchingMicroservices: true, nextgenError: null });
+    try {
+      const res = await stitchMicroserviceGraph(req);
+      if (get()._nextgenEpoch !== epoch) return null;
+      set({
+        microserviceGraph: res,
+        isStitchingMicroservices: false,
+        nextgenError: null,
+      });
+      return res;
+    } catch (err: any) {
+      const msg =
+        err?.detail ||
+        err?.message ||
+        "Failed to stitch cross-repo microservice attack graph.";
+      console.error("Failed to stitch microservice attack graph:", err);
+      if (get()._nextgenEpoch === epoch) {
+        set({ isStitchingMicroservices: false, nextgenError: msg });
+      }
+      return null;
+    }
+  },
+
   triggerScan: async (targetPath?: string, options?: GitRepoScanOptions) => {
     const path = (targetPath || get().projectPath || "").trim();
     if (!path) {
@@ -4454,6 +4856,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       patchPanelError: null,
       ...resetEvSlice(state._evEpoch),
       ...resetFleetSlice(state._fleetEpoch),
+      ...resetNextgenSlice(state._nextgenEpoch),
       scanStatusMessage: `Initiating analysis for: ${path}...`,
       scanProgress: {
         is_scanning: true,

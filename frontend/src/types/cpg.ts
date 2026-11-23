@@ -480,7 +480,8 @@ export type ExecutiveAspmTab =
   | "ANALYTICS"
   | "RACI"
   | "ROADMAP"
-  | "ACADEMY";
+  | "ACADEMY"
+  | "NEXTGEN_V5";
 
 export type EngineAccessTab =
   | "RULE_PROFILES"
@@ -2042,5 +2043,234 @@ export interface GcReport {
   pruned_temp_dirs: number;
   reclaimed_bytes: number;
   kept_runs: number;
+  warnings: string[];
+}
+
+// ---------------------------------------------------------------------------
+// 18. Pillar 5 Next-Gen AppSec Models (PR Delta Gate, Security Test Generator,
+//     Continuous Compliance Autopilot, Custom Rule Studio & Cross-Repo Graph)
+// ---------------------------------------------------------------------------
+export type PrDeltaClassification =
+  | "NEWLY_INTRODUCED"
+  | "MODIFIED_CONTEXT"
+  | "PRE_EXISTING";
+
+export interface PrDeltaGateRequest {
+  project_path: string;
+  base_ref?: string;
+  head_ref?: string;
+  fail_on_new_severity?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  block_on_new_secrets?: boolean;
+  block_on_new_ev_confirmed?: boolean;
+  include_cpg_neighbors?: boolean;
+}
+
+export interface PrDeltaAnnotation {
+  finding_id: string;
+  classification: PrDeltaClassification;
+  severity: string;
+  rule_id: string;
+  cwe_id: string;
+  filepath: string;
+  line: number;
+  title: string;
+  message: string;
+}
+
+export interface PrDeltaGateResponse {
+  project_path: string;
+  base_ref: string;
+  head_ref: string;
+  gate_decision: "PASS" | "BLOCK_MERGE";
+  gate_reason: string;
+  changed_files: string[];
+  impacted_neighbor_files: string[];
+  newly_introduced_count: number;
+  modified_context_count: number;
+  pre_existing_count: number;
+  blocking_count: number;
+  annotations: PrDeltaAnnotation[];
+  newly_introduced_findings: Finding[];
+  pr_markdown_summary: string;
+}
+
+export type TestFrameworkType = "auto" | "pytest" | "jest" | "vitest" | "go_test";
+
+export interface SecurityTestGenerateRequest {
+  project_path: string;
+  finding_id?: string | null;
+  finding?: Finding | null;
+  framework?: TestFrameworkType;
+  write_to_workspace?: boolean;
+  overwrite?: boolean;
+}
+
+export interface SecurityTestGenerateResponse {
+  project_path: string;
+  finding_id: string;
+  cwe_id: string;
+  framework: "pytest" | "jest" | "vitest" | "go_test";
+  suggested_relative_path: string;
+  test_name: string;
+  test_code: string;
+  syntax_valid: boolean;
+  written_to_disk: boolean;
+  written_path?: string | null;
+  run_command_hint: string;
+  warnings: string[];
+}
+
+export type ComplianceFrameworkId =
+  | "PCI_DSS_4_0"
+  | "SOC2"
+  | "ISO_27001"
+  | "HIPAA"
+  | "OWASP_ASVS_5_0";
+
+export interface ComplianceControlResult {
+  control_id: string;
+  title: string;
+  description: string;
+  status: "PASS" | "WARNING" | "FAIL";
+  matched_finding_ids: string[];
+  matched_cwes: string[];
+  evidence_summary: string;
+}
+
+export interface ComplianceFrameworkReport {
+  framework_id: ComplianceFrameworkId;
+  framework_name: string;
+  version: string;
+  score_percent: number;
+  status: "COMPLIANT" | "AT_RISK" | "NON_COMPLIANT";
+  passed_controls: number;
+  warning_controls: number;
+  failed_controls: number;
+  total_controls: number;
+  controls: ComplianceControlResult[];
+}
+
+export interface ComplianceEvaluateRequest {
+  project_path: string;
+  frameworks?: ComplianceFrameworkId[] | null;
+}
+
+export interface ComplianceEvaluateResponse {
+  project_path: string;
+  evaluated_at: string;
+  total_findings_evaluated: number;
+  overall_score_percent: number;
+  frameworks: ComplianceFrameworkReport[];
+}
+
+export interface CustomSecurityRule {
+  rule_id: string;
+  name: string;
+  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+  cwe_id: string;
+  languages: string[];
+  pattern: string;
+  anti_pattern?: string | null;
+  description: string;
+  remediation: string;
+  enabled: boolean;
+  compliance_controls: string[];
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface CustomRuleTestRequest {
+  rule: CustomSecurityRule;
+  sample_code?: string | null;
+  sample_language?: string;
+  project_path?: string | null;
+}
+
+export interface CustomRuleMatchItem {
+  filepath: string;
+  line: number;
+  matched_excerpt: string;
+  suppressed_by_anti_pattern: boolean;
+}
+
+export interface CustomRuleTestResponse {
+  rule_id: string;
+  regex_safe: boolean;
+  matches_count: number;
+  suppressed_count: number;
+  matches: CustomRuleMatchItem[];
+  warnings: string[];
+}
+
+export interface CustomRuleDeleteResponse {
+  deleted: boolean;
+  rule_id: string;
+}
+
+export interface MicroserviceRepoInput {
+  service_name: string;
+  repo_path: string;
+  base_url_hint?: string | null;
+}
+
+export interface MicroserviceEndpointItem {
+  service_name: string;
+  protocol: "HTTP" | "GRPC" | "QUEUE";
+  method: string;
+  normalized_path: string;
+  raw_path: string;
+  filepath: string;
+  line: number;
+  linked_finding_ids: string[];
+}
+
+export interface MicroserviceCallEdge {
+  edge_id: string;
+  source_service: string;
+  target_service: string;
+  protocol: "HTTP" | "GRPC" | "QUEUE";
+  method: string;
+  normalized_path: string;
+  caller_filepath: string;
+  caller_line: number;
+  callee_filepath: string;
+  callee_line: number;
+  confidence: number;
+}
+
+export interface CrossServiceAttackPath {
+  path_id: string;
+  title: string;
+  composite_severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  hop_count: number;
+  services: string[];
+  finding_ids: string[];
+  narrative: string;
+}
+
+export interface MicroserviceGraphRequest {
+  services: MicroserviceRepoInput[];
+  scan_findings?: boolean;
+}
+
+export interface MicroserviceGraphNodeData {
+  service_name: string;
+  endpoints_count: number;
+  findings_count: number;
+  highest_severity: string;
+  is_entry: boolean;
+}
+
+export interface MicroserviceGraphResponse {
+  services_analyzed: number;
+  total_inbound_endpoints: number;
+  total_outbound_calls: number;
+  stitched_edges_count: number;
+  cross_service_attack_paths_count: number;
+  endpoints: MicroserviceEndpointItem[];
+  edges: MicroserviceCallEdge[];
+  attack_paths: CrossServiceAttackPath[];
+  reactflow_nodes: Array<Record<string, any>>;
+  reactflow_edges: Array<Record<string, any>>;
   warnings: string[];
 }

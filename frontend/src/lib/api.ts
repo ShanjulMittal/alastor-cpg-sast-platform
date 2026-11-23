@@ -49,6 +49,18 @@ import {
   FleetRepoResult,
   GcRequest,
   GcReport,
+  PrDeltaGateRequest,
+  PrDeltaGateResponse,
+  SecurityTestGenerateRequest,
+  SecurityTestGenerateResponse,
+  ComplianceEvaluateRequest,
+  ComplianceEvaluateResponse,
+  CustomSecurityRule,
+  CustomRuleTestRequest,
+  CustomRuleTestResponse,
+  CustomRuleDeleteResponse,
+  MicroserviceGraphRequest,
+  MicroserviceGraphResponse,
 } from "@/types/cpg";
 
 export const BACKEND_URL =
@@ -786,4 +798,167 @@ export async function runFleetGc(req: GcRequest): Promise<GcReport> {
     method: "POST",
     body: JSON.stringify(req),
   });
+}
+
+// ---------------------------------------------------------------------------
+// 18. ALASTOR v5.0 Pillar 5 — Next-Gen AppSec (/api/nextgen/*)
+// ---------------------------------------------------------------------------
+export async function runPrDeltaGate(
+  req: PrDeltaGateRequest
+): Promise<PrDeltaGateResponse> {
+  const localPath = normalizeLocalProjectPath(req.project_path) ?? "";
+  const body: PrDeltaGateRequest = {
+    project_path: localPath,
+    ...(req.base_ref !== undefined ? { base_ref: req.base_ref } : {}),
+    ...(req.head_ref !== undefined ? { head_ref: req.head_ref } : {}),
+    ...(req.fail_on_new_severity !== undefined
+      ? { fail_on_new_severity: req.fail_on_new_severity }
+      : {}),
+    ...(typeof req.block_on_new_secrets === "boolean"
+      ? { block_on_new_secrets: req.block_on_new_secrets }
+      : {}),
+    ...(typeof req.block_on_new_ev_confirmed === "boolean"
+      ? { block_on_new_ev_confirmed: req.block_on_new_ev_confirmed }
+      : {}),
+    ...(typeof req.include_cpg_neighbors === "boolean"
+      ? { include_cpg_neighbors: req.include_cpg_neighbors }
+      : {}),
+  };
+  return apiFetchJson<PrDeltaGateResponse>(`${API_BASE}/api/nextgen/pr-gate`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function generateSecurityTest(
+  req: SecurityTestGenerateRequest
+): Promise<SecurityTestGenerateResponse> {
+  const localPath = normalizeLocalProjectPath(req.project_path) ?? "";
+  const body: SecurityTestGenerateRequest = {
+    project_path: localPath,
+    ...(req.finding_id !== undefined ? { finding_id: req.finding_id } : {}),
+    ...(req.finding !== undefined ? { finding: req.finding } : {}),
+    ...(req.framework !== undefined ? { framework: req.framework } : {}),
+    ...(typeof req.write_to_workspace === "boolean"
+      ? { write_to_workspace: req.write_to_workspace }
+      : {}),
+    ...(typeof req.overwrite === "boolean"
+      ? { overwrite: req.overwrite }
+      : {}),
+  };
+  return apiFetchJson<SecurityTestGenerateResponse>(
+    `${API_BASE}/api/nextgen/generate-test`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+export async function evaluateCompliance(
+  req: ComplianceEvaluateRequest
+): Promise<ComplianceEvaluateResponse> {
+  const localPath = normalizeLocalProjectPath(req.project_path) ?? "";
+  const body: ComplianceEvaluateRequest = {
+    project_path: localPath,
+    ...(req.frameworks !== undefined ? { frameworks: req.frameworks } : {}),
+  };
+  return apiFetchJson<ComplianceEvaluateResponse>(
+    `${API_BASE}/api/nextgen/compliance/evaluate`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+export async function listCustomSecurityRules(): Promise<CustomSecurityRule[]> {
+  return apiFetchJson<CustomSecurityRule[]>(
+    `${API_BASE}/api/nextgen/custom-rules`
+  );
+}
+
+export async function createCustomSecurityRule(
+  rule: CustomSecurityRule
+): Promise<CustomSecurityRule> {
+  return apiFetchJson<CustomSecurityRule>(
+    `${API_BASE}/api/nextgen/custom-rules`,
+    {
+      method: "POST",
+      body: JSON.stringify(rule),
+    }
+  );
+}
+
+export async function updateCustomSecurityRule(
+  ruleId: string,
+  rule: CustomSecurityRule
+): Promise<CustomSecurityRule> {
+  return apiFetchJson<CustomSecurityRule>(
+    `${API_BASE}/api/nextgen/custom-rules/${encodeURIComponent(ruleId)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify(rule),
+    }
+  );
+}
+
+export async function deleteCustomSecurityRule(
+  ruleId: string
+): Promise<CustomRuleDeleteResponse> {
+  return apiFetchJson<CustomRuleDeleteResponse>(
+    `${API_BASE}/api/nextgen/custom-rules/${encodeURIComponent(ruleId)}`,
+    {
+      method: "DELETE",
+    }
+  );
+}
+
+export async function testCustomSecurityRule(
+  req: CustomRuleTestRequest
+): Promise<CustomRuleTestResponse> {
+  const hasSample = req.sample_code !== undefined && req.sample_code !== null;
+  const localPath =
+    req.project_path !== undefined && req.project_path !== null
+      ? normalizeLocalProjectPath(req.project_path) ?? ""
+      : undefined;
+  const body: CustomRuleTestRequest = {
+    rule: req.rule,
+    ...(hasSample ? { sample_code: req.sample_code } : {}),
+    ...(req.sample_language !== undefined
+      ? { sample_language: req.sample_language }
+      : {}),
+    ...(!hasSample && localPath !== undefined
+      ? { project_path: localPath }
+      : {}),
+  };
+  return apiFetchJson<CustomRuleTestResponse>(
+    `${API_BASE}/api/nextgen/custom-rules/test`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+export async function stitchMicroserviceGraph(
+  req: MicroserviceGraphRequest
+): Promise<MicroserviceGraphResponse> {
+  const body: MicroserviceGraphRequest = {
+    services: (req.services || []).map((svc) => ({
+      service_name: svc.service_name,
+      repo_path: normalizeLocalProjectPath(svc.repo_path) ?? "",
+      ...(svc.base_url_hint ? { base_url_hint: svc.base_url_hint } : {}),
+    })),
+    ...(typeof req.scan_findings === "boolean"
+      ? { scan_findings: req.scan_findings }
+      : {}),
+  };
+  return apiFetchJson<MicroserviceGraphResponse>(
+    `${API_BASE}/api/nextgen/microservice-graph`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    }
+  );
 }

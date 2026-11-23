@@ -7,6 +7,7 @@ import {
   AiFindingVerdict,
   AiProviderInfo,
   AiProviderType,
+  TestFrameworkType,
 } from "@/types/cpg";
 import {
   Sparkles,
@@ -33,6 +34,9 @@ import {
   ArrowUpRight,
   XCircle,
   Users,
+  FlaskConical,
+  Save,
+  Terminal,
 } from "lucide-react";
 
 const FALLBACK_PROVIDERS: AiProviderInfo[] = [
@@ -114,6 +118,19 @@ export function FrontierAiCopilotDrawer() {
   const runPatchPanelValidation = useAuditStore(
     (s) => s.runPatchPanelValidation
   );
+  const generatedSecurityTest = useAuditStore((s) => s.generatedSecurityTest);
+  const isGeneratingSecurityTest = useAuditStore(
+    (s) => s.isGeneratingSecurityTest
+  );
+  const drawerSecurityTestError = useAuditStore(
+    (s) => s.drawerSecurityTestError
+  );
+  const generateSecurityTestAction = useAuditStore(
+    (s) => s.generateSecurityTestAction
+  );
+  const clearGeneratedSecurityTest = useAuditStore(
+    (s) => s.clearGeneratedSecurityTest
+  );
 
   const findings = useAuditStore((s) => s.findings);
   const selectedFinding = useAuditStore((s) => s.selectedFinding);
@@ -147,6 +164,22 @@ export function FrontierAiCopilotDrawer() {
     Record<string, boolean>
   >({});
   const [useAiPatchPersonas, setUseAiPatchPersonas] = useState<boolean>(false);
+  const [testGenFramework, setTestGenFramework] =
+    useState<TestFrameworkType>("auto");
+  const [allowTestOverwrite, setAllowTestOverwrite] = useState<boolean>(false);
+
+  useEffect(() => {
+    setAllowTestOverwrite(false);
+    const st = useAuditStore.getState();
+    if (
+      st.generatedSecurityTest &&
+      st.generatedSecurityTest.finding_id !== selectedFinding?.id
+    ) {
+      clearGeneratedSecurityTest();
+    } else if (!selectedFinding && st.drawerSecurityTestError) {
+      clearGeneratedSecurityTest();
+    }
+  }, [selectedFinding?.id, selectedFinding, clearGeneratedSecurityTest]);
 
   useEffect(() => {
     void fetchAiConfigState();
@@ -1626,6 +1659,220 @@ export function FrontierAiCopilotDrawer() {
                 </div>
               );
             })()}
+
+            {/* Pillar 5: 1-Click Security Regression Unit-Test Generator */}
+            <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-3 shadow-sm">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="font-extrabold text-slate-900 text-xs flex items-center gap-1.5">
+                    <FlaskConical className="w-4 h-4 text-emerald-700 shrink-0" />
+                    <span>1-Click Security Regression Unit-Test Generator</span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
+                    Generates deterministic, zero-raw-secret regression tests
+                    tailored to the finding&apos;s CWE for{" "}
+                    <code>pytest</code>, <code>jest</code>, <code>vitest</code>,
+                    or <code>go test</code>.
+                  </p>
+                </div>
+                <span className="px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-300 text-emerald-900 font-mono text-[9px] font-extrabold shrink-0">
+                  $0 AST
+                </span>
+              </div>
+
+              {selectedFinding ? (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-end">
+                    <div>
+                      <label className="block text-[10px] font-mono font-bold text-slate-700 mb-1">
+                        Test Framework
+                      </label>
+                      <select
+                        aria-label="Security regression test framework"
+                        value={testGenFramework}
+                        onChange={(e) =>
+                          setTestGenFramework(
+                            e.target.value as TestFrameworkType
+                          )
+                        }
+                        className="w-full bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-900 focus:outline-none focus:border-indigo-600"
+                      >
+                        <option value="auto">Auto (Detect from File/Repo)</option>
+                        <option value="pytest">pytest (Python)</option>
+                        <option value="jest">jest (JS/TS)</option>
+                        <option value="vitest">vitest (JS/TS)</option>
+                        <option value="go_test">go_test (Go)</option>
+                      </select>
+                    </div>
+
+                    <label className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-[11px] font-semibold text-slate-800 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={allowTestOverwrite}
+                        onChange={(e) =>
+                          setAllowTestOverwrite(e.target.checked)
+                        }
+                        className="accent-indigo-700"
+                      />
+                      <span>Allow Overwrite</span>
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      disabled={isGeneratingSecurityTest}
+                      onClick={() =>
+                        void generateSecurityTestAction({
+                          finding_id: selectedFinding.id,
+                          framework: testGenFramework,
+                          write_to_workspace: false,
+                          overwrite: false,
+                        })
+                      }
+                      className="py-2 px-3 rounded-xl bg-indigo-700 hover:bg-indigo-800 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-colors"
+                    >
+                      {isGeneratingSecurityTest ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <FlaskConical className="w-3.5 h-3.5" />
+                      )}
+                      <span>Generate Regression Test</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isGeneratingSecurityTest}
+                      onClick={() =>
+                        void generateSecurityTestAction({
+                          finding_id: selectedFinding.id,
+                          framework: testGenFramework,
+                          write_to_workspace: true,
+                          overwrite: allowTestOverwrite,
+                        })
+                      }
+                      className="py-2 px-3 rounded-xl bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-colors"
+                    >
+                      {isGeneratingSecurityTest ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Save className="w-3.5 h-3.5" />
+                      )}
+                      <span>Write to tests/security/</span>
+                    </button>
+                  </div>
+
+                  {drawerSecurityTestError && (
+                    <div
+                      role="alert"
+                      className="p-2.5 rounded-lg bg-rose-50 border border-rose-300 text-rose-950 text-[11px] font-semibold flex items-start gap-1.5"
+                    >
+                      <AlertTriangle className="w-3.5 h-3.5 text-rose-700 shrink-0 mt-0.5" />
+                      <span className="break-words">
+                        {drawerSecurityTestError}
+                      </span>
+                    </div>
+                  )}
+
+                  {generatedSecurityTest && (
+                    <div className="space-y-2.5 pt-2 border-t border-slate-200">
+                      <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
+                        <span className="px-2 py-0.5 rounded bg-indigo-50 border border-indigo-200 text-indigo-900 font-extrabold">
+                          {generatedSecurityTest.framework}
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded border font-extrabold flex items-center gap-1 ${
+                            generatedSecurityTest.syntax_valid
+                              ? "bg-emerald-50 text-emerald-900 border-emerald-300"
+                              : "bg-amber-50 text-amber-950 border-amber-300"
+                          }`}
+                        >
+                          {generatedSecurityTest.syntax_valid ? (
+                            <CheckCircle2 className="w-3 h-3 text-emerald-700" />
+                          ) : (
+                            <AlertTriangle className="w-3 h-3 text-amber-700" />
+                          )}
+                          <span>
+                            {generatedSecurityTest.syntax_valid
+                              ? "AST Verified"
+                              : "Syntax Check Warning"}
+                          </span>
+                        </span>
+                        {generatedSecurityTest.written_to_disk && (
+                          <span className="px-2 py-0.5 rounded bg-emerald-700 text-white font-bold">
+                            Written to Disk
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 text-[11px] font-mono text-slate-800 space-y-1">
+                        <div className="truncate">
+                          <span className="text-slate-600 font-semibold">
+                            Path:{" "}
+                          </span>
+                          <span className="font-bold text-slate-900">
+                            {generatedSecurityTest.suggested_relative_path}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-slate-700 truncate">
+                          <Terminal className="w-3 h-3 text-indigo-700 shrink-0" />
+                          <code className="truncate">
+                            {generatedSecurityTest.run_command_hint}
+                          </code>
+                        </div>
+                      </div>
+
+                      {generatedSecurityTest.warnings.length > 0 && (
+                        <div className="p-2 rounded-lg bg-amber-50 border border-amber-300 text-amber-950 text-[10.5px] space-y-0.5">
+                          {generatedSecurityTest.warnings.map((w, idx) => (
+                            <div key={idx}>{w}</div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-mono font-bold uppercase text-slate-700">
+                            Generated Regression Test ({generatedSecurityTest.cwe_id})
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              copyText(
+                                "security-test-code",
+                                generatedSecurityTest.test_code
+                              )
+                            }
+                            className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 font-mono text-[10px] font-bold flex items-center gap-1"
+                          >
+                            {copiedKey === "security-test-code" ? (
+                              <>
+                                <Check className="w-3 h-3 text-emerald-700" />
+                                <span>Copied</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3" />
+                                <span>Copy Test Code</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+
+                        <pre className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 font-mono text-[10.5px] text-slate-900 overflow-x-auto whitespace-pre-wrap break-words max-h-64">
+                          {generatedSecurityTest.test_code}
+                        </pre>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-[11px] font-mono text-slate-600">
+                  Select a finding in Triage &amp; Fix to generate a CWE-tailored
+                  security regression unit test.
+                </p>
+              )}
+            </div>
           </div>
         )}
 

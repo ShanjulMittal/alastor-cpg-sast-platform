@@ -6,6 +6,7 @@ import { ExecutiveAspmTab } from "@/types/cpg";
 import { SastPlusSuiteView } from "./SastPlusSuiteView";
 import { DeepDiveDashboard } from "./DeepDiveDashboard";
 import { RaciGovernanceView } from "./RaciGovernanceView";
+import { NextGenAppSecStudio } from "./NextGenAppSecStudio";
 import {
   GraduationCap,
   Package,
@@ -17,6 +18,7 @@ import {
   Download,
   Award,
   ShieldCheck,
+  Sparkles,
 } from "lucide-react";
 
 export const ExecutiveAspmWorkspace: React.FC = () => {
@@ -25,6 +27,8 @@ export const ExecutiveAspmWorkspace: React.FC = () => {
   const sastPlusSuite = useAuditStore((s) => s.sastPlusSuite);
   const raciGovernance = useAuditStore((s) => s.raciGovernance);
   const findings = useAuditStore((s) => s.findings);
+  const prDeltaResult = useAuditStore((s) => s.prDeltaResult);
+  const complianceReport = useAuditStore((s) => s.complianceReport);
   const fetchSastPlusSuite = useAuditStore((s) => s.fetchSastPlusSuite);
   const fetchDeepDiveAnalytics = useAuditStore((s) => s.fetchDeepDiveAnalytics);
   const fetchRaciGovernance = useAuditStore((s) => s.fetchRaciGovernance);
@@ -118,6 +122,16 @@ export const ExecutiveAspmWorkspace: React.FC = () => {
       label: "7. Security Academy",
       icon: <BookOpen className="w-3.5 h-3.5 text-[var(--sig-crimson)]" />,
     },
+    {
+      id: "NEXTGEN_V5",
+      label: "8. Next-Gen AppSec (v5)",
+      icon: <Sparkles className="w-3.5 h-3.5 text-indigo-700" />,
+      badge: prDeltaResult
+        ? prDeltaResult.gate_decision
+        : complianceReport
+        ? `${Math.round(complianceReport.overall_score_percent)}%`
+        : "v5",
+    },
   ];
 
   return (
@@ -205,7 +219,9 @@ export const ExecutiveAspmWorkspace: React.FC = () => {
 
       {/* Active Sub-Workspace Content */}
       <div className="flex-1 flex min-w-0 min-h-0 overflow-hidden">
-        {executiveAspmTab === "ANALYTICS" ? (
+        {executiveAspmTab === "NEXTGEN_V5" ? (
+          <NextGenAppSecStudio />
+        ) : executiveAspmTab === "ANALYTICS" ? (
           <DeepDiveDashboard />
         ) : executiveAspmTab === "RACI" ? (
           <RaciGovernanceView />
