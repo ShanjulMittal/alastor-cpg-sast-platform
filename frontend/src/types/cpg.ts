@@ -1935,6 +1935,7 @@ export interface ScanRunCheckpointSummary {
   updated_at: string;
   host_provenance_valid: boolean;
   stages: StageCheckpointItem[];
+  options?: Record<string, unknown>;
   summary: Record<string, unknown>;
 }
 

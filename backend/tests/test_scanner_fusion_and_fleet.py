@@ -1361,3 +1361,146 @@ class TestTask2ReviewRegressionFixes:
             assert any("[S6 " in (f.reachability_reason or "") for f in resumed_findings)
         finally:
             store.close()
+
+
+class TestPillar4FinalReviewFusionAndFleetFixes:
+    def test_embedded_sqlite_mode_never_attempts_neo4j_bolt_lookup(self, tmp_path: Path):
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        (repo_dir / "app.py").write_text("def fn(x):\n    return x\n", encoding="utf-8")
+
+        class _EmbeddedStoreWithNeo4jAttr:
+            mode = "EMBEDDED_SQLITE"
+
+            class _FakeClient:
+                class _FakeDriver:
+                    def session(self):
+                        raise AssertionError("Neo4j Bolt session() MUST NOT be called in EMBEDDED_SQLITE mode!")
+
+                driver = _FakeDriver()
+
+            neo4j_client = _FakeClient()
+
+            def __init__(self):
+                self._embedded_store = EmbeddedGraphStore(str(tmp_path / "emb.db"))
+
+            def get_communities(self):
+                return self._embedded_store.get_communities()
+
+        fake_mgr = _EmbeddedStoreWithNeo4jAttr()
+        try:
+            semgrep_payload = {
+                "results": [
+                    {
+                        "check_id": "python.sqli",
+                        "path": "app.py",
+                        "start": {"line": 2, "col": 5},
+                        "end": {"line": 2, "col": 12},
+                        "extra": {"message": "SQLi", "severity": "ERROR", "metadata": {"cwe": ["CWE-89"]}},
+                    }
+                ],
+                "errors": [],
+            }
+            fmt, imported = parse_external_scanner_report(json.dumps(semgrep_payload), repo_root=str(repo_dir))
+            resp = fuse_findings_with_cpg(
+                imported=imported,
+                native_findings=[],
+                graph_store=fake_mgr,
+                project_path=str(repo_dir),
+                detected_format=fmt,
+            )
+            assert resp.warnings == []
+            assert resp.cpg_enriched_count == 1
+        finally:
+            fake_mgr._embedded_store.close()
+
+    def test_malformed_line_columns_and_checkov_double_slash_os_prefix_rejected(self, tmp_path: Path):
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+
+        malformed_sarif = {
+            "version": "2.1.0",
+            "runs": [
+                {
+                    "tool": {"driver": {"name": "Custom", "rules": []}},
+                    "results": [
+                        {
+                            "ruleId": "R1",
+                            "level": "warning",
+                            "message": {"text": "test"},
+                            "locations": [
+                                {
+                                    "physicalLocation": {
+                                        "artifactLocation": {"uri": "app.py"},
+                                        "region": {"startLine": "bad-int", "endLine": None, "startColumn": "nan"},
+                                    }
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        _, sarif_f = parse_external_scanner_report(json.dumps(malformed_sarif), repo_root=str(repo_dir))
+        assert len(sarif_f) == 1
+        assert sarif_f[0].best_fix_location is not None and sarif_f[0].best_fix_location.line == 1
+
+        checkov_double_slash = {
+            "check_type": "terraform",
+            "results": {
+                "failed_checks": [
+                    {
+                        "check_id": "CKV_1",
+                        "check_name": "Evil double slash",
+                        "file_path": "//etc/passwd",
+                        "file_line_range": ["not-an-int", "also-bad"],
+                    }
+                ]
+            },
+        }
+        with pytest.raises(ValueError):
+            parse_external_scanner_report(json.dumps(checkov_double_slash), repo_root=str(repo_dir))
+
+        checkov_bad_lines_ok_path = {
+            "check_type": "terraform",
+            "results": {
+                "failed_checks": [
+                    {
+                        "check_id": "CKV_2",
+                        "check_name": "Valid path bad line",
+                        "file_path": "/infra/main.tf",
+                        "file_line_range": ["oops", True],
+                    }
+                ]
+            },
+        }
+        _, ck_f = parse_external_scanner_report(json.dumps(checkov_bad_lines_ok_path), repo_root=str(repo_dir))
+        assert ck_f[0].path_nodes[-1]["start_line"] == 1
+
+    def test_fleet_runner_persists_profile_and_fusion_reports_in_options(self, tmp_path: Path):
+        repo = tmp_path / "svc"
+        repo.mkdir()
+        (repo / "app.py").write_text("def ok():\n    return 1\n", encoding="utf-8")
+        (repo / "semgrep.json").write_text(json.dumps({"results": [], "errors": []}), encoding="utf-8")
+        _init_git_repo(repo)
+
+        vault = tmp_path / "vault"
+        store = CheckpointStore(str(vault))
+        try:
+            runner = FleetRunner(vault_dir=str(vault), checkpoint_store=store)
+            res, _ = runner.run_single_repo(
+                FleetRepoSpec(
+                    repo=str(repo),
+                    app_group="payments",
+                    profile="fast-ci",
+                    fusion_reports=["semgrep.json"],
+                ),
+                resume=False,
+                stop_after="s1",
+            )
+            saved = store.get_run(res.run_id)
+            assert saved is not None
+            assert saved.options.get("profile") == "fast-ci"
+            assert saved.options.get("fusion_reports") == ["semgrep.json"]
+        finally:
+            store.close()

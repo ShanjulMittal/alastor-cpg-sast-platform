@@ -2066,6 +2066,7 @@ class ScanRunCheckpointSummary(BaseModel):
     updated_at: str
     host_provenance_valid: bool = True
     stages: List[StageCheckpointItem] = Field(default_factory=list)
+    options: Dict[str, Any] = Field(default_factory=dict)
     summary: Dict[str, Any] = Field(default_factory=dict)
 
 

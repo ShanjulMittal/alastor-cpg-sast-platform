@@ -448,6 +448,48 @@ def compute_best_fix_location(finding: Finding) -> BestFixLocation:
     )
 
 
+def preserve_or_compute_best_fix_location(finding: Finding) -> BestFixLocation:
+    """
+    Preserves an existing valid `BestFixLocation` (including external tool autofixes)
+    on findings from scanner fusion (`source_engine` set), backfilling only blank fields.
+    """
+    existing = finding.best_fix_location
+    if (
+        finding.source_engine
+        and existing is not None
+        and str(existing.filepath or "").strip()
+        and int(existing.line or 0) >= 1
+    ):
+        if (
+            existing.code_snippet
+            and existing.explanation
+            and existing.recommended_fix
+            and existing.before_code_block
+            and existing.after_code_block
+        ):
+            return existing
+        computed = compute_best_fix_location(finding)
+        updates: Dict[str, Any] = {}
+        eff_snippet = existing.code_snippet or computed.code_snippet
+        eff_fix = existing.recommended_fix or computed.recommended_fix
+        if not existing.code_snippet and eff_snippet:
+            updates["code_snippet"] = eff_snippet
+        if not existing.explanation and computed.explanation:
+            updates["explanation"] = computed.explanation
+        if not existing.recommended_fix and eff_fix:
+            updates["recommended_fix"] = eff_fix
+        if not existing.before_code_block:
+            updates["before_code_block"] = (
+                f"Line {existing.line}: {eff_snippet}" if eff_snippet else computed.before_code_block
+            )
+        if not existing.after_code_block:
+            updates["after_code_block"] = (
+                f"Line {existing.line}: {eff_fix}" if eff_fix else computed.after_code_block
+            )
+        return existing.model_copy(update=updates) if updates else existing
+    return compute_best_fix_location(finding)
+
+
 def populate_plain_english_and_raci(
     finding: Finding,
     custom_raci_owners: Optional[Dict[str, Dict[str, str]]] = None
@@ -1091,6 +1133,16 @@ def populate_plain_english_and_raci(
             finding.raci_accountable = ov["accountable_role"]
 
     # Populate Enterprise Reachability Analysis, EPSS v4 & CISA KEV Exploitability Context
+    orig_reason = str(finding.reachability_reason or "").strip()
+    preserved_s6_tags: List[str] = []
+    preserved_cpg_ctx = ""
+    if orig_reason:
+        preserved_s6_tags = re.findall(r"\[S6\s+[^\]]+\]", orig_reason)
+        reason_wo_s6 = re.sub(r"\s*\[S6\s+[^\]]+\]", "", orig_reason).strip()
+        cpg_idx = reason_wo_s6.find("CPG Context:")
+        if cpg_idx != -1:
+            preserved_cpg_ctx = reason_wo_s6[cpg_idx:].strip()
+
     p_nodes = finding.path_nodes or []
     if finding.scan_engine == "SCA" or "SCA" in rule_upper or cwe == "CWE-1395":
         if rule_upper == "SCA-2-LIVE-CVE-LOCKFILE" and finding.reachability_reason:
@@ -1174,6 +1226,14 @@ def populate_plain_english_and_raci(
         finding.epss_percentile = 88.0
         finding.cisa_kev_listed = bool(finding.cve_id)
         finding.exploit_maturity = "PROOF_OF_CONCEPT"
+
+    for tag in ([preserved_cpg_ctx] if preserved_cpg_ctx else []) + preserved_s6_tags:
+        if tag and tag not in (finding.reachability_reason or ""):
+            finding.reachability_reason = (
+                f"{finding.reachability_reason} {tag}".strip()
+                if finding.reachability_reason
+                else tag
+            )
 
     _populate_secret_key_metadata(finding)
 
@@ -2927,12 +2987,16 @@ class EnterpriseManager:
                 continue
 
             # Determine language from first or sink node filepath
-            first_fp = f.path_nodes[-1].get("filepath", "") if f.path_nodes else ""
+            first_fp = (
+                f.path_nodes[-1].get("filepath", "")
+                if f.path_nodes
+                else (f.best_fix_location.filepath if f.best_fix_location else "")
+            )
             if f.scan_engine == "SAST" or not f.language or f.language == "Python":
                 f.language = infer_language_from_filepath(first_fp, f.rule_id)
 
-            # Compute Best Fixed Location (BFL)
-            f.best_fix_location = compute_best_fix_location(f)
+            # Compute Best Fixed Location (BFL), preserving external tool BFL/autofix if present
+            f.best_fix_location = preserve_or_compute_best_fix_location(f)
 
             # Real Aging & SLA calculation from actual file modification timestamp on disk
             age_days = 0

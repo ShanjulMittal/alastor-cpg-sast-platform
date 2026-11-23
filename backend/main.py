@@ -1047,6 +1047,10 @@ def shutdown_event():
         graph_store_mgr.close()
     except Exception:
         pass
+    try:
+        checkpoint_store.close()
+    except Exception:
+        pass
     neo4j_client.close()
 
 
@@ -5504,7 +5508,7 @@ def _resolve_confined_ev_project_path(project_path: Optional[str]) -> str:
     """Rejects explicit traversal segments and confines `project_path` to active workspace roots."""
     if project_path is not None:
         raw = str(project_path)
-        if "\x00" in raw or any(ord(ch) < 32 for ch in raw):
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
             raise HTTPException(status_code=400, detail="Invalid project_path supplied.")
         segs = [s for s in raw.strip().replace("\\", "/").split("/") if s]
         if any(s == ".." for s in segs):
@@ -5600,7 +5604,7 @@ def get_fleet_doctor(check_neo4j: bool = Query(False)):
     """Returns runtime readiness across Python, 18 parsers, GraphStore backend, tools, vault, and BYOK presence."""
     doc = alastor_sdk.doctor(vault_dir=checkpoint_store.vault_dir, check_neo4j=check_neo4j)
     active_backend = "NEO4J" if graph_store_mgr.mode == "NEO4J_APOC" else "EMBEDDED_SQLITE_WAL"
-    if doc.graph_backend != active_backend:
+    if not check_neo4j and doc.graph_backend != active_backend:
         doc = doc.model_copy(update={"graph_backend": active_backend})
     return doc
 
@@ -5695,8 +5699,11 @@ def list_fleet_checkpoints(
 ):
     """Lists host SQLite scan run checkpoints, optionally filtered by a confined workspace path."""
     confined_repo: Optional[str] = None
-    if project_path is not None and project_path.strip():
-        confined_repo = _resolve_confined_ev_project_path(project_path)
+    if project_path is not None:
+        raw_pp = str(project_path)
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw_pp) or not raw_pp.strip():
+            raise HTTPException(status_code=400, detail="Invalid project_path supplied.")
+        confined_repo = _resolve_confined_ev_project_path(raw_pp)
     return checkpoint_store.list_runs(repo_path=confined_repo, limit=limit)
 
 
@@ -5723,8 +5730,21 @@ def resume_fleet_checkpoint(
         checkpoint_store=checkpoint_store,
         workspace_confinement_fn=_resolve_confined_ev_project_path,
     )
+    saved_opts = run_summary.options if isinstance(run_summary.options, dict) else {}
+    saved_profile = str(saved_opts.get("profile") or "deterministic")
+    raw_fusion = saved_opts.get("fusion_reports")
+    saved_fusion_reports = (
+        [str(rp) for rp in raw_fusion if isinstance(rp, str) and rp.strip()]
+        if isinstance(raw_fusion, list)
+        else []
+    )
     repo_res, _ = runner.run_single_repo(
-        spec=FleetRepoSpec(repo=confined_repo, app_group=run_summary.app_group),
+        spec=FleetRepoSpec(
+            repo=confined_repo,
+            app_group=run_summary.app_group,
+            profile=saved_profile,
+            fusion_reports=saved_fusion_reports,
+        ),
         resume=True,
         stop_after=req.stop_after if req else None,
         run_id=clean_run_id,

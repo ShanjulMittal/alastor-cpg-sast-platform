@@ -1210,3 +1210,237 @@ class TestTask3ReviewRegressionFixes:
             ).exit_code
             == 2
         )
+
+
+class TestPillar4FinalReviewCliSdkAndApiFixes:
+    def test_packaging_alignment_dependencies(self):
+        pyproject_data = tomllib.loads((BACKEND_DIR / "pyproject.toml").read_text(encoding="utf-8"))
+        deps = pyproject_data["project"]["dependencies"]
+        assert "neo4j>=5.25.0" in deps
+        assert "tree-sitter==0.26.1" in deps
+        assert "tree-sitter-language-pack==0.13.0" in deps
+
+        req_lines = [
+            line.strip()
+            for line in (BACKEND_DIR / "requirements.txt").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        assert "click>=8.1" in req_lines
+
+    def test_cli_repo_file_fail_on_and_doctor_check_neo4j_forwarding(self, tmp_path: Path):
+        from alastor_cli import cli
+        from models import FleetAppGroupRollup, FleetRepoResult, FleetRunResponse
+
+        repo = tmp_path / "repo"
+        _create_medium_repo(repo)
+        csv_file = tmp_path / "fleet.csv"
+        csv_file.write_text(f"repo,app_group\n{repo},core\n", encoding="utf-8")
+
+        runner = CliRunner()
+        fleet_med = FleetRunResponse(
+            fleet_run_id="fleet-med-1",
+            manifest_name="fleet.csv",
+            status="COMPLETED",
+            total_repos=1,
+            completed_repos=1,
+            failed_repos=0,
+            created_at="2026-11-23T00:00:00+00:00",
+            repo_results=[
+                FleetRepoResult(
+                    repo=str(repo),
+                    app_group="core",
+                    run_id="run-1",
+                    status="COMPLETED",
+                    total_findings=1,
+                    critical_count=0,
+                    high_count=0,
+                    medium_count=1,
+                    low_count=0,
+                    go_live_decision="CONDITIONAL_GO_LIVE",
+                )
+            ],
+            app_rollups=[
+                FleetAppGroupRollup(
+                    app_group="core",
+                    repo_count=1,
+                    completed_repos=1,
+                    failed_repos=0,
+                    total_findings=1,
+                    critical_count=0,
+                    high_count=0,
+                    corroborated_count=0,
+                    ev_confirmed_count=0,
+                    go_live_decision="CONDITIONAL_GO_LIVE",
+                )
+            ],
+        )
+
+        with mock.patch("alastor_cli.alastor_sdk.run_fleet", return_value=fleet_med):
+            r_med = runner.invoke(
+                cli,
+                ["scan", "--repo-file", str(csv_file), "--fail-on", "MEDIUM", "--json"],
+            )
+            assert r_med.exit_code == 1
+            r_high = runner.invoke(
+                cli,
+                ["scan", "--repo-file", str(csv_file), "--fail-on", "HIGH", "--json"],
+            )
+            assert r_high.exit_code == 0
+
+        fake_doc = {
+            "overall_status": "READY",
+            "python_version": "3.12.10",
+            "parsers_ready": 18,
+            "parsers_total": 18,
+            "graph_backend": "NEO4J",
+            "git_available": True,
+            "docker_available": False,
+            "vault_path": str(tmp_path),
+            "vault_writable": True,
+            "checks": [],
+        }
+        mock_resp = mock.MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.is_redirect = False
+        mock_resp.json.return_value = fake_doc
+        mock_resp.raise_for_status.return_value = None
+        mock_client = mock.MagicMock()
+        mock_client.__enter__.return_value = mock_client
+        mock_client.__exit__.return_value = None
+        mock_client.get.return_value = mock_resp
+
+        with mock.patch("alastor_cli.httpx.Client", return_value=mock_client):
+            r_doc = runner.invoke(
+                cli,
+                ["doctor", "--server", "http://127.0.0.1:8000", "--check-neo4j", "--json"],
+            )
+        assert r_doc.exit_code == 0, r_doc.output
+        assert mock_client.get.call_args.args[0] == "/api/fleet/doctor?check_neo4j=true"
+
+    def test_sdk_remediate_validate_suppress_auto_create_tickets(self, tmp_path: Path):
+        import alastor_sdk
+
+        repo = tmp_path / "vuln_fallback"
+        _create_vuln_repo(repo)
+        vault = tmp_path / "vault"
+
+        with mock.patch(
+            "engine.enterprise_manager.EnterpriseManager._auto_generate_tickets_for_findings",
+            side_effect=AssertionError("Read-only remediate/validate fallback must never create tickets!"),
+        ):
+            with mock.patch("engine.enterprise_manager.EnterpriseManager._load_persisted_state", lambda self: setattr(self.integration_config, "auto_create_tickets", True)):
+                rep = alastor_sdk.remediate(str(repo), mode="report-only", vault_dir=str(vault))
+                assert rep["mode"] == "report-only"
+                val = alastor_sdk.validate(str(repo), vault_dir=str(vault))
+                assert val["validated_count"] >= 1
+
+    def test_api_resume_preserves_profile_fusion_findings_enrichment_checkpoints_validation_and_shutdown(
+        self, tmp_path: Path, monkeypatch
+    ):
+        import main as main_mod
+        from database.checkpoint_store import CheckpointStore
+
+        ws = tmp_path / "confined_ws"
+        _create_medium_repo(ws)
+        semgrep_in_repo = ws / "semgrep.json"
+        semgrep_in_repo.write_text(
+            json.dumps(
+                {
+                    "results": [
+                        {
+                            "check_id": "python.lang.security.audit.formatted-sql-query",
+                            "path": "helper.py",
+                            "start": {"line": 2, "col": 5},
+                            "end": {"line": 2, "col": 20},
+                            "extra": {
+                                "message": "SQL string formatting detected.",
+                                "severity": "ERROR",
+                                "fix": 'cursor.execute("SELECT * FROM t WHERE id = ?", (uid,))',
+                                "metadata": {"cwe": ["CWE-89"]},
+                            },
+                        }
+                    ],
+                    "errors": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        vault = tmp_path / "vault"
+        iso_store = CheckpointStore(str(vault))
+        shutdown_closed = {"closed": False}
+        orig_close = iso_store.close
+
+        def _spy_close():
+            shutdown_closed["closed"] = True
+            orig_close()
+
+        monkeypatch.setattr(iso_store, "close", _spy_close)
+        monkeypatch.setattr(main_mod, "startup_event", lambda: None)
+        monkeypatch.setattr(main_mod.graph_store_mgr, "close", lambda: None)
+        monkeypatch.setattr(main_mod.neo4j_client, "close", lambda: None)
+        monkeypatch.setattr(main_mod, "checkpoint_store", iso_store)
+        monkeypatch.setattr(main_mod, "_get_ai_allowed_roots", lambda: [str(ws)])
+        monkeypatch.setattr(main_mod, "current_scan_dir", str(ws))
+        monkeypatch.setattr(main_mod, "_cached_findings", [])
+        monkeypatch.setattr(main_mod, "_cached_external_findings", [])
+        monkeypatch.setattr(main_mod, "_cached_cognitive_findings", [])
+        monkeypatch.setattr(main_mod, "_cached_cognitive_dir", "")
+
+        try:
+            with TestClient(main_mod.app) as client:
+                # 1. Whitespace / control-char project_path on GET /api/fleet/checkpoints -> HTTP 400
+                assert client.get("/api/fleet/checkpoints", params={"project_path": "   "}).status_code == 400
+                assert client.get("/api/fleet/checkpoints", params={"project_path": "ws\n"}).status_code == 400
+                assert client.get("/api/fleet/checkpoints", params={"project_path": "ws\x7f"}).status_code == 400
+
+                # 2. Fleet run with fast-ci profile + in-repo fusion_reports stopping at s2, then resume
+                r_fleet = client.post(
+                    "/api/fleet/run",
+                    json={
+                        "manifest_name": "resume-opts",
+                        "repos": [
+                            {
+                                "repo": str(ws),
+                                "app_group": "core",
+                                "profile": "fast-ci",
+                                "fusion_reports": ["semgrep.json"],
+                            }
+                        ],
+                        "resume": False,
+                        "stop_after": "s2",
+                    },
+                )
+                assert r_fleet.status_code == 200, r_fleet.text
+                run_id = r_fleet.json()["repo_results"][0]["run_id"]
+
+                r_res = client.post(f"/api/fleet/checkpoints/{run_id}/resume", json={})
+                assert r_res.status_code == 200, r_res.text
+                res_body = r_res.json()
+                assert "S1_RULES" in res_body["resumed_stages"]
+                assert "S2_SECRETS_SCA" in res_body["resumed_stages"]
+                assert res_body["total_findings"] == 1
+
+                # 3. Post-fusion GET /api/findings preserves CPG Context, [S6 ...], and Semgrep autofix
+                r_fuse = client.post(
+                    "/api/fusion/import",
+                    json={
+                        "project_path": str(ws),
+                        "report_json": semgrep_in_repo.read_text(encoding="utf-8"),
+                        "run_s6_verify": True,
+                        "correlate_cpg": True,
+                    },
+                )
+                assert r_fuse.status_code == 200, r_fuse.text
+                r_findings = client.get("/api/findings")
+                assert r_findings.status_code == 200, r_findings.text
+                ext_f = next(f for f in r_findings.json() if f.get("source_engine") == "SEMGREP")
+                assert "CPG Context:" in (ext_f.get("reachability_reason") or "")
+                assert "[S6 " in (ext_f.get("reachability_reason") or "")
+                assert (ext_f.get("best_fix_location") or {}).get("recommended_fix") == (
+                    'cursor.execute("SELECT * FROM t WHERE id = ?", (uid,))'
+                )
+            assert shutdown_closed["closed"] is True
+        finally:
+            if iso_store._conn is not None:
+                orig_close()

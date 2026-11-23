@@ -283,6 +283,15 @@ def _infer_checkov_cwe(check_id: str, check_name: str, resource: str) -> str:
     return "CWE-16"
 
 
+def _safe_int(val: Any, default: int = 1) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        return int(val)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _strip_rel_prefix(fp: str) -> str:
     norm = fp.replace("\\", "/")
     while norm.startswith("./"):
@@ -352,6 +361,7 @@ def _normalize_external_path(
             if _WIN_DRIVE_RX.match(slash_path):
                 raise ValueError(f"External report path escapes repository root: {raw_path}")
             if slash_path.startswith("/"):
+                slash_path = re.sub(r"^/+", "/", slash_path)
                 if (
                     was_file_uri
                     or not allow_leading_repo_slash
@@ -522,10 +532,10 @@ def _extract_sarif_location(
     rel_fp = _normalize_external_path(uri, repo_root=repo_root)
 
     reg = phys.get("region") if isinstance(phys.get("region"), dict) else {}
-    start_line = max(1, int(reg.get("startLine") or 1))
-    end_line = max(start_line, int(reg.get("endLine") or start_line))
-    start_col = max(0, int(reg.get("startColumn") or 0))
-    end_col = max(0, int(reg.get("endColumn") or 0))
+    start_line = max(1, _safe_int(reg.get("startLine"), 1))
+    end_line = max(start_line, _safe_int(reg.get("endLine"), start_line))
+    start_col = max(0, _safe_int(reg.get("startColumn"), 0))
+    end_col = max(0, _safe_int(reg.get("endColumn"), 0))
     snippet_obj = reg.get("snippet") if isinstance(reg.get("snippet"), dict) else {}
     snippet = _scrub(snippet_obj.get("text") or "", list(raw_secrets))
     return rel_fp, start_line, end_line, start_col, end_col, snippet
@@ -717,10 +727,10 @@ def _parse_semgrep_findings(
         rel_fp = _normalize_external_path(res.get("path") or "workspace", repo_root=repo_root)
         start_obj = res.get("start") if isinstance(res.get("start"), dict) else {}
         end_obj = res.get("end") if isinstance(res.get("end"), dict) else {}
-        start_line = max(1, int(start_obj.get("line") or 1))
-        end_line = max(start_line, int(end_obj.get("line") or start_line))
-        start_col = max(0, int(start_obj.get("col") or 0))
-        end_col = max(0, int(end_obj.get("col") or 0))
+        start_line = max(1, _safe_int(start_obj.get("line"), 1))
+        end_line = max(start_line, _safe_int(end_obj.get("line"), start_line))
+        start_col = max(0, _safe_int(start_obj.get("col"), 0))
+        end_col = max(0, _safe_int(end_obj.get("col"), 0))
 
         extra = res.get("extra") if isinstance(res.get("extra"), dict) else {}
         metadata = extra.get("metadata") if isinstance(extra.get("metadata"), dict) else {}
@@ -862,7 +872,7 @@ def _parse_trivy_findings(
                             pass
 
             cause = vuln.get("CauseMetadata") if isinstance(vuln.get("CauseMetadata"), dict) else {}
-            start_line = max(1, int(cause.get("StartLine") or 1))
+            start_line = max(1, _safe_int(cause.get("StartLine"), 1))
             title = _scrub(vuln.get("Title") or f"{vid} in {pkg}@{inst_ver}", secret_list)[:220]
             desc = _scrub(vuln.get("Description") or title, secret_list)
             rem = (
@@ -931,8 +941,8 @@ def _parse_trivy_findings(
             mid = str(misc.get("ID") or misc.get("AVDID") or "TRIVY-MISCONFIG").strip()
             sev = _normalize_severity(misc.get("Severity") or "MEDIUM")
             cause = misc.get("CauseMetadata") if isinstance(misc.get("CauseMetadata"), dict) else {}
-            start_line = max(1, int(cause.get("StartLine") or 1))
-            end_line = max(start_line, int(cause.get("EndLine") or start_line))
+            start_line = max(1, _safe_int(cause.get("StartLine"), 1))
+            end_line = max(start_line, _safe_int(cause.get("EndLine"), start_line))
             title = _scrub(misc.get("Title") or misc.get("Message") or mid, secret_list)[:220]
             desc = _scrub(misc.get("Description") or misc.get("Message") or title, secret_list)
             rem = _scrub(misc.get("Resolution") or "Harden IaC configuration.", secret_list)
@@ -995,8 +1005,8 @@ def _parse_trivy_findings(
             idx_counter += 1
             s_rule = str(sec.get("RuleID") or "trivy-secret").strip()
             sev = _normalize_severity(sec.get("Severity") or "CRITICAL")
-            start_line = max(1, int(sec.get("StartLine") or 1))
-            end_line = max(start_line, int(sec.get("EndLine") or start_line))
+            start_line = max(1, _safe_int(sec.get("StartLine"), 1))
+            end_line = max(start_line, _safe_int(sec.get("EndLine"), start_line))
             raw_title = sec.get("Title") or f"Hardcoded {sec.get('Category') or 'Secret'} ({s_rule})"
             safe_title = _scrub(raw_title, secret_list)[:220]
 
@@ -1088,10 +1098,10 @@ def _parse_gitleaks_findings(
     for idx, item in enumerate(payload, start=1):
         g_rule = str(item.get("RuleID") or "gitleaks-secret").strip()
         rel_fp = _normalize_external_path(item.get("File") or "workspace", repo_root=repo_root)
-        start_line = max(1, int(item.get("StartLine") or 1))
-        end_line = max(start_line, int(item.get("EndLine") or start_line))
-        start_col = max(0, int(item.get("StartColumn") or 0))
-        end_col = max(0, int(item.get("EndColumn") or 0))
+        start_line = max(1, _safe_int(item.get("StartLine"), 1))
+        end_line = max(start_line, _safe_int(item.get("EndLine"), start_line))
+        start_col = max(0, _safe_int(item.get("StartColumn"), 0))
+        end_col = max(0, _safe_int(item.get("EndColumn"), 0))
         sev = _normalize_severity(item.get("Severity") or "HIGH")
 
         raw_desc_lbl = str(item.get("Description") or g_rule)
@@ -1206,8 +1216,8 @@ def _parse_checkov_findings(
             )
 
             line_range = chk.get("file_line_range") if isinstance(chk.get("file_line_range"), list) else []
-            start_line = max(1, int(line_range[0])) if len(line_range) >= 1 and line_range[0] is not None else 1
-            end_line = max(start_line, int(line_range[1])) if len(line_range) >= 2 and line_range[1] is not None else start_line
+            start_line = max(1, _safe_int(line_range[0], 1)) if len(line_range) >= 1 and line_range[0] is not None else 1
+            end_line = max(start_line, _safe_int(line_range[1], start_line)) if len(line_range) >= 2 and line_range[1] is not None else start_line
 
             code_block = chk.get("code_block")
             snippet_parts: List[str] = []
@@ -1333,12 +1343,12 @@ def _extract_finding_fp_line(finding: Finding) -> Tuple[str, int]:
         if isinstance(sink, dict) and sink.get("filepath"):
             return (
                 _normalize_external_path(sink["filepath"]),
-                max(1, int(sink.get("start_line") or 1)),
+                max(1, _safe_int(sink.get("start_line"), 1)),
             )
     if finding.best_fix_location and finding.best_fix_location.filepath:
         return (
             _normalize_external_path(finding.best_fix_location.filepath),
-            max(1, int(finding.best_fix_location.line or 1)),
+            max(1, _safe_int(finding.best_fix_location.line, 1)),
         )
     return "workspace", 1
 
@@ -1420,9 +1430,10 @@ def _query_graph_store_nodes_for_file(
 
     matched_nodes: List[CPGNode] = []
     community_label: Optional[str] = None
+    store_mode = getattr(graph_store, "mode", None)
 
     target_store = graph_store
-    if hasattr(graph_store, "_embedded_store") and getattr(graph_store, "mode", None) == "EMBEDDED_SQLITE":
+    if hasattr(graph_store, "_embedded_store") and store_mode == "EMBEDDED_SQLITE":
         target_store = graph_store._embedded_store
 
     # 1. EmbeddedGraphStore path
@@ -1443,8 +1454,8 @@ def _query_graph_store_nodes_for_file(
         except Exception as exc:
             warnings.append(f"Embedded CPG lookup fallback triggered: {exc}")
 
-    # 2. Neo4j / Neo4jGraphStore path (only if embedded cache yielded nothing)
-    if not matched_nodes and hasattr(graph_store, "neo4j_client"):
+    # 2. Neo4j / Neo4jGraphStore path (strictly gated on NEO4J_APOC mode)
+    if not matched_nodes and store_mode == "NEO4J_APOC" and hasattr(graph_store, "neo4j_client"):
         try:
             client = graph_store.neo4j_client
             driver = getattr(client, "driver", None)
@@ -1465,10 +1476,10 @@ def _query_graph_store_nodes_for_file(
                                     name=str(props.get("name") or "node"),
                                     code=str(props.get("code") or ""),
                                     filepath=str(props.get("filepath") or rel_fp),
-                                    start_line=max(1, int(props.get("start_line") or 1)),
-                                    end_line=max(1, int(props.get("end_line") or 1)),
-                                    start_col=int(props.get("start_col") or 0),
-                                    end_col=int(props.get("end_col") or 0),
+                                    start_line=max(1, _safe_int(props.get("start_line"), 1)),
+                                    end_line=max(1, _safe_int(props.get("end_line"), 1)),
+                                    start_col=max(0, _safe_int(props.get("start_col"), 0)),
+                                    end_col=max(0, _safe_int(props.get("end_col"), 0)),
                                     scope_id=str(props.get("scope_id") or "global"),
                                     language=str(props.get("language") or "python"),
                                 )

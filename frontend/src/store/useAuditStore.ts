@@ -146,6 +146,7 @@ let _cognitivePlaybooksInFlightKey = "";
 let _exploitChainsInFlight: Promise<ExploitChainResponse | null> | null = null;
 let _exploitChainsInFlightKey = "";
 let _cognitiveEpoch = 0;
+let _fleetCheckpointsSeq = 0;
 
 type PastaSastFetchOverride =
   | string
@@ -203,6 +204,7 @@ function resetEvSlice(prevEpoch: number) {
 }
 
 function resetFleetSlice(prevEpoch: number) {
+  _fleetCheckpointsSeq += 1;
   return {
     _fleetEpoch: prevEpoch + 1,
     fleetEstimate: null,
@@ -734,7 +736,10 @@ interface AuditState {
   importScannerFusionAction: (
     req: Omit<ScannerFusionRequest, "project_path"> & { project_path?: string }
   ) => Promise<void>;
-  runFleetBatchAction: (req: FleetRunRequest) => Promise<void>;
+  runFleetBatchAction: (
+    req: FleetRunRequest,
+    refreshCheckpointsProjectPath?: string
+  ) => Promise<void>;
   loadFleetRunsAction: (limit?: number) => Promise<void>;
   loadFleetCheckpointsAction: (
     projectPath?: string,
@@ -742,9 +747,13 @@ interface AuditState {
   ) => Promise<void>;
   resumeFleetCheckpointAction: (
     runId: string,
-    stopAfter?: string | null
+    stopAfter?: string | null,
+    refreshCheckpointsProjectPath?: string
   ) => Promise<FleetRepoResult | null>;
-  runFleetGcAction: (req: GcRequest) => Promise<void>;
+  runFleetGcAction: (
+    req: GcRequest,
+    refreshCheckpointsProjectPath?: string
+  ) => Promise<void>;
   clearFleetError: () => void;
   triggerScan: (
     targetPath?: string,
@@ -4298,7 +4307,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     }
   },
 
-  runFleetBatchAction: async (req) => {
+  runFleetBatchAction: async (req, refreshCheckpointsProjectPath) => {
     set({ isRunningFleet: true, fleetError: null });
     try {
       const res = await runFleetBatch(req);
@@ -4309,7 +4318,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       });
       await Promise.all([
         get().loadFleetRunsAction(),
-        get().loadFleetCheckpointsAction(),
+        get().loadFleetCheckpointsAction(refreshCheckpointsProjectPath),
       ]);
     } catch (err: any) {
       const msg =
@@ -4337,10 +4346,12 @@ export const useAuditStore = create<AuditState>((set, get) => ({
 
   loadFleetCheckpointsAction: async (projectPath, limit = 50) => {
     const epoch = get()._fleetEpoch;
+    const reqSeq = ++_fleetCheckpointsSeq;
     const isProjectScoped = Boolean(projectPath && projectPath.trim());
     set({ isLoadingCheckpoints: true });
     try {
       const items = await listFleetCheckpoints(projectPath, limit);
+      if (reqSeq !== _fleetCheckpointsSeq) return;
       if (isProjectScoped && get()._fleetEpoch !== epoch) return;
       set({
         fleetCheckpoints: Array.isArray(items) ? items : [],
@@ -4352,13 +4363,18 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         err?.message ||
         "Failed to load SQLite stage checkpoints.";
       console.error("Failed to load fleet checkpoints:", err);
+      if (reqSeq !== _fleetCheckpointsSeq) return;
       if (!isProjectScoped || get()._fleetEpoch === epoch) {
         set({ isLoadingCheckpoints: false, fleetError: msg });
       }
     }
   },
 
-  resumeFleetCheckpointAction: async (runId, stopAfter) => {
+  resumeFleetCheckpointAction: async (
+    runId,
+    stopAfter,
+    refreshCheckpointsProjectPath
+  ) => {
     set({ isResumingCheckpoint: true, fleetError: null });
     try {
       const res = await resumeFleetCheckpoint(runId, stopAfter);
@@ -4367,7 +4383,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         fleetError: null,
       });
       await Promise.all([
-        get().loadFleetCheckpointsAction(),
+        get().loadFleetCheckpointsAction(refreshCheckpointsProjectPath),
         get().loadFleetRunsAction(),
       ]);
       return res;
@@ -4382,7 +4398,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     }
   },
 
-  runFleetGcAction: async (req) => {
+  runFleetGcAction: async (req, refreshCheckpointsProjectPath) => {
     set({ isRunningGc: true, fleetError: null });
     try {
       const report = await runFleetGc(req);
@@ -4393,7 +4409,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       });
       if (!req.dry_run) {
         await Promise.all([
-          get().loadFleetCheckpointsAction(),
+          get().loadFleetCheckpointsAction(refreshCheckpointsProjectPath),
           get().loadFleetRunsAction(),
         ]);
       }

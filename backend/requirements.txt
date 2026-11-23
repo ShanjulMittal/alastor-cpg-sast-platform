@@ -1,6 +1,7 @@
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 pydantic==2.9.2
+click>=8.1
 neo4j==5.25.0
 tree-sitter==0.26.1
 tree-sitter-language-pack==0.13.0

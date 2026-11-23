@@ -42,6 +42,7 @@ from engine.enterprise_manager import (
     compute_best_fix_location,
     infer_language_from_filepath,
     populate_plain_english_and_raci,
+    preserve_or_compute_best_fix_location,
 )
 from engine.exploit_chain_engine import synthesize_exploit_chains
 from engine.exploit_verification_engine import ExploitVerificationEngine
@@ -642,7 +643,7 @@ class FleetRunner:
             last_fp = f.path_nodes[-1].get("filepath", "") if f.path_nodes else ""
             if f.scan_engine == "SAST" or not f.language or f.language == "Python":
                 f.language = infer_language_from_filepath(str(last_fp), f.rule_id)
-            f.best_fix_location = compute_best_fix_location(f)
+            f.best_fix_location = preserve_or_compute_best_fix_location(f)
             if f.best_fix_location and f.best_fix_location.filepath:
                 cand_file = os.path.join(local_path, f.best_fix_location.filepath)
                 if os.path.isfile(cand_file):
@@ -762,13 +763,27 @@ class FleetRunner:
                 [],
             )
 
+        persisted_in_repo_reports: List[str] = []
+        for rpath in spec.fusion_reports or []:
+            try:
+                resolved_rp = self._resolve_fusion_report_path(rpath, local_path)
+                persisted_in_repo_reports.append(
+                    os.path.relpath(resolved_rp, local_path).replace("\\", "/")
+                )
+            except ValueError:
+                persisted_in_repo_reports.append(str(rpath))
+
         run_summary = self.checkpoint_store.create_or_get_run(
             repo_path=local_path,
             commit_sha=commit_sha,
             app_group=spec.app_group,
             run_id=run_id,
             resume=resume,
-            options={"profile": spec.profile, "stop_after": target_stop_stage},
+            options={
+                "profile": spec.profile,
+                "stop_after": target_stop_stage,
+                "fusion_reports": persisted_in_repo_reports,
+            },
         )
         effective_run_id = run_summary.run_id
 

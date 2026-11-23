@@ -269,7 +269,8 @@ def doctor_cmd(
     """Checks Python, 18-language parsers, GraphStore backend, git, docker, vault, and BYOK presence."""
     try:
         if server_url:
-            raw = _remote_request(server_url, "GET", "/api/fleet/doctor")
+            doc_path = "/api/fleet/doctor?check_neo4j=true" if check_neo4j else "/api/fleet/doctor"
+            raw = _remote_request(server_url, "GET", doc_path)
             doc = DoctorReport.model_validate(raw)
         else:
             doc = alastor_sdk.doctor(vault_dir=vault_dir, check_neo4j=check_neo4j)
@@ -487,7 +488,8 @@ def scan_cmd(
         if fleet_resp.status == "FAILED":
             raise SystemExit(2)
         if fleet_resp.failed_repos > 0 or any(
-            r.go_live_decision == "NO_GO_HOLD_RELEASE" for r in fleet_resp.repo_results
+            _compute_remote_repo_exit_code(r, norm_fail_on) != 0
+            for r in fleet_resp.repo_results
         ):
             raise SystemExit(1)
         raise SystemExit(0)

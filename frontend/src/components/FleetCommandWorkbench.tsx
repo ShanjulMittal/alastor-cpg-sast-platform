@@ -401,27 +401,28 @@ export const FleetCommandWorkbench: React.FC = () => {
   const handleLaunchFleetBatch = async () => {
     if (!csvContent.trim()) return;
     setSelectedHistoryRunId(null);
-    await runFleetBatchAction({
-      manifest_name: manifestName.trim() || "fleet-manifest",
-      csv_content: csvContent,
-      group_by_app: groupByApp,
-      resume: resumeCheckpoints,
-      max_workers: maxWorkers,
-    });
-    if (workspaceOnlyCheckpoints) {
-      await loadFleetCheckpointsAction(projectPath);
-    }
+    await runFleetBatchAction(
+      {
+        manifest_name: manifestName.trim() || "fleet-manifest",
+        csv_content: csvContent,
+        group_by_app: groupByApp,
+        resume: resumeCheckpoints,
+        max_workers: maxWorkers,
+      },
+      workspaceOnlyCheckpoints ? projectPath : undefined
+    );
   };
 
   const handleResumeCheckpoint = async (cp: ScanRunCheckpointSummary) => {
     setResumingRunId(cp.run_id);
     try {
-      const res = await resumeFleetCheckpointAction(cp.run_id);
+      const res = await resumeFleetCheckpointAction(
+        cp.run_id,
+        undefined,
+        workspaceOnlyCheckpoints ? projectPath : undefined
+      );
       if (res) {
         setResumedNotice(res);
-      }
-      if (workspaceOnlyCheckpoints) {
-        await loadFleetCheckpointsAction(projectPath);
       }
     } finally {
       setResumingRunId(null);
@@ -431,14 +432,14 @@ export const FleetCommandWorkbench: React.FC = () => {
   const handleRunGc = async (dryRun: boolean) => {
     const safeDays = Math.max(0, Math.min(3650, Math.floor(olderThanDays || 0)));
     const safeKeep = Math.max(0, Math.min(1000, Math.floor(keepLast || 0)));
-    await runFleetGcAction({
-      older_than_days: safeDays,
-      keep_last: safeKeep,
-      dry_run: dryRun,
-    });
-    if (!dryRun && workspaceOnlyCheckpoints) {
-      await loadFleetCheckpointsAction(projectPath);
-    }
+    await runFleetGcAction(
+      {
+        older_than_days: safeDays,
+        keep_last: safeKeep,
+        dry_run: dryRun,
+      },
+      workspaceOnlyCheckpoints ? projectPath : undefined
+    );
   };
 
   const displayedFusionFindings = useMemo(() => {

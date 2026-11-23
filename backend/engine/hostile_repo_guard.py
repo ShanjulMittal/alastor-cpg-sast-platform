@@ -87,14 +87,25 @@ _SCP_CLONE_RE = re.compile(
 )
 _DOCKER_IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*$")
 _WINDOWS_DRIVE_PREFIX_RE = re.compile(r"^[A-Za-z]:[\\/]")
-_CLOUD_METADATA_HOSTS = {"169.254.169.254", "100.100.100.200", "metadata.google.internal", "metadata"}
+_CLOUD_METADATA_HOSTS = {
+    "169.254.169.254",
+    "100.100.100.200",
+    "fd00:ec2::254",
+    "metadata.google.internal",
+    "metadata",
+}
+_CLOUD_METADATA_IPS = {
+    ipaddress.ip_address("169.254.169.254"),
+    ipaddress.ip_address("100.100.100.200"),
+    ipaddress.ip_address("fd00:ec2::254"),
+}
 _HOSTILE_CONFIG_FILENAMES: Tuple[str, ...] = (".env", ".env.local", ".alastor.yaml", "config.yaml")
 
 
 def _validate_no_control_chars(value: str, label: str) -> str:
     if not isinstance(value, str) or not value:
         raise HostileRepoError(f"{label} must be a non-empty string")
-    if any(ch in value for ch in ("\r", "\n", "\x00")):
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
         raise HostileRepoError(f"{label} contains forbidden control characters")
     return value
 
@@ -703,7 +714,17 @@ def _validate_docker_egress_host(host: str) -> str:
             raise HostileRepoError(f"Invalid egress hostname: {cleaned}")
         return cleaned
 
-    if ip_obj.is_link_local or ip_obj.is_unspecified or ip_obj.is_multicast:
+    effective_ip = getattr(ip_obj, "ipv4_mapped", None) or ip_obj
+    if (
+        ip_obj in _CLOUD_METADATA_IPS
+        or effective_ip in _CLOUD_METADATA_IPS
+        or ip_obj.is_link_local
+        or ip_obj.is_unspecified
+        or ip_obj.is_multicast
+        or effective_ip.is_link_local
+        or effective_ip.is_unspecified
+        or effective_ip.is_multicast
+    ):
         raise HostileRepoError(f"Forbidden special-use IP in allow_egress_hosts: {cleaned}")
     return str(ip_obj)
 

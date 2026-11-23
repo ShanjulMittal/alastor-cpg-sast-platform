@@ -413,6 +413,8 @@ def _write_scan_artifact(
         local_em.data_dir = tmp_em_dir
         local_em.state_file = os.path.join(tmp_em_dir, "integration_hub_state.json")
         local_em.scan_cache_file = os.path.join(tmp_em_dir, "scan_history_cache.json")
+        local_em.integration_config.auto_create_tickets = False
+        local_em.integration_config.bidirectional_triage_sync = False
         local_em.vault_dir = vault_dir
         local_em.pasta_engine = PastaThreatEngine(vault_dir=vault_dir)
 
@@ -564,6 +566,8 @@ def _load_findings_for_repo_or_run(
             local_em.data_dir = tmp_dir
             local_em.state_file = os.path.join(tmp_dir, "state.json")
             local_em.scan_cache_file = os.path.join(tmp_dir, "cache.json")
+            local_em.integration_config.auto_create_tickets = False
+            local_em.integration_config.bidirectional_triage_sync = False
             for q in local_em.queries:
                 if q.id == "SCA-2-LIVE-CVE-LOCKFILE":
                     q.enabled = False

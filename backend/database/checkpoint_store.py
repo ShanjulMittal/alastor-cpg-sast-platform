@@ -23,6 +23,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from pydantic import ValidationError
+
 from engine.hostile_repo_guard import (
     HostileRepoError,
     is_entry_link_or_junction,
@@ -39,6 +41,14 @@ from models import (
 
 _VALID_RUN_STATUSES = {"RUNNING", "COMPLETED", "FAILED", "PARTIAL"}
 _VALID_STAGE_STATUSES = {"PENDING", "RUNNING", "COMPLETED", "FAILED", "SKIPPED"}
+
+
+def _validate_repo_path_arg(repo_path: str) -> str:
+    if not isinstance(repo_path, str) or not repo_path.strip():
+        raise ValueError("repo_path must be a non-empty valid directory path")
+    if any(ord(c) < 32 or ord(c) == 127 for c in repo_path):
+        raise ValueError("repo_path contains forbidden control characters")
+    return os.path.realpath(repo_path)
 
 
 def _best_effort_chmod(path: str, mode: int) -> None:
@@ -110,60 +120,60 @@ class CheckpointStore:
         _best_effort_chmod(self.db_path, 0o600)
 
     def _init_schema_unlocked(self) -> None:
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS scan_runs (
-                run_id TEXT PRIMARY KEY,
-                repo_path TEXT NOT NULL,
-                commit_sha TEXT NOT NULL DEFAULT '',
-                app_group TEXT NOT NULL DEFAULT 'default',
-                host_fingerprint TEXT NOT NULL,
-                status TEXT NOT NULL,
-                options_json TEXT NOT NULL DEFAULT '{}',
-                summary_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+        with self._conn:
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scan_runs (
+                    run_id TEXT PRIMARY KEY,
+                    repo_path TEXT NOT NULL,
+                    commit_sha TEXT NOT NULL DEFAULT '',
+                    app_group TEXT NOT NULL DEFAULT 'default',
+                    host_fingerprint TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    options_json TEXT NOT NULL DEFAULT '{}',
+                    summary_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
             )
-            """
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_scan_runs_repo_commit ON scan_runs (repo_path, commit_sha, updated_at)"
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_scan_runs_updated ON scan_runs (updated_at)"
-        )
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS stage_checkpoints (
-                run_id TEXT NOT NULL,
-                stage_name TEXT NOT NULL,
-                status TEXT NOT NULL,
-                payload_json TEXT NOT NULL DEFAULT 'null',
-                payload_sha256 TEXT NOT NULL DEFAULT '',
-                duration_ms REAL NOT NULL DEFAULT 0.0,
-                metadata_json TEXT NOT NULL DEFAULT '{}',
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (run_id, stage_name),
-                FOREIGN KEY (run_id) REFERENCES scan_runs(run_id) ON DELETE CASCADE
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_scan_runs_repo_commit ON scan_runs (repo_path, commit_sha, updated_at)"
             )
-            """
-        )
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS fleet_runs (
-                fleet_run_id TEXT PRIMARY KEY,
-                manifest_name TEXT NOT NULL,
-                status TEXT NOT NULL,
-                total_repos INTEGER NOT NULL DEFAULT 0,
-                completed_repos INTEGER NOT NULL DEFAULT 0,
-                failed_repos INTEGER NOT NULL DEFAULT 0,
-                summary_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_scan_runs_updated ON scan_runs (updated_at)"
             )
-            """
-        )
-        self._conn.commit()
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stage_checkpoints (
+                    run_id TEXT NOT NULL,
+                    stage_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT 'null',
+                    payload_sha256 TEXT NOT NULL DEFAULT '',
+                    duration_ms REAL NOT NULL DEFAULT 0.0,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (run_id, stage_name),
+                    FOREIGN KEY (run_id) REFERENCES scan_runs(run_id) ON DELETE CASCADE
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fleet_runs (
+                    fleet_run_id TEXT PRIMARY KEY,
+                    manifest_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    total_repos INTEGER NOT NULL DEFAULT 0,
+                    completed_repos INTEGER NOT NULL DEFAULT 0,
+                    failed_repos INTEGER NOT NULL DEFAULT 0,
+                    summary_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -206,19 +216,29 @@ class CheckpointStore:
                 continue
             if not isinstance(meta, dict):
                 meta = {}
-            items.append(
-                StageCheckpointItem(
-                    stage_name=row["stage_name"],
-                    status=row["status"],
-                    payload_sha256=row["payload_sha256"],
-                    duration_ms=float(row["duration_ms"]),
-                    updated_at=row["updated_at"],
-                    metadata=meta,
+            try:
+                items.append(
+                    StageCheckpointItem(
+                        stage_name=row["stage_name"],
+                        status=row["status"],
+                        payload_sha256=row["payload_sha256"],
+                        duration_ms=float(row["duration_ms"]),
+                        updated_at=row["updated_at"],
+                        metadata=meta,
+                    )
                 )
-            )
+            except (ValidationError, TypeError, ValueError):
+                continue
         return items
 
     def _build_run_summary_unlocked(self, row: sqlite3.Row) -> ScanRunCheckpointSummary:
+        try:
+            options_obj = json.loads(row["options_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            options_obj = {}
+        if not isinstance(options_obj, dict):
+            options_obj = {}
+
         try:
             summary_obj = json.loads(row["summary_json"] or "{}")
         except (TypeError, json.JSONDecodeError):
@@ -237,6 +257,7 @@ class CheckpointStore:
             updated_at=row["updated_at"],
             host_provenance_valid=(row["host_fingerprint"] == self.host_fingerprint),
             stages=stages,
+            options=options_obj,
             summary=summary_obj,
         )
 
@@ -249,7 +270,7 @@ class CheckpointStore:
         run_id: Optional[str] = None,
         resume: bool = False,
     ) -> ScanRunCheckpointSummary:
-        canonical_repo = os.path.realpath(repo_path)
+        canonical_repo = _validate_repo_path_arg(repo_path)
         norm_repo = os.path.normcase(canonical_repo)
         commit_sha_clean = str(commit_sha or "")
         app_group_clean = str(app_group or "default")
@@ -289,32 +310,35 @@ class CheckpointStore:
                         continue
                     if not isinstance(opts, dict) or not isinstance(summ, dict):
                         continue
-                    return self._build_run_summary_unlocked(row)
+                    try:
+                        return self._build_run_summary_unlocked(row)
+                    except (ValidationError, TypeError, ValueError):
+                        continue
 
             new_run_id = run_id or f"run-{uuid.uuid4().hex[:12]}"
             now = _utc_now_iso()
             options_json = json.dumps(options or {}, sort_keys=True, default=str)
-            conn.execute(
-                """
-                INSERT INTO scan_runs (
-                    run_id, repo_path, commit_sha, app_group, host_fingerprint,
-                    status, options_json, summary_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    new_run_id,
-                    canonical_repo,
-                    commit_sha_clean,
-                    app_group_clean,
-                    self.host_fingerprint,
-                    "RUNNING",
-                    options_json,
-                    "{}",
-                    now,
-                    now,
-                ),
-            )
-            conn.commit()
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO scan_runs (
+                        run_id, repo_path, commit_sha, app_group, host_fingerprint,
+                        status, options_json, summary_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        new_run_id,
+                        canonical_repo,
+                        commit_sha_clean,
+                        app_group_clean,
+                        self.host_fingerprint,
+                        "RUNNING",
+                        options_json,
+                        "{}",
+                        now,
+                        now,
+                    ),
+                )
             created = conn.execute(
                 "SELECT * FROM scan_runs WHERE run_id = ?",
                 (new_run_id,),
@@ -347,27 +371,27 @@ class CheckpointStore:
             if exists is None:
                 raise ValueError(f"Unknown scan run_id: {run_id}")
 
-            conn.execute(
-                """
-                INSERT INTO stage_checkpoints (
-                    run_id, stage_name, status, payload_json, payload_sha256,
-                    duration_ms, metadata_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(run_id, stage_name) DO UPDATE SET
-                    status = excluded.status,
-                    payload_json = excluded.payload_json,
-                    payload_sha256 = excluded.payload_sha256,
-                    duration_ms = excluded.duration_ms,
-                    metadata_json = excluded.metadata_json,
-                    updated_at = excluded.updated_at
-                """,
-                (run_id, stage_name, status, payload_json, payload_sha256, dur, metadata_json, now),
-            )
-            conn.execute(
-                "UPDATE scan_runs SET updated_at = ? WHERE run_id = ?",
-                (now, run_id),
-            )
-            conn.commit()
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO stage_checkpoints (
+                        run_id, stage_name, status, payload_json, payload_sha256,
+                        duration_ms, metadata_json, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(run_id, stage_name) DO UPDATE SET
+                        status = excluded.status,
+                        payload_json = excluded.payload_json,
+                        payload_sha256 = excluded.payload_sha256,
+                        duration_ms = excluded.duration_ms,
+                        metadata_json = excluded.metadata_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (run_id, stage_name, status, payload_json, payload_sha256, dur, metadata_json, now),
+                )
+                conn.execute(
+                    "UPDATE scan_runs SET updated_at = ? WHERE run_id = ?",
+                    (now, run_id),
+                )
 
         return StageCheckpointItem(
             stage_name=stage_name,
@@ -408,14 +432,17 @@ class CheckpointStore:
         if not isinstance(meta, dict):
             meta = {}
 
-        item = StageCheckpointItem(
-            stage_name=row["stage_name"],
-            status=row["status"],
-            payload_sha256=row["payload_sha256"],
-            duration_ms=float(row["duration_ms"]),
-            updated_at=row["updated_at"],
-            metadata=meta,
-        )
+        try:
+            item = StageCheckpointItem(
+                stage_name=row["stage_name"],
+                status=row["status"],
+                payload_sha256=row["payload_sha256"],
+                duration_ms=float(row["duration_ms"]),
+                updated_at=row["updated_at"],
+                metadata=meta,
+            )
+        except (ValidationError, TypeError, ValueError):
+            return None
         return item, payload
 
     def mark_run_status(
@@ -430,20 +457,20 @@ class CheckpointStore:
         now = _utc_now_iso()
         with self._lock:
             conn = self._require_conn_unlocked()
-            if summary is not None:
-                summary_json = json.dumps(summary, sort_keys=True, default=str)
-                cur = conn.execute(
-                    "UPDATE scan_runs SET status = ?, summary_json = ?, updated_at = ? WHERE run_id = ?",
-                    (status, summary_json, now, run_id),
-                )
-            else:
-                cur = conn.execute(
-                    "UPDATE scan_runs SET status = ?, updated_at = ? WHERE run_id = ?",
-                    (status, now, run_id),
-                )
-            if cur.rowcount == 0:
-                raise ValueError(f"Unknown scan run_id: {run_id}")
-            conn.commit()
+            with conn:
+                if summary is not None:
+                    summary_json = json.dumps(summary, sort_keys=True, default=str)
+                    cur = conn.execute(
+                        "UPDATE scan_runs SET status = ?, summary_json = ?, updated_at = ? WHERE run_id = ?",
+                        (status, summary_json, now, run_id),
+                    )
+                else:
+                    cur = conn.execute(
+                        "UPDATE scan_runs SET status = ?, updated_at = ? WHERE run_id = ?",
+                        (status, now, run_id),
+                    )
+                if cur.rowcount == 0:
+                    raise ValueError(f"Unknown scan run_id: {run_id}")
 
     def get_run(self, run_id: str) -> Optional[ScanRunCheckpointSummary]:
         with self._lock:
@@ -454,7 +481,10 @@ class CheckpointStore:
             ).fetchone()
             if row is None:
                 return None
-            return self._build_run_summary_unlocked(row)
+            try:
+                return self._build_run_summary_unlocked(row)
+            except (ValidationError, TypeError, ValueError):
+                return None
 
     def list_runs(
         self,
@@ -462,21 +492,32 @@ class CheckpointStore:
         limit: int = 50,
     ) -> List[ScanRunCheckpointSummary]:
         clamped_limit = max(1, min(500, int(limit)))
+        canonical_repo: Optional[str] = None
+        if repo_path is not None:
+            canonical_repo = _validate_repo_path_arg(repo_path)
+
         with self._lock:
             conn = self._require_conn_unlocked()
-            if repo_path:
-                canonical_repo = os.path.realpath(repo_path)
+            if canonical_repo is not None:
                 norm_repo = os.path.normcase(canonical_repo)
                 rows = conn.execute(
                     "SELECT * FROM scan_runs ORDER BY updated_at DESC, rowid DESC",
                 ).fetchall()
-                filtered = [r for r in rows if os.path.normcase(r["repo_path"]) == norm_repo][:clamped_limit]
+                filtered = [
+                    r for r in rows if os.path.normcase(str(r["repo_path"] or "")) == norm_repo
+                ][:clamped_limit]
             else:
                 filtered = conn.execute(
                     "SELECT * FROM scan_runs ORDER BY updated_at DESC, rowid DESC LIMIT ?",
                     (clamped_limit,),
                 ).fetchall()
-            return [self._build_run_summary_unlocked(r) for r in filtered]
+            summaries: List[ScanRunCheckpointSummary] = []
+            for r in filtered:
+                try:
+                    summaries.append(self._build_run_summary_unlocked(r))
+                except (ValidationError, TypeError, ValueError):
+                    continue
+            return summaries
 
     def verify_host_provenance(
         self,
@@ -484,7 +525,7 @@ class CheckpointStore:
         repo_path: str,
         current_commit_sha: str,
     ) -> Tuple[bool, str]:
-        canonical_repo = os.path.realpath(repo_path)
+        canonical_repo = _validate_repo_path_arg(repo_path)
         with self._lock:
             conn = self._require_conn_unlocked()
             row = conn.execute(
@@ -500,7 +541,7 @@ class CheckpointStore:
             return False, "Repository path mismatch between checkpoint and target repository"
         if row["status"] not in ("COMPLETED", "PARTIAL"):
             return False, f"Checkpoint run status '{row['status']}' is not COMPLETED or PARTIAL"
-        if current_commit_sha and row["commit_sha"] != current_commit_sha:
+        if (current_commit_sha or row["commit_sha"]) and row["commit_sha"] != current_commit_sha:
             return (
                 False,
                 f"Commit SHA mismatch: checkpoint scanned '{row['commit_sha']}', current HEAD is '{current_commit_sha}'",
@@ -512,34 +553,34 @@ class CheckpointStore:
         now = _utc_now_iso()
         with self._lock:
             conn = self._require_conn_unlocked()
-            conn.execute(
-                """
-                INSERT INTO fleet_runs (
-                    fleet_run_id, manifest_name, status, total_repos,
-                    completed_repos, failed_repos, summary_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(fleet_run_id) DO UPDATE SET
-                    manifest_name = excluded.manifest_name,
-                    status = excluded.status,
-                    total_repos = excluded.total_repos,
-                    completed_repos = excluded.completed_repos,
-                    failed_repos = excluded.failed_repos,
-                    summary_json = excluded.summary_json,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    fleet_run.fleet_run_id,
-                    fleet_run.manifest_name,
-                    fleet_run.status,
-                    fleet_run.total_repos,
-                    fleet_run.completed_repos,
-                    fleet_run.failed_repos,
-                    summary_json,
-                    fleet_run.created_at,
-                    now,
-                ),
-            )
-            conn.commit()
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO fleet_runs (
+                        fleet_run_id, manifest_name, status, total_repos,
+                        completed_repos, failed_repos, summary_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(fleet_run_id) DO UPDATE SET
+                        manifest_name = excluded.manifest_name,
+                        status = excluded.status,
+                        total_repos = excluded.total_repos,
+                        completed_repos = excluded.completed_repos,
+                        failed_repos = excluded.failed_repos,
+                        summary_json = excluded.summary_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        fleet_run.fleet_run_id,
+                        fleet_run.manifest_name,
+                        fleet_run.status,
+                        fleet_run.total_repos,
+                        fleet_run.completed_repos,
+                        fleet_run.failed_repos,
+                        summary_json,
+                        fleet_run.created_at,
+                        now,
+                    ),
+                )
 
     def list_fleet_runs(self, limit: int = 30) -> FleetRunListResponse:
         clamped_limit = max(1, min(500, int(limit)))
@@ -554,7 +595,10 @@ class CheckpointStore:
 
         runs: List[FleetRunResponse] = []
         for row in rows:
-            runs.append(FleetRunResponse.model_validate_json(row["summary_json"]))
+            try:
+                runs.append(FleetRunResponse.model_validate_json(row["summary_json"]))
+            except (ValidationError, TypeError, ValueError):
+                continue
         return FleetRunListResponse(total=total, runs=runs)
 
     def gc(
@@ -594,9 +638,9 @@ class CheckpointStore:
                     pruned_checkpoints += int(cnt_row["cnt"])
 
             if not dry_run and prune_run_ids:
-                for rid in prune_run_ids:
-                    conn.execute("DELETE FROM scan_runs WHERE run_id = ?", (rid,))
-                conn.commit()
+                with conn:
+                    for rid in prune_run_ids:
+                        conn.execute("DELETE FROM scan_runs WHERE run_id = ?", (rid,))
 
             kept_runs = len(all_rows) - len(prune_run_ids)
 

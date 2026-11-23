@@ -860,3 +860,134 @@ class TestCheckpointStore:
                 os.rmdir(temp_parent / "skip_junc")
         finally:
             store.close()
+
+
+class TestPillar4FinalReviewHardening:
+    def test_control_chars_c0_del_and_ipv6_mapped_metadata_egress_blocked(self, tmp_path: Path):
+        repo_dir = tmp_path / "repo"
+        out_dir = tmp_path / "out"
+        repo_dir.mkdir()
+        out_dir.mkdir()
+
+        for ctrl_val in ("bad\x07path", "bad\x1bpath", "bad\tpath", "bad\x7fpath"):
+            with pytest.raises(HostileRepoError):
+                build_sandbox_docker_command(ctrl_val, str(out_dir))
+            with pytest.raises(HostileRepoError):
+                assert_safe_config_source(ctrl_val, str(repo_dir))
+
+        for bad_ip in (
+            "::ffff:169.254.169.254",
+            "::ffff:a9fe:a9fe",
+            "::ffff:100.100.100.200",
+            "fd00:ec2::254",
+            "fd00:0ec2::0254",
+        ):
+            with pytest.raises(HostileRepoError):
+                build_sandbox_docker_command(
+                    str(repo_dir),
+                    str(out_dir),
+                    allow_egress_hosts=[bad_ip],
+                )
+
+    def test_checkpoint_store_rejects_empty_repo_tightens_sha_skips_corrupt_and_rolls_back(self, tmp_path: Path):
+        import hashlib
+
+        vault_dir = tmp_path / ".alastor_vault"
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+
+        store = CheckpointStore(str(vault_dir))
+        try:
+            for bad_repo in ("", "   ", "\t", "bad\nrepo"):
+                with pytest.raises(ValueError):
+                    store.create_or_get_run(bad_repo)
+                with pytest.raises(ValueError):
+                    store.list_runs(repo_path=bad_repo)
+                with pytest.raises(ValueError):
+                    store.verify_host_provenance("run-x", bad_repo, "abc")
+
+            run = store.create_or_get_run(
+                repo_path=str(repo_dir),
+                commit_sha="deadbeef",
+                app_group="core",
+                options={"profile": "fast-ci", "fusion_reports": ["semgrep.json"]},
+            )
+            assert run.options == {"profile": "fast-ci", "fusion_reports": ["semgrep.json"]}
+            fetched = store.get_run(run.run_id)
+            assert fetched is not None
+            assert fetched.options == {"profile": "fast-ci", "fusion_reports": ["semgrep.json"]}
+
+            store.mark_run_status(run.run_id, "COMPLETED")
+            # Tightened commit SHA check: non-empty checkpoint SHA must reject empty current_commit_sha
+            ok_empty_cur, _ = store.verify_host_provenance(run.run_id, str(repo_dir), "")
+            assert ok_empty_cur is False
+
+            run_no_sha = store.create_or_get_run(repo_path=str(repo_dir), commit_sha="")
+            store.mark_run_status(run_no_sha.run_id, "COMPLETED")
+            ok_both_empty, _ = store.verify_host_provenance(run_no_sha.run_id, str(repo_dir), "")
+            assert ok_both_empty is True
+            ok_mismatch, _ = store.verify_host_provenance(run_no_sha.run_id, str(repo_dir), "cafebabe")
+            assert ok_mismatch is False
+
+            # Multi-statement DML rollback in save_stage when second statement fails
+            with sqlite3.connect(str(vault_dir / "checkpoints.db")) as raw_conn:
+                raw_conn.execute(
+                    """
+                    CREATE TRIGGER trg_fail_run_update
+                    BEFORE UPDATE OF updated_at ON scan_runs
+                    BEGIN
+                        SELECT RAISE(ABORT, 'simulated failure on second statement');
+                    END;
+                    """
+                )
+                raw_conn.commit()
+            with pytest.raises(sqlite3.DatabaseError):
+                store.save_stage(run.run_id, "S0_CPG", "COMPLETED", payload={"x": 1})
+            assert store.get_stage(run.run_id, "S0_CPG") is None
+            with sqlite3.connect(str(vault_dir / "checkpoints.db")) as raw_conn:
+                raw_conn.execute("DROP TRIGGER IF EXISTS trg_fail_run_update;")
+                raw_conn.commit()
+
+            # Corrupted/invalid enum rows in scan_runs, stage_checkpoints, and fleet_runs are skipped safely on read
+            bad_payload = '{"ok": true}'
+            bad_sha = hashlib.sha256(bad_payload.encode("utf-8")).hexdigest()
+            with sqlite3.connect(str(vault_dir / "checkpoints.db")) as raw_conn:
+                raw_conn.execute(
+                    """
+                    INSERT INTO scan_runs (
+                        run_id, repo_path, commit_sha, app_group, host_fingerprint,
+                        status, options_json, summary_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("run-corrupt", str(repo_dir), "deadbeef", "g", store.host_fingerprint, "BOGUS_ENUM", "{}", "{}", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
+                )
+                raw_conn.execute(
+                    """
+                    INSERT INTO stage_checkpoints (
+                        run_id, stage_name, status, payload_json, payload_sha256,
+                        duration_ms, metadata_json, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (run.run_id, "S1_RULES", "BOGUS_STAGE", bad_payload, bad_sha, 1.0, "{}", "2026-01-01T00:00:00Z"),
+                )
+                raw_conn.execute(
+                    """
+                    INSERT INTO fleet_runs (
+                        fleet_run_id, manifest_name, status, total_repos,
+                        completed_repos, failed_repos, summary_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("fleet-corrupt", "bad", "BAD_ENUM", 1, 0, 0, '{"status": "BAD_ENUM"}', "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
+                )
+                raw_conn.commit()
+
+            assert store.get_run("run-corrupt") is None
+            assert store.get_stage(run.run_id, "S1_RULES") is None
+            valid_runs = store.list_runs(repo_path=str(repo_dir))
+            assert all(r.run_id != "run-corrupt" for r in valid_runs)
+            assert any(r.run_id == run.run_id for r in valid_runs)
+            assert store.get_run(run.run_id).stages == []
+            fleet_listed = store.list_fleet_runs()
+            assert all(fr.fleet_run_id != "fleet-corrupt" for fr in fleet_listed.runs)
+        finally:
+            store.close()
