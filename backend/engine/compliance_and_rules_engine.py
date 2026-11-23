@@ -121,6 +121,7 @@ _AT_OP = getattr(_re_parser, "AT")
 _ATOMIC_GROUP_OP = getattr(_re_parser, "ATOMIC_GROUP", None)
 _MAXREPEAT = _re_parser.MAXREPEAT
 _IGNORECASE_FLAG = getattr(re, "IGNORECASE", 2)
+_HIGH_BACKTRACK_SPAN = 15
 
 _LANGUAGE_ALIASES: Dict[str, Tuple[str, ...]] = {
     "python": ("python",),
@@ -659,60 +660,50 @@ def _has_repeat_in_items(items: Sequence[Any]) -> bool:
 def _extract_branch_literal_prefix(
     branch_items: Sequence[Any],
     effective_flags: int,
-) -> Optional[str]:
+) -> Optional[Tuple[FrozenSet[str], ...]]:
     """
-    Extracts the normalized leading literal sequence for an alternation arm inside a
-    quantified group. Returns `None` if the arm is empty or starts with a wildcard,
-    character class, anchor, nested branch, or repeat (which cannot be proven disjoint).
+    Extracts normalized per-position character sets for an alternation arm inside a
+    quantified group, honoring scoped `(?i:...)` / `(?-i:...)` flags. Returns `None`
+    if the arm is empty or begins with a wildcard, class, anchor, branch, or repeat.
     """
-    items = list(branch_items)
-    flags = effective_flags
-    while len(items) == 1 and items[0][0] == _SUBPATTERN_OP:
-        _, add_flags, del_flags, sub = items[0][1]
-        flags = (flags | add_flags) & ~del_flags
-        items = list(sub)
-
-    if not items:
+    if not branch_items:
         return None
 
-    chars: List[str] = []
-    for idx, (op, av) in enumerate(items):
-        if op == _SUBPATTERN_OP and idx == 0:
-            sub_prefix = _extract_branch_literal_prefix(av[3], (flags | av[1]) & ~av[2])
-            if not sub_prefix:
-                return None
-            return sub_prefix
-        if op in _LITERAL_OPS:
+    out: List[FrozenSet[str]] = []
+    for idx, (op, av) in enumerate(branch_items):
+        if op == _SUBPATTERN_OP:
+            _, add_f, del_f, sub = av
+            sub_flags = (effective_flags | add_f) & ~del_f
+            sub_pref = _extract_branch_literal_prefix(sub, sub_flags)
+            if not sub_pref:
+                return None if idx == 0 else tuple(out)
+            out.extend(sub_pref)
+        elif op in _LITERAL_OPS:
             ch = chr(av)
-            chars.append(ch.casefold() if (flags & _IGNORECASE_FLAG) else ch)
+            if effective_flags & _IGNORECASE_FLAG:
+                out.append(frozenset({ch.lower(), ch.upper(), ch.casefold()}))
+            else:
+                out.append(frozenset({ch}))
         elif idx == 0:
             return None
         else:
             break
-    return "".join(chars) if chars else None
+    return tuple(out) if out else None
 
 
 def _has_overlapping_ast_branches(branches: Sequence[Sequence[Any]], effective_flags: int) -> bool:
     if len(branches) <= 1:
         return False
 
-    first_chars: Set[str] = set()
-    prefixes: List[str] = []
-
+    seen_first_chars: Set[str] = set()
     for arm in branches:
         prefix = _extract_branch_literal_prefix(arm, effective_flags)
         if not prefix:
             return True
-        lead = prefix[0]
-        if lead in first_chars:
+        lead_set = prefix[0]
+        if lead_set & seen_first_chars:
             return True
-        first_chars.add(lead)
-        prefixes.append(prefix)
-
-    for idx_a, pref_a in enumerate(prefixes):
-        for idx_b, pref_b in enumerate(prefixes):
-            if idx_a != idx_b and pref_b.startswith(pref_a):
-                return True
+        seen_first_chars.update(lead_set)
     return False
 
 
@@ -834,58 +825,262 @@ def _flatten_sequence_with_flags(
     return flat
 
 
+def _is_high_backtrack_repeat(av: Tuple[Any, Any, Any]) -> bool:
+    min_val, max_val, _ = av
+    if max_val == _MAXREPEAT:
+        return True
+    return (int(max_val) - int(min_val)) >= _HIGH_BACKTRACK_SPAN
+
+
+def _is_whitespace_atom(atom: Optional[Tuple[Any, Any, int]]) -> bool:
+    if atom is None:
+        return False
+    op, av, flags = atom
+    if op == _ANY_OP or op in _NOT_LITERAL_OPS:
+        return False
+    if op in _LITERAL_OPS:
+        return chr(av).isspace()
+    if op == _CATEGORY_OP:
+        name = str(av)
+        return "SPACE" in name and "NOT_SPACE" not in name
+    if op == _IN_OP:
+        if av and av[0][0] == _NEGATE_OP:
+            return False
+        return all(
+            (sub_op in _LITERAL_OPS and chr(sub_av).isspace())
+            or (sub_op == _CATEGORY_OP and "SPACE" in str(sub_av) and "NOT_SPACE" not in str(sub_av))
+            for sub_op, sub_av in av
+        )
+    return False
+
+
+def _any_atoms_overlap(
+    atoms_a: Sequence[Optional[Tuple[Any, Any, int]]],
+    atoms_b: Sequence[Optional[Tuple[Any, Any, int]]],
+) -> bool:
+    return any(_items_can_overlap(a, b) for a in atoms_a for b in atoms_b)
+
+
+def _collect_branch_high_repeats(
+    branches: Sequence[Sequence[Any]],
+    flags: int,
+) -> List[Optional[Tuple[Any, Any, int]]]:
+    collected: List[Optional[Tuple[Any, Any, int]]] = []
+    for arm in branches:
+        for op, av, item_flags in _flatten_sequence_with_flags(arm, flags):
+            if op in _REPEAT_OPS and _is_high_backtrack_repeat(av):
+                collected.append(_single_char_atom_from_repeat(av[2], item_flags))
+            elif op == _BRANCH_OP:
+                collected.extend(_collect_branch_high_repeats(av[1], item_flags))
+    return collected
+
+
+def _sequence_can_match_empty(items: Sequence[Any]) -> bool:
+    for op, av in items:
+        if op == _AT_OP:
+            continue
+        if op in _REPEAT_OPS and av[0] == 0:
+            continue
+        if op == _SUBPATTERN_OP and _sequence_can_match_empty(av[3]):
+            continue
+        if op == _BRANCH_OP and any(_sequence_can_match_empty(arm) for arm in av[1]):
+            continue
+        return False
+    return True
+
+
+def _extract_leading_barrier_atoms(
+    items: Sequence[Any],
+    flags: int,
+) -> Optional[List[Optional[Tuple[Any, Any, int]]]]:
+    for op, av in items:
+        if op == _AT_OP:
+            continue
+        if op in _REPEAT_OPS:
+            if av[0] == 0:
+                return None
+            return [_single_char_atom_from_repeat(av[2], flags)]
+        if op == _SUBPATTERN_OP:
+            sub_flags = (flags | av[1]) & ~av[2]
+            return _extract_leading_barrier_atoms(av[3], sub_flags)
+        if op == _BRANCH_OP:
+            arm_atoms: List[Optional[Tuple[Any, Any, int]]] = []
+            for arm in av[1]:
+                a = _extract_leading_barrier_atoms(arm, flags)
+                if a is None:
+                    return None
+                arm_atoms.extend(a)
+            return arm_atoms or None
+        if op in (_ANY_OP, _IN_OP, _CATEGORY_OP) or op in _LITERAL_OPS or op in _NOT_LITERAL_OPS:
+            return [(op, av, flags)]
+        return None
+    return None
+
+
+@dataclass(frozen=True)
+class _SeqToken:
+    pos: int
+    is_high_repeat: bool
+    is_ws: bool
+    optional: bool
+    atoms: Tuple[Optional[Tuple[Any, Any, int]], ...]
+    barrier_atoms: Tuple[Optional[Tuple[Any, Any, int]], ...]
+
+
 def _validate_sequence_unbounded_repeats(
     items: Sequence[Any],
     effective_flags: int,
 ) -> None:
     flat = _flatten_sequence_with_flags(items, effective_flags)
-    unbounded_positions: List[Tuple[int, Optional[Tuple[Any, Any, int]]]] = []
+    tokens: List[_SeqToken] = []
 
     for idx, (op, av, item_flags) in enumerate(flat):
-        if op in _REPEAT_OPS and av[1] == _MAXREPEAT:
-            unbounded_positions.append((idx, _single_char_atom_from_repeat(av[2], item_flags)))
-
-    if len(unbounded_positions) > 2:
-        raise ValueError(
-            "Too many sequential unbounded repeats (> 2) are disallowed for ReDoS safety."
-        )
-
-    for pair_idx in range(len(unbounded_positions) - 1):
-        prev_pos, prev_atom = unbounded_positions[pair_idx]
-        curr_pos, curr_atom = unbounded_positions[pair_idx + 1]
-        if not _items_can_overlap(prev_atom, curr_atom):
+        if op == _AT_OP:
             continue
-
-        # Check whether any mandatory non-overlapping literal/atom separates prev and curr
-        has_non_overlapping_barrier = False
-        for mid_op, mid_av, mid_flags in flat[prev_pos + 1 : curr_pos]:
-            if mid_op == _AT_OP:
-                continue
-            if mid_op in _REPEAT_OPS and mid_av[0] == 0:
-                continue
-            mid_atom = (
-                _single_char_atom_from_repeat(mid_av[2], mid_flags)
-                if mid_op in _REPEAT_OPS
-                else (
-                    (mid_op, mid_av, mid_flags)
-                    if (
-                        mid_op in (_ANY_OP, _IN_OP, _CATEGORY_OP)
-                        or mid_op in _LITERAL_OPS
-                        or mid_op in _NOT_LITERAL_OPS
-                    )
-                    else None
+        if op in _REPEAT_OPS:
+            is_high = _is_high_backtrack_repeat(av)
+            atom = _single_char_atom_from_repeat(av[2], item_flags)
+            tokens.append(
+                _SeqToken(
+                    pos=idx,
+                    is_high_repeat=is_high,
+                    is_ws=_is_whitespace_atom(atom),
+                    optional=(av[0] == 0),
+                    atoms=(atom,),
+                    barrier_atoms=(atom,),
                 )
             )
-            if mid_atom is not None and not _items_can_overlap(prev_atom, mid_atom):
-                has_non_overlapping_barrier = True
-                break
-            # First consuming mandatory token overlaps prev_atom -> barrier compromised
-            break
-
-        if not has_non_overlapping_barrier:
-            raise ValueError(
-                "Adjacent or non-anchored overlapping unbounded repeats are disallowed for ReDoS safety."
+        elif op == _BRANCH_OP:
+            branch_repeats = _collect_branch_high_repeats(av[1], item_flags)
+            can_empty = any(_sequence_can_match_empty(arm) for arm in av[1])
+            if branch_repeats:
+                tokens.append(
+                    _SeqToken(
+                        pos=idx,
+                        is_high_repeat=True,
+                        is_ws=all(_is_whitespace_atom(a) for a in branch_repeats),
+                        optional=can_empty,
+                        atoms=tuple(branch_repeats),
+                        barrier_atoms=tuple(branch_repeats),
+                    )
+                )
+            else:
+                b_atoms = (
+                    None
+                    if can_empty
+                    else _extract_leading_barrier_atoms([(op, av)], item_flags)
+                )
+                tokens.append(
+                    _SeqToken(
+                        pos=idx,
+                        is_high_repeat=False,
+                        is_ws=False,
+                        optional=can_empty or (b_atoms is None),
+                        atoms=tuple(b_atoms or (None,)),
+                        barrier_atoms=tuple(b_atoms or (None,)),
+                    )
+                )
+        elif op == _SUBPATTERN_OP:
+            _, add_f, del_f, sub = av
+            sub_flags = (item_flags | add_f) & ~del_f
+            if any(s_op == _BRANCH_OP for s_op, _ in sub):
+                # Subpattern contains a branch; inspect all repeats/emptiness across sub
+                branch_repeats: List[Optional[Tuple[Any, Any, int]]] = []
+                for s_op, s_av in sub:
+                    if s_op == _BRANCH_OP:
+                        branch_repeats.extend(_collect_branch_high_repeats(s_av[1], sub_flags))
+                    elif s_op in _REPEAT_OPS and _is_high_backtrack_repeat(s_av):
+                        branch_repeats.append(_single_char_atom_from_repeat(s_av[2], sub_flags))
+                can_empty = _sequence_can_match_empty(sub)
+                if branch_repeats:
+                    tokens.append(
+                        _SeqToken(
+                            pos=idx,
+                            is_high_repeat=True,
+                            is_ws=all(_is_whitespace_atom(a) for a in branch_repeats),
+                            optional=can_empty,
+                            atoms=tuple(branch_repeats),
+                            barrier_atoms=tuple(branch_repeats),
+                        )
+                    )
+                else:
+                    b_atoms = None if can_empty else _extract_leading_barrier_atoms(sub, sub_flags)
+                    tokens.append(
+                        _SeqToken(
+                            pos=idx,
+                            is_high_repeat=False,
+                            is_ws=False,
+                            optional=can_empty or (b_atoms is None),
+                            atoms=tuple(b_atoms or (None,)),
+                            barrier_atoms=tuple(b_atoms or (None,)),
+                        )
+                    )
+                continue
+            tokens.append(
+                _SeqToken(
+                    pos=idx,
+                    is_high_repeat=False,
+                    is_ws=False,
+                    optional=_sequence_can_match_empty(sub),
+                    atoms=(None,),
+                    barrier_atoms=(None,),
+                )
             )
+        else:
+            single_atom = (
+                (op, av, item_flags)
+                if (
+                    op in (_ANY_OP, _IN_OP, _CATEGORY_OP)
+                    or op in _LITERAL_OPS
+                    or op in _NOT_LITERAL_OPS
+                )
+                else None
+            )
+            tokens.append(
+                _SeqToken(
+                    pos=idx,
+                    is_high_repeat=False,
+                    is_ws=False,
+                    optional=False,
+                    atoms=(single_atom,),
+                    barrier_atoms=(single_atom,),
+                )
+            )
+
+    # Reject directly adjacent whitespace high-backtrack repeats (e.g. \s*\s*)
+    for t_idx in range(len(tokens) - 1):
+        if (
+            tokens[t_idx].is_high_repeat
+            and tokens[t_idx].is_ws
+            and tokens[t_idx + 1].is_high_repeat
+            and tokens[t_idx + 1].is_ws
+        ):
+            raise ValueError(
+                "Adjacent whitespace unbounded repeats are disallowed for ReDoS safety."
+            )
+
+    non_ws_indices = [
+        t_idx
+        for t_idx, tok in enumerate(tokens)
+        if tok.is_high_repeat and not tok.is_ws
+    ]
+
+    for prev_t_idx in non_ws_indices:
+        prev_tok = tokens[prev_t_idx]
+        for k in range(prev_t_idx + 1, len(tokens)):
+            tok = tokens[k]
+            if tok.is_high_repeat and not tok.is_ws:
+                if _any_atoms_overlap(prev_tok.atoms, tok.atoms):
+                    raise ValueError(
+                        "Adjacent or non-anchored overlapping high-backtrack repeats are disallowed for ReDoS safety."
+                    )
+                if not tok.optional and not _any_atoms_overlap(prev_tok.atoms, tok.barrier_atoms):
+                    break
+                continue
+            if tok.optional:
+                continue
+            if not _any_atoms_overlap(prev_tok.atoms, tok.barrier_atoms):
+                break
 
 
 def _validate_ast_sequence(
