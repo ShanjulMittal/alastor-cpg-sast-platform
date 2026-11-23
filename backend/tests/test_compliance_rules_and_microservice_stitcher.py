@@ -261,6 +261,47 @@ class TestComplianceAutopilot:
         with pytest.raises(ValueError):
             evaluate_compliance(str(tmp_path), findings=[], frameworks=["UNKNOWN_STD"])  # type: ignore[list-item]
 
+    def test_cwe_canonicalization_leading_zeros_and_underscore_boundary(self, tmp_path: Path):
+        findings = [
+            _make_finding(
+                "f-cwe079",
+                rule_id="CUSTOM-XSS-ZERO",
+                severity="HIGH",
+                cwe_id="CWE-079",
+                title="Leading zero XSS",
+            ),
+            _make_finding(
+                "f-cwe79-under",
+                rule_id="CUSTOM-XSS-UNDER",
+                severity="MEDIUM",
+                cwe_id="CWE-79_XSS",
+                title="Underscore boundary XSS",
+            ),
+        ]
+        resp = evaluate_compliance(str(tmp_path), findings=findings, frameworks=["OWASP_ASVS_5_0"])
+        asvs = resp.frameworks[0]
+        v52 = next(c for c in asvs.controls if c.control_id == "V5.2")
+        assert v52.status == "FAIL"
+        assert set(v52.matched_finding_ids) == {"f-cwe079", "f-cwe79-under"}
+        assert v52.matched_cwes == ["CWE-79"]
+
+        # Confirm CWE-798 alone does NOT trigger CWE-79
+        resp_798 = evaluate_compliance(
+            str(tmp_path),
+            findings=[
+                _make_finding(
+                    "f-798",
+                    rule_id="RULE-8-HARDCODED-SECRET",
+                    severity="CRITICAL",
+                    cwe_id="CWE-798",
+                )
+            ],
+            frameworks=["OWASP_ASVS_5_0"],
+        )
+        v52_after = next(c for c in resp_798.frameworks[0].controls if c.control_id == "V5.2")
+        assert v52_after.status == "PASS"
+        assert v52_after.matched_finding_ids == []
+
 
 # ---------------------------------------------------------------------------
 # 2. Custom Rule Studio + ReDoS Validator + Atomic Vault
@@ -279,6 +320,18 @@ class TestCustomRuleStudio:
             "((a|aa))+",
             "(a|ab)*",
             "(.*a){5}",
+            "(a+)(?#c)+x",
+            "([a-z]+)(?#c)+x",
+            "(?=a)(?#c)+",
+            "(?i)(a|Aa)+x",
+            "(?x)(a | a)+x",
+            r"(\x41|AA)+x",
+            r"(\061|11)+x",
+            r"(\u0041|AA)+x",
+            r"(\N{LATIN SMALL LETTER A}|aa)+x",
+            ".*.*.*.*x",
+            "a*a*a*a*a*b",
+            ".*(.*)",
             r"(foo)\1",
             r"(?P<id>a)(?P=id)",
             r"(?=.*secret)token",
@@ -296,6 +349,8 @@ class TestCustomRuleStudio:
         "good_pattern",
         [
             r"pickle\.loads\s*\(",
+            r"eval\s*\([^)]+\)",
+            r"(?i)secret_key\s*=",
             r"(?:eval|exec)\s*\(",
             r"cursor\.execute\s*\(\s*f[\"']",
             r"yaml\.load\s*\([^)]*\)",
@@ -368,6 +423,37 @@ class TestCustomRuleStudio:
         assert reloaded.delete_rule("CUSTOM-PICKLE-01") is True
         assert reloaded.delete_rule("CUSTOM-PICKLE-01") is False
         assert reloaded.list_rules() == []
+
+    def test_atomic_vault_save_cleans_up_temp_file_on_replace_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        vault_dir = tmp_path / ".alastor_vault"
+        engine = CustomRuleEngine(str(vault_dir))
+        first = engine.create_rule(
+            CustomSecurityRule(
+                rule_id="CUSTOM-BASE-01",
+                name="Base Rule",
+                pattern=r"pickle\.loads\s*\(",
+            )
+        )
+        assert first.rule_id == "CUSTOM-BASE-01"
+
+        def _failing_replace(_src: str, _dst: str) -> None:
+            raise OSError("Simulated disk replace failure")
+
+        monkeypatch.setattr(os, "replace", _failing_replace)
+        with pytest.raises(OSError):
+            engine.create_rule(
+                CustomSecurityRule(
+                    rule_id="CUSTOM-FAIL-02",
+                    name="Failing Rule",
+                    pattern=r"yaml\.load\s*\(",
+                )
+            )
+
+        leftover_tmps = [p.name for p in vault_dir.iterdir() if ".tmp." in p.name]
+        assert leftover_tmps == []
+        assert [r.rule_id for r in engine.list_rules()] == ["CUSTOM-BASE-01"]
 
     def test_sample_code_test_rule_anti_pattern_suppression_and_secret_scrubbing(self, tmp_path: Path):
         engine = CustomRuleEngine(str(tmp_path / ".alastor_vault"))
@@ -751,4 +837,109 @@ class TestMicroserviceAttackGraphStitcher:
         )
         pos_by_svc = {n["data"]["service_name"]: n["position"]["x"] for n in resp.reactflow_nodes}
         assert pos_by_svc["edge-proxy"] < pos_by_svc["auth-service"] < pos_by_svc["ledger-service"]
+
+    def test_disconnected_cycle_discovery_and_host_affinity_and_placeholder_hosts(self, tmp_path: Path):
+        # Component 1: gateway -> billing (with template host placeholder + external 1-char subdomain negative)
+        gw = tmp_path / "gateway"
+        gw.mkdir()
+        (gw / "requirements.txt").write_text("fastapi==0.115.0\n", encoding="utf-8")
+        (gw / "gw.py").write_text(
+            "import requests\n"
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n"
+            "@app.post('/gw/run')\n"
+            "def run_gw(bid: str):\n"
+            "    requests.post(f'http://${BILLING_HOST}:8080/api/v1/charges/{bid}')\n"
+            "    requests.get('https://a.example.com/status')\n",
+            encoding="utf-8",
+        )
+
+        auth = tmp_path / "auth-service"
+        auth.mkdir()
+        (auth / "requirements.txt").write_text("fastapi==0.115.0\n", encoding="utf-8")
+        (auth / "auth.py").write_text(
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n"
+            "@app.get('/status')\n"
+            "def status():\n"
+            "    return {'ok': True}\n",
+            encoding="utf-8",
+        )
+
+        billing = tmp_path / "billing-service"
+        billing.mkdir()
+        (billing / "requirements.txt").write_text("fastapi==0.115.0\n", encoding="utf-8")
+        (billing / "bill.py").write_text(
+            "import sqlite3\n"
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n"
+            "@app.post('/api/v1/charges/{charge_id}')\n"
+            "def charge(charge_id: str):\n"
+            "    cur = sqlite3.connect(':memory:').cursor()\n"
+            '    cur.execute(f"SELECT * FROM charges WHERE id = {charge_id}")\n'
+            "    return {}\n",
+            encoding="utf-8",
+        )
+
+        # Component 2: Disconnected mutual cycle svc-c <-> svc-d
+        svc_c = tmp_path / "svc-c"
+        svc_c.mkdir()
+        (svc_c / "requirements.txt").write_text("fastapi==0.115.0\n", encoding="utf-8")
+        (svc_c / "c.py").write_text(
+            "import requests\n"
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n"
+            "@app.get('/c/ping')\n"
+            "def c_ping():\n"
+            "    return requests.get('http://svc-d:8000/d/pong').json()\n",
+            encoding="utf-8",
+        )
+
+        svc_d = tmp_path / "svc-d"
+        svc_d.mkdir()
+        (svc_d / "requirements.txt").write_text("fastapi==0.115.0\n", encoding="utf-8")
+        (svc_d / "d.py").write_text(
+            "import sqlite3, requests\n"
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n"
+            "@app.get('/d/pong')\n"
+            "def d_pong(uid: str):\n"
+            "    cur = sqlite3.connect(':memory:').cursor()\n"
+            '    cur.execute(f"SELECT * FROM t WHERE id = {uid}")\n'
+            "    return requests.get('http://svc-c:8000/c/ping').json()\n",
+            encoding="utf-8",
+        )
+
+        resp = stitch_microservice_attack_graph(
+            MicroserviceGraphRequest(
+                services=[
+                    MicroserviceRepoInput(service_name="gateway", repo_path=str(gw)),
+                    MicroserviceRepoInput(service_name="auth-service", repo_path=str(auth)),
+                    MicroserviceRepoInput(service_name="billing-service", repo_path=str(billing)),
+                    MicroserviceRepoInput(service_name="svc-c", repo_path=str(svc_c)),
+                    MicroserviceRepoInput(service_name="svc-d", repo_path=str(svc_d)),
+                ],
+                scan_findings=True,
+            )
+        )
+
+        # Template host placeholder matches path-only with 0.75 confidence
+        gw_to_bill = [
+            e for e in resp.edges
+            if e.source_service == "gateway" and e.target_service == "billing-service"
+        ]
+        assert len(gw_to_bill) == 1
+        assert gw_to_bill[0].confidence == 0.75
+
+        # 1-char subdomain 'a.example.com' must NOT falsely match 'auth-service'
+        assert not any(
+            e.source_service == "gateway" and e.target_service == "auth-service"
+            for e in resp.edges
+        )
+
+        # Both entry-rooted chain AND disconnected cycle component discovered
+        assert any(p.services == ["gateway", "billing-service"] for p in resp.attack_paths)
+        assert any(
+            set(p.services) == {"svc-c", "svc-d"} for p in resp.attack_paths
+        )
 

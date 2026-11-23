@@ -199,6 +199,8 @@ def _extract_host_hint_from_url(raw_url: str) -> str:
         return ""
     parsed = urlsplit(cleaned)
     host = (parsed.hostname or "").strip().lower()
+    if not host or "{" in host or "}" in host or "$" in host:
+        return ""
     return host
 
 
@@ -728,14 +730,16 @@ def _service_host_aliases(svc: MicroserviceRepoInput) -> Set[str]:
 
 
 def _match_host_affinity(host_hint: str, target_aliases: Set[str]) -> Tuple[bool, float]:
-    if not host_hint:
+    if not host_hint or "{" in host_hint or "}" in host_hint or "$" in host_hint:
         return True, 0.75
     hint_low = host_hint.strip().lower()
     hint_label = hint_low.split(".", 1)[0]
     if hint_low in target_aliases or hint_label in target_aliases:
         return True, 0.95
     for alias in target_aliases:
-        if len(alias) >= 3 and (alias in hint_low or hint_label in alias):
+        if len(alias) >= 3 and (
+            alias in hint_low or (len(hint_label) >= 3 and hint_label in alias)
+        ):
             return True, 0.88
     return False, 0.0
 
@@ -941,24 +945,27 @@ def stitch_microservice_attack_graph(
     service_names = [s.service_name for s in req.services]
     col_by_service, entry_services = _compute_node_columns(service_names, stitched_edges)
 
-    # Discover cross-service attack paths up to 4 hops
-    adj_edges: Dict[str, List[MicroserviceCallEdge]] = {s: [] for s in service_names}
+    # Discover cross-service attack paths up to 4 hops over unique (src, tgt) pairs
+    pair_edges: Dict[Tuple[str, str], List[MicroserviceCallEdge]] = {}
+    adj_targets: Dict[str, List[str]] = {s: [] for s in service_names}
     for e in stitched_edges:
-        adj_edges[e.source_service].append(e)
-
-    start_nodes = [s for s in service_names if s in entry_services and adj_edges[s]]
-    if not start_nodes:
-        start_nodes = [s for s in service_names if adj_edges[s]]
+        pair = (e.source_service, e.target_service)
+        if pair not in pair_edges:
+            pair_edges[pair] = []
+            adj_targets[e.source_service].append(e.target_service)
+        pair_edges[pair].append(e)
 
     discovered_paths: List[Tuple[int, CrossServiceAttackPath, Set[str]]] = []
     seen_path_sigs: Set[Tuple[Tuple[str, ...], Tuple[str, ...]]] = set()
+    visited_in_dfs: Set[str] = set()
 
     def _dfs(
         curr_svc: str,
         svc_chain: List[str],
-        edge_chain: List[MicroserviceCallEdge],
+        pair_chain: List[Tuple[str, str]],
     ) -> None:
-        if edge_chain:
+        visited_in_dfs.add(curr_svc)
+        if pair_chain:
             participating_fids: List[str] = []
             seen_fid: Set[str] = set()
             for svc_item in svc_chain:
@@ -974,10 +981,20 @@ def stitch_microservice_attack_graph(
                     comp_sev = _compute_composite_severity(
                         svc_chain, findings_by_service, finding_by_id, participating_fids
                     )
-                    hop_desc = " -> ".join(
-                        f"{e.source_service} [{e.protocol} {e.method} {e.normalized_path}] -> {e.target_service}"
-                        for e in edge_chain
-                    )
+                    hop_parts: List[str] = []
+                    hop_edge_ids: Set[str] = set()
+                    for pair in pair_chain:
+                        p_edges = pair_edges.get(pair, [])
+                        hop_edge_ids.update(pe.edge_id for pe in p_edges)
+                        edge_labels = ", ".join(
+                            f"{pe.protocol} {pe.method} {pe.normalized_path}"
+                            for pe in p_edges[:3]
+                        )
+                        if len(p_edges) > 3:
+                            edge_labels += f" (+{len(p_edges) - 3} more)"
+                        hop_parts.append(f"{pair[0]} [{edge_labels}] -> {pair[1]}")
+                    hop_desc = " -> ".join(hop_parts)
+
                     finding_summaries: List[str] = []
                     for fid in participating_fids[:6]:
                         f_obj = finding_by_id.get(fid)
@@ -1004,7 +1021,7 @@ def stitch_microservice_attack_graph(
                         path_id=f"path-{path_digest}",
                         title=clean_title,
                         composite_severity=comp_sev,
-                        hop_count=len(edge_chain),
+                        hop_count=len(pair_chain),
                         services=list(svc_chain),
                         finding_ids=participating_fids,
                         narrative=clean_narrative,
@@ -1013,24 +1030,29 @@ def stitch_microservice_attack_graph(
                         (
                             _SEVERITY_ORDER.get(comp_sev, 1),
                             attack_path,
-                            {e.edge_id for e in edge_chain},
+                            hop_edge_ids,
                         )
                     )
 
-        if len(edge_chain) >= _MAX_ATTACK_PATH_HOPS:
+        if len(pair_chain) >= _MAX_ATTACK_PATH_HOPS:
             return
 
-        for edge in adj_edges.get(curr_svc, ()):
-            if edge.target_service in svc_chain:
+        for nxt_svc in adj_targets.get(curr_svc, ()):
+            if nxt_svc in svc_chain:
                 continue
             _dfs(
-                edge.target_service,
-                svc_chain + [edge.target_service],
-                edge_chain + [edge],
+                nxt_svc,
+                svc_chain + [nxt_svc],
+                pair_chain + [(curr_svc, nxt_svc)],
             )
 
-    for start_svc in start_nodes:
-        _dfs(start_svc, [start_svc], [])
+    for start_svc in service_names:
+        if start_svc in entry_services and adj_targets[start_svc]:
+            _dfs(start_svc, [start_svc], [])
+
+    for start_svc in service_names:
+        if start_svc not in visited_in_dfs and adj_targets[start_svc]:
+            _dfs(start_svc, [start_svc], [])
 
     discovered_paths.sort(
         key=lambda item: (

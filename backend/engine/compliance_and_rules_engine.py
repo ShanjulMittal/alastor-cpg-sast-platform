@@ -56,8 +56,71 @@ _MAX_SCAN_LINES_PER_FILE = 10_000
 _MAX_SCAN_CHARS_PER_LINE = 2_000
 _MAX_TEST_MATCHES = 500
 _RULE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{2,64}$")
-_CWE_TOKEN_RE = re.compile(r"\bCWE-(\d+)\b", re.IGNORECASE)
-_BRACE_QUANT_RE = re.compile(r"^\{\s*\d*\s*(?:,\s*\d*\s*)?\}")
+_CWE_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])CWE-0*(\d+)(?!\d)", re.IGNORECASE)
+
+_re_parser = getattr(re, "_parser", None)
+if _re_parser is None:  # pragma: no cover
+    import sre_parse as _re_parser  # type: ignore[no-redef]
+
+_REPEAT_OPS = frozenset(
+    op
+    for op in (
+        getattr(_re_parser, "MAX_REPEAT", None),
+        getattr(_re_parser, "MIN_REPEAT", None),
+        getattr(_re_parser, "POSSESSIVE_REPEAT", None),
+    )
+    if op is not None
+)
+_BACKREF_OPS = frozenset(
+    op
+    for op in (
+        getattr(_re_parser, "GROUPREF", None),
+        getattr(_re_parser, "GROUPREF_EXISTS", None),
+        getattr(_re_parser, "GROUPREF_IGNORE", None),
+        getattr(_re_parser, "GROUPREF_LOC_IGNORE", None),
+        getattr(_re_parser, "GROUPREF_UNI_IGNORE", None),
+    )
+    if op is not None
+)
+_LOOKAROUND_OPS = frozenset(
+    op
+    for op in (
+        getattr(_re_parser, "ASSERT", None),
+        getattr(_re_parser, "ASSERT_NOT", None),
+    )
+    if op is not None
+)
+_LITERAL_OPS = frozenset(
+    op
+    for op in (
+        getattr(_re_parser, "LITERAL", None),
+        getattr(_re_parser, "LITERAL_IGNORE", None),
+        getattr(_re_parser, "LITERAL_LOC_IGNORE", None),
+        getattr(_re_parser, "LITERAL_UNI_IGNORE", None),
+    )
+    if op is not None
+)
+_NOT_LITERAL_OPS = frozenset(
+    op
+    for op in (
+        getattr(_re_parser, "NOT_LITERAL", None),
+        getattr(_re_parser, "NOT_LITERAL_IGNORE", None),
+        getattr(_re_parser, "NOT_LITERAL_LOC_IGNORE", None),
+        getattr(_re_parser, "NOT_LITERAL_UNI_IGNORE", None),
+    )
+    if op is not None
+)
+_SUBPATTERN_OP = getattr(_re_parser, "SUBPATTERN")
+_BRANCH_OP = getattr(_re_parser, "BRANCH")
+_ANY_OP = getattr(_re_parser, "ANY")
+_IN_OP = getattr(_re_parser, "IN")
+_CATEGORY_OP = getattr(_re_parser, "CATEGORY")
+_RANGE_OP = getattr(_re_parser, "RANGE")
+_NEGATE_OP = getattr(_re_parser, "NEGATE")
+_AT_OP = getattr(_re_parser, "AT")
+_ATOMIC_GROUP_OP = getattr(_re_parser, "ATOMIC_GROUP", None)
+_MAXREPEAT = _re_parser.MAXREPEAT
+_IGNORECASE_FLAG = getattr(re, "IGNORECASE", 2)
 
 _LANGUAGE_ALIASES: Dict[str, Tuple[str, ...]] = {
     "python": ("python",),
@@ -406,7 +469,7 @@ def _utc_iso_now() -> str:
 def _extract_canonical_cwes(cwe_raw: Optional[str]) -> Set[str]:
     if not cwe_raw:
         return set()
-    return {f"CWE-{num}" for num in _CWE_TOKEN_RE.findall(str(cwe_raw).upper())}
+    return {f"CWE-{int(num)}" for num in _CWE_TOKEN_RE.findall(str(cwe_raw).upper())}
 
 
 def _matches_rule_prefix(rule_id: Optional[str], prefixes: Tuple[str, ...]) -> bool:
@@ -576,93 +639,306 @@ def evaluate_compliance(
 
 
 # ---------------------------------------------------------------------------
-# ReDoS-Safe Regex Structural Validator
+# ReDoS-Safe Regex AST Validator (`re._parser` / `sre_parse`)
 # ---------------------------------------------------------------------------
-@dataclass
-class _RegexGroupFrame:
-    is_lookaround: bool = False
-    has_quantifier: bool = False
-    has_risky_alternation: bool = False
-    branches: List[str] = None  # type: ignore[assignment]
-    current_branch: List[str] = None  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        if self.branches is None:
-            self.branches = []
-        if self.current_branch is None:
-            self.current_branch = []
-
-
-def _consume_quantifier_length(pattern: str, idx: int) -> int:
-    if idx >= len(pattern):
-        return 0
-    ch = pattern[idx]
-    if ch in "*+?":
-        q_len = 1
-    elif ch == "{":
-        brace_m = _BRACE_QUANT_RE.match(pattern[idx:])
-        if not brace_m:
-            return 0
-        q_len = brace_m.end()
-    else:
-        return 0
-
-    # Allow single lazy modifier '?' (e.g. '.*?', '+?')
-    if idx + q_len < len(pattern) and pattern[idx + q_len] == "?":
-        q_len += 1
-    return q_len
+def _has_repeat_in_items(items: Sequence[Any]) -> bool:
+    for op, av in items:
+        if op in _REPEAT_OPS:
+            return True
+        if op == _SUBPATTERN_OP and _has_repeat_in_items(av[3]):
+            return True
+        if op == _BRANCH_OP and any(_has_repeat_in_items(arm) for arm in av[1]):
+            return True
+        if op in _LOOKAROUND_OPS and _has_repeat_in_items(av[1]):
+            return True
+        if _ATOMIC_GROUP_OP is not None and op == _ATOMIC_GROUP_OP and _has_repeat_in_items(av):
+            return True
+    return False
 
 
-def _has_overlapping_alternation_branches(branches: Sequence[str]) -> bool:
+def _extract_branch_literal_prefix(
+    branch_items: Sequence[Any],
+    effective_flags: int,
+) -> Optional[str]:
+    """
+    Extracts the normalized leading literal sequence for an alternation arm inside a
+    quantified group. Returns `None` if the arm is empty or starts with a wildcard,
+    character class, anchor, nested branch, or repeat (which cannot be proven disjoint).
+    """
+    items = list(branch_items)
+    flags = effective_flags
+    while len(items) == 1 and items[0][0] == _SUBPATTERN_OP:
+        _, add_flags, del_flags, sub = items[0][1]
+        flags = (flags | add_flags) & ~del_flags
+        items = list(sub)
+
+    if not items:
+        return None
+
+    chars: List[str] = []
+    for idx, (op, av) in enumerate(items):
+        if op == _SUBPATTERN_OP and idx == 0:
+            sub_prefix = _extract_branch_literal_prefix(av[3], (flags | av[1]) & ~av[2])
+            if not sub_prefix:
+                return None
+            return sub_prefix
+        if op in _LITERAL_OPS:
+            ch = chr(av)
+            chars.append(ch.casefold() if (flags & _IGNORECASE_FLAG) else ch)
+        elif idx == 0:
+            return None
+        else:
+            break
+    return "".join(chars) if chars else None
+
+
+def _has_overlapping_ast_branches(branches: Sequence[Sequence[Any]], effective_flags: int) -> bool:
     if len(branches) <= 1:
         return False
 
     first_chars: Set[str] = set()
-    literal_branches: List[str] = []
+    prefixes: List[str] = []
 
-    for raw_branch in branches:
-        if not raw_branch:
+    for arm in branches:
+        prefix = _extract_branch_literal_prefix(arm, effective_flags)
+        if not prefix:
             return True
-        if any(tok in raw_branch for tok in (".", "[", "(", "^", "$")):
-            return True
-
-        decoded: List[str] = []
-        i = 0
-        while i < len(raw_branch):
-            ch = raw_branch[i]
-            if ch == "\\":
-                if i + 1 >= len(raw_branch):
-                    return True
-                nxt = raw_branch[i + 1]
-                if nxt in "dDwWsSpPbBZA":
-                    return True
-                decoded.append(nxt)
-                i += 2
-            else:
-                decoded.append(ch)
-                i += 1
-        if not decoded:
-            return True
-        literal_str = "".join(decoded)
-        lead = literal_str[0]
+        lead = prefix[0]
         if lead in first_chars:
             return True
         first_chars.add(lead)
-        literal_branches.append(literal_str)
+        prefixes.append(prefix)
 
-    for idx_a, br_a in enumerate(literal_branches):
-        for idx_b, br_b in enumerate(literal_branches):
-            if idx_a != idx_b and br_b.startswith(br_a):
+    for idx_a, pref_a in enumerate(prefixes):
+        for idx_b, pref_b in enumerate(prefixes):
+            if idx_a != idx_b and pref_b.startswith(pref_a):
                 return True
     return False
 
 
+def _match_category(cat_val: Any, ch: str) -> bool:
+    name = str(cat_val)
+    if "NOT_SPACE" in name:
+        return not ch.isspace()
+    if "SPACE" in name:
+        return ch.isspace()
+    if "NOT_DIGIT" in name:
+        return not ch.isdigit()
+    if "DIGIT" in name:
+        return ch.isdigit()
+    if "NOT_WORD" in name:
+        return not (ch.isalnum() or ch == "_")
+    if "WORD" in name:
+        return ch.isalnum() or ch == "_"
+    if "NOT_LINEBREAK" in name:
+        return ch != "\n"
+    if "LINEBREAK" in name:
+        return ch == "\n"
+    return True
+
+
+def _atom_matches_char(op: Any, av: Any, ch: str, flags: int) -> bool:
+    code = ord(ch)
+    icase = bool(flags & _IGNORECASE_FLAG)
+    if op == _ANY_OP:
+        return True
+    if op in _LITERAL_OPS:
+        if icase:
+            return ch.casefold() == chr(av).casefold()
+        return code == av
+    if op in _NOT_LITERAL_OPS:
+        if icase:
+            return ch.casefold() != chr(av).casefold()
+        return code != av
+    if op == _CATEGORY_OP:
+        return _match_category(av, ch)
+    if op == _IN_OP:
+        negated = bool(av and av[0][0] == _NEGATE_OP)
+        body = av[1:] if negated else av
+        matched = False
+        for item_op, item_av in body:
+            if item_op in _LITERAL_OPS:
+                if (ch.casefold() == chr(item_av).casefold()) if icase else (code == item_av):
+                    matched = True
+                    break
+            elif item_op == _RANGE_OP:
+                lo, hi = item_av
+                if lo <= code <= hi:
+                    matched = True
+                    break
+                if icase:
+                    cf = ch.casefold()
+                    if any(chr(c).casefold() == cf for c in range(lo, min(hi, lo + 256) + 1)):
+                        matched = True
+                        break
+            elif item_op == _CATEGORY_OP:
+                if _match_category(item_av, ch):
+                    matched = True
+                    break
+            else:
+                return True
+        return (not matched) if negated else matched
+    return True
+
+
+def _single_char_atom_from_repeat(sub_items: Sequence[Any], flags: int) -> Optional[Tuple[Any, Any, int]]:
+    cur_items = list(sub_items)
+    cur_flags = flags
+    while len(cur_items) == 1 and cur_items[0][0] == _SUBPATTERN_OP:
+        _, add_f, del_f, inner = cur_items[0][1]
+        cur_flags = (cur_flags | add_f) & ~del_f
+        cur_items = list(inner)
+    if len(cur_items) != 1:
+        return None
+    op, av = cur_items[0]
+    if op in (_ANY_OP, _IN_OP, _CATEGORY_OP) or op in _LITERAL_OPS or op in _NOT_LITERAL_OPS:
+        return op, av, cur_flags
+    return None
+
+
+def _items_can_overlap(
+    atom_a: Optional[Tuple[Any, Any, int]],
+    atom_b: Optional[Tuple[Any, Any, int]],
+) -> bool:
+    if atom_a is None or atom_b is None:
+        return True
+    op_a, av_a, flags_a = atom_a
+    op_b, av_b, flags_b = atom_b
+    if op_a == _ANY_OP or op_b == _ANY_OP:
+        return True
+    sample_codes = list(range(128))
+    for op_x, av_x in ((op_a, av_a), (op_b, av_b)):
+        if (op_x in _LITERAL_OPS or op_x in _NOT_LITERAL_OPS) and av_x >= 128:
+            sample_codes.append(av_x)
+    return any(
+        _atom_matches_char(op_a, av_a, chr(c), flags_a)
+        and _atom_matches_char(op_b, av_b, chr(c), flags_b)
+        for c in sample_codes
+    )
+
+
+def _flatten_sequence_with_flags(
+    items: Sequence[Any],
+    flags: int,
+) -> List[Tuple[Any, Any, int]]:
+    flat: List[Tuple[Any, Any, int]] = []
+    for op, av in items:
+        if op == _SUBPATTERN_OP:
+            _, add_f, del_f, sub = av
+            sub_flags = (flags | add_f) & ~del_f
+            # Flatten linear subpatterns; keep branches isolated at branch boundaries
+            if not any(s_op == _BRANCH_OP for s_op, _ in sub):
+                flat.extend(_flatten_sequence_with_flags(sub, sub_flags))
+                continue
+        flat.append((op, av, flags))
+    return flat
+
+
+def _validate_sequence_unbounded_repeats(
+    items: Sequence[Any],
+    effective_flags: int,
+) -> None:
+    flat = _flatten_sequence_with_flags(items, effective_flags)
+    unbounded_positions: List[Tuple[int, Optional[Tuple[Any, Any, int]]]] = []
+
+    for idx, (op, av, item_flags) in enumerate(flat):
+        if op in _REPEAT_OPS and av[1] == _MAXREPEAT:
+            unbounded_positions.append((idx, _single_char_atom_from_repeat(av[2], item_flags)))
+
+    if len(unbounded_positions) > 2:
+        raise ValueError(
+            "Too many sequential unbounded repeats (> 2) are disallowed for ReDoS safety."
+        )
+
+    for pair_idx in range(len(unbounded_positions) - 1):
+        prev_pos, prev_atom = unbounded_positions[pair_idx]
+        curr_pos, curr_atom = unbounded_positions[pair_idx + 1]
+        if not _items_can_overlap(prev_atom, curr_atom):
+            continue
+
+        # Check whether any mandatory non-overlapping literal/atom separates prev and curr
+        has_non_overlapping_barrier = False
+        for mid_op, mid_av, mid_flags in flat[prev_pos + 1 : curr_pos]:
+            if mid_op == _AT_OP:
+                continue
+            if mid_op in _REPEAT_OPS and mid_av[0] == 0:
+                continue
+            mid_atom = (
+                _single_char_atom_from_repeat(mid_av[2], mid_flags)
+                if mid_op in _REPEAT_OPS
+                else (
+                    (mid_op, mid_av, mid_flags)
+                    if (
+                        mid_op in (_ANY_OP, _IN_OP, _CATEGORY_OP)
+                        or mid_op in _LITERAL_OPS
+                        or mid_op in _NOT_LITERAL_OPS
+                    )
+                    else None
+                )
+            )
+            if mid_atom is not None and not _items_can_overlap(prev_atom, mid_atom):
+                has_non_overlapping_barrier = True
+                break
+            # First consuming mandatory token overlaps prev_atom -> barrier compromised
+            break
+
+        if not has_non_overlapping_barrier:
+            raise ValueError(
+                "Adjacent or non-anchored overlapping unbounded repeats are disallowed for ReDoS safety."
+            )
+
+
+def _validate_ast_sequence(
+    items: Sequence[Any],
+    effective_flags: int,
+    in_repeat: bool,
+) -> None:
+    _validate_sequence_unbounded_repeats(items, effective_flags)
+
+    for op, av in items:
+        if op in _BACKREF_OPS:
+            raise ValueError("Backreferences are disallowed in custom rules for ReDoS safety.")
+
+        if op in _LOOKAROUND_OPS:
+            if in_repeat:
+                raise ValueError("Quantified lookarounds are disallowed for ReDoS safety.")
+            if _has_repeat_in_items(av[1]):
+                raise ValueError(
+                    "Lookarounds containing quantifiers are disallowed for ReDoS safety."
+                )
+            _validate_ast_sequence(av[1], effective_flags, in_repeat=False)
+            continue
+
+        if op in _REPEAT_OPS:
+            if in_repeat:
+                raise ValueError("Nested quantifiers are disallowed for ReDoS safety.")
+            _validate_ast_sequence(av[2], effective_flags, in_repeat=True)
+            continue
+
+        if op == _BRANCH_OP:
+            _, branches = av
+            if in_repeat and _has_overlapping_ast_branches(branches, effective_flags):
+                raise ValueError(
+                    "Overlapping quantified alternations are disallowed for ReDoS safety."
+                )
+            for arm in branches:
+                _validate_ast_sequence(arm, effective_flags, in_repeat=in_repeat)
+            continue
+
+        if op == _SUBPATTERN_OP:
+            _, add_flags, del_flags, sub = av
+            sub_flags = (effective_flags | add_flags) & ~del_flags
+            _validate_ast_sequence(sub, sub_flags, in_repeat=in_repeat)
+            continue
+
+        if _ATOMIC_GROUP_OP is not None and op == _ATOMIC_GROUP_OP:
+            _validate_ast_sequence(av, effective_flags, in_repeat=in_repeat)
+
+
 def validate_custom_rule_regex(pattern: str) -> re.Pattern[str]:
     """
-    Validates a custom security rule regex against ReDoS and syntax hazards.
-    Raises `ValueError` on empty/non-string, >400 chars, control chars,
-    backreferences, nested quantifiers, overlapping quantified alternations,
-    quantified/quantifier-bearing lookarounds, or invalid regex syntax.
+    Validates a custom security rule regex against ReDoS and syntax hazards using
+    Python's regex AST parser (`re._parser` / `sre_parse`).
     """
     if not isinstance(pattern, str) or not pattern or not pattern.strip():
         raise ValueError("Custom rule regex pattern must be a non-empty string.")
@@ -673,142 +949,15 @@ def validate_custom_rule_regex(pattern: str) -> re.Pattern[str]:
     if any((ord(ch) < 32 and ch != "\t") or ord(ch) == 127 for ch in pattern):
         raise ValueError("Custom rule regex contains forbidden control characters.")
 
-    stack: List[_RegexGroupFrame] = [_RegexGroupFrame()]
-    in_char_class = False
-    char_class_start = False
-    i = 0
-    n = len(pattern)
-
-    while i < n:
-        ch = pattern[i]
-
-        if ch == "\\":
-            if i + 1 >= n:
-                raise ValueError("Invalid trailing backslash in custom rule regex.")
-            nxt = pattern[i + 1]
-            if not in_char_class:
-                if nxt in "123456789" or pattern[i : i + 3] == r"\g<":
-                    raise ValueError("Backreferences are disallowed in custom rules for ReDoS safety.")
-            esc_tok = pattern[i : i + 2]
-            if len(stack) > 1:
-                stack[-1].current_branch.append(esc_tok)
-            i += 2
-            char_class_start = False
-            continue
-
-        if in_char_class:
-            if len(stack) > 1:
-                stack[-1].current_branch.append(ch)
-            if ch == "^" and char_class_start:
-                i += 1
-                continue
-            if ch == "]" and not char_class_start:
-                in_char_class = False
-            char_class_start = False
-            i += 1
-            continue
-
-        if ch == "[":
-            in_char_class = True
-            char_class_start = True
-            if len(stack) > 1:
-                stack[-1].current_branch.append(ch)
-            i += 1
-            continue
-
-        if ch == "(":
-            is_lookaround = False
-            advance = 1
-            if i + 1 < n and pattern[i + 1] == "?":
-                if pattern.startswith("(?P=", i):
-                    raise ValueError("Named backreferences (?P=...) are disallowed for ReDoS safety.")
-                if pattern.startswith("(?(", i):
-                    raise ValueError("Conditional regex groups are disallowed for ReDoS safety.")
-                if pattern.startswith("(?#", i):
-                    end_comment = pattern.find(")", i + 3)
-                    if end_comment == -1:
-                        raise ValueError("Unterminated regex comment group.")
-                    i = end_comment + 1
-                    continue
-                if pattern.startswith(("(?=", "(?!", "(?<=", "(?<!"), i):
-                    is_lookaround = True
-                    advance = 4 if pattern[i + 2] == "<" else 3
-                elif pattern.startswith("(?:", i) or pattern.startswith("(?>", i):
-                    advance = 3
-                elif pattern.startswith("(?P<", i):
-                    end_name = pattern.find(">", i + 4)
-                    if end_name == -1:
-                        raise ValueError("Invalid named group in custom rule regex.")
-                    advance = (end_name - i) + 1
-                else:
-                    colon_idx = pattern.find(":", i + 2)
-                    paren_idx = pattern.find(")", i + 2)
-                    if colon_idx != -1 and (paren_idx == -1 or colon_idx < paren_idx):
-                        advance = (colon_idx - i) + 1
-                    else:
-                        advance = 2
-
-            if len(stack) > 1:
-                stack[-1].current_branch.append("(")
-            stack.append(_RegexGroupFrame(is_lookaround=is_lookaround))
-            i += advance
-            continue
-
-        if ch == "|" and len(stack) > 1:
-            frame = stack[-1]
-            frame.branches.append("".join(frame.current_branch))
-            frame.current_branch = []
-            i += 1
-            continue
-
-        if ch == ")":
-            if len(stack) == 1:
-                raise ValueError("Unmatched closing ')' in custom rule regex.")
-            frame = stack.pop()
-            frame.branches.append("".join(frame.current_branch))
-
-            if frame.is_lookaround and frame.has_quantifier:
-                raise ValueError("Lookarounds containing quantifiers are disallowed for ReDoS safety.")
-
-            frame_risky_alt = frame.has_risky_alternation or _has_overlapping_alternation_branches(
-                frame.branches
-            )
-            q_len = _consume_quantifier_length(pattern, i + 1)
-            if q_len > 0:
-                if frame.is_lookaround:
-                    raise ValueError("Quantified lookarounds are disallowed for ReDoS safety.")
-                if frame.has_quantifier:
-                    raise ValueError("Nested quantifiers are disallowed for ReDoS safety.")
-                if frame_risky_alt:
-                    raise ValueError(
-                        "Overlapping quantified alternations are disallowed for ReDoS safety."
-                    )
-
-            if frame.has_quantifier or q_len > 0:
-                stack[-1].has_quantifier = True
-            if frame_risky_alt:
-                stack[-1].has_risky_alternation = True
-            if len(stack) > 1:
-                stack[-1].current_branch.append(")")
-            i += 1 + q_len
-            continue
-
-        q_len = _consume_quantifier_length(pattern, i)
-        if q_len > 0:
-            stack[-1].has_quantifier = True
-            if len(stack) > 1:
-                stack[-1].current_branch.append(pattern[i : i + q_len])
-            i += q_len
-            continue
-
-        if len(stack) > 1:
-            stack[-1].current_branch.append(ch)
-        i += 1
-
     try:
-        return re.compile(pattern)
+        compiled = re.compile(pattern)
+        parsed = _re_parser.parse(pattern)
     except re.error as exc:
         raise ValueError(f"Invalid custom rule regex syntax: {exc}") from exc
+
+    effective_flags = int(getattr(getattr(parsed, "state", None), "flags", 0))
+    _validate_ast_sequence(parsed, effective_flags, in_repeat=False)
+    return compiled
 
 
 # ---------------------------------------------------------------------------
@@ -1000,7 +1149,10 @@ class CustomRuleEngine:
     def _save_rules_locked(self, rules: Sequence[CustomSecurityRule]) -> None:
         vault_real, target_real = self._resolve_vault_file(create_dir=True)
         tmp_name = f"{_CUSTOM_RULES_FILENAME}.tmp.{os.getpid()}.{threading.get_ident()}"
-        tmp_real = os.path.realpath(os.path.join(vault_real, tmp_name))
+        tmp_cand = os.path.join(vault_real, tmp_name)
+        if os.path.lexists(tmp_cand) and is_link_or_junction(tmp_cand):
+            raise HostileRepoError("Refusing symlink/junction temporary custom rule vault file.")
+        tmp_real = os.path.realpath(tmp_cand)
         if os.path.commonpath([vault_real, tmp_real]) != vault_real:
             raise HostileRepoError("Custom rule vault temporary path confinement violation.")
 
@@ -1009,18 +1161,38 @@ class CustomRuleEngine:
             "rules": [r.model_dump() for r in rules],
         }
         serialized = json.dumps(payload, indent=2, sort_keys=True)
-        with open(tmp_real, "w", encoding="utf-8") as fh:
-            fh.write(serialized)
-            fh.flush()
+        fd = -1
+        try:
+            fd = os.open(tmp_real, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             try:
-                os.fsync(fh.fileno())
+                os.chmod(tmp_real, 0o600)
             except OSError:
                 pass
-        os.replace(tmp_real, target_real)
-        try:
-            os.chmod(target_real, 0o600)
-        except OSError:
-            pass
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fd = -1
+                fh.write(serialized)
+                fh.flush()
+                try:
+                    os.fsync(fh.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp_real, target_real)
+            try:
+                os.chmod(target_real, 0o600)
+            except OSError:
+                pass
+        except Exception:
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if os.path.lexists(tmp_real) and not is_link_or_junction(tmp_real):
+                try:
+                    os.unlink(tmp_real)
+                except OSError:
+                    pass
+            raise
 
     def list_rules(self) -> List[CustomSecurityRule]:
         with self._lock:
