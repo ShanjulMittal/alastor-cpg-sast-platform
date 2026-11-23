@@ -61,6 +61,12 @@ import {
   CustomRuleDeleteResponse,
   MicroserviceGraphRequest,
   MicroserviceGraphResponse,
+  AgenticHuntRequest,
+  AgenticHuntResponse,
+  AgenticPatchRequest,
+  AgenticPatchResponse,
+  SandboxPlanRequest,
+  SandboxExecutionPlan,
 } from "@/types/cpg";
 
 export const BACKEND_URL =
@@ -956,6 +962,86 @@ export async function stitchMicroserviceGraph(
   };
   return apiFetchJson<MicroserviceGraphResponse>(
     `${API_BASE}/api/nextgen/microservice-graph`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 19. ALASTOR v5.1 — Multi-Turn ReAct Agent & Dual Docker Egress Sandbox
+// ---------------------------------------------------------------------------
+export async function runAgenticReactHunt(
+  req: AgenticHuntRequest
+): Promise<AgenticHuntResponse> {
+  const localPath = normalizeLocalProjectPath(req.project_path) ?? "";
+  const body: AgenticHuntRequest = {
+    project_path: localPath,
+    ...(req.playbook_lenses !== undefined
+      ? { playbook_lenses: req.playbook_lenses }
+      : {}),
+    ...(req.focus_goal !== undefined ? { focus_goal: req.focus_goal } : {}),
+    ...(typeof req.max_turns === "number" ? { max_turns: req.max_turns } : {}),
+    ...(typeof req.max_tool_calls === "number"
+      ? { max_tool_calls: req.max_tool_calls }
+      : {}),
+    ...(typeof req.use_byok_llm === "boolean"
+      ? { use_byok_llm: req.use_byok_llm }
+      : {}),
+    ...(typeof req.run_s6_verify === "boolean"
+      ? { run_s6_verify: req.run_s6_verify }
+      : {}),
+  };
+  return apiFetchJson<AgenticHuntResponse>(
+    `${API_BASE}/api/cognitive/agentic-hunt`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+export async function runAgenticReactPatch(
+  req: AgenticPatchRequest
+): Promise<AgenticPatchResponse> {
+  const localPath = normalizeLocalProjectPath(req.project_path) ?? "";
+  const body: AgenticPatchRequest = {
+    project_path: localPath,
+    ...(req.finding_id !== undefined ? { finding_id: req.finding_id } : {}),
+    ...(req.finding !== undefined ? { finding: req.finding } : {}),
+    ...(typeof req.max_turns === "number" ? { max_turns: req.max_turns } : {}),
+    ...(typeof req.max_refinement_rounds === "number"
+      ? { max_refinement_rounds: req.max_refinement_rounds }
+      : {}),
+    ...(typeof req.use_byok_llm === "boolean"
+      ? { use_byok_llm: req.use_byok_llm }
+      : {}),
+  };
+  return apiFetchJson<AgenticPatchResponse>(
+    `${API_BASE}/api/cognitive/agentic-patch`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+export async function buildSandboxExecutionPlan(
+  req: SandboxPlanRequest
+): Promise<SandboxExecutionPlan> {
+  const localPath = normalizeLocalProjectPath(req.project_path) ?? "";
+  const body: SandboxPlanRequest = {
+    project_path: localPath,
+    ...(req.output_dir !== undefined ? { output_dir: req.output_dir } : {}),
+    ...(req.egress_mode !== undefined ? { egress_mode: req.egress_mode } : {}),
+    ...(req.allowed_llm_hosts !== undefined
+      ? { allowed_llm_hosts: req.allowed_llm_hosts }
+      : {}),
+    ...(req.cli_args !== undefined ? { cli_args: req.cli_args } : {}),
+  };
+  return apiFetchJson<SandboxExecutionPlan>(
+    `${API_BASE}/api/fleet/sandbox-plan`,
     {
       method: "POST",
       body: JSON.stringify(body),

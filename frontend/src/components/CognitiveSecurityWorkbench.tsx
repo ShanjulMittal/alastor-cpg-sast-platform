@@ -27,6 +27,7 @@ import dagre from "@dagrejs/dagre";
 import { useAuditStore } from "@/store/useAuditStore";
 import {
   AdversarialFindingVerdict,
+  AgenticHuntStopReason,
   BaselineDisposition,
   ExploitChainHop,
   ExploitChainHopType,
@@ -38,8 +39,11 @@ import {
 import {
   AlertTriangle,
   ArrowUpRight,
+  Bot,
   Brain,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Code2,
   Compass,
   Crosshair,
@@ -53,7 +57,9 @@ import {
   Scale,
   Search,
   ShieldAlert,
+  ShieldCheck,
   Sparkles,
+  Terminal,
   Wrench,
 } from "lucide-react";
 
@@ -93,6 +99,22 @@ function getSeverityBadgeClass(severity?: string | null): string {
     case "LOW":
     default:
       return "bg-sky-50 text-sky-950 border-sky-300";
+  }
+}
+
+function getAgenticStopReasonBadgeClass(reason: AgenticHuntStopReason): string {
+  switch (reason) {
+    case "SUBMITTED":
+      return "bg-emerald-50 text-emerald-900 border-emerald-300";
+    case "FALLBACK_COMPLETE":
+      return "bg-sky-50 text-sky-950 border-sky-300";
+    case "ERROR":
+      return "bg-rose-50 text-rose-950 border-rose-300";
+    case "MAX_TURNS":
+    case "MAX_TOOL_CALLS":
+    case "LOOP_DETECTED":
+    default:
+      return "bg-amber-50 text-amber-950 border-amber-300";
   }
 }
 
@@ -611,6 +633,9 @@ export const CognitiveSecurityWorkbench: React.FC = () => {
   );
   const isRunningExploitChains = useAuditStore((s) => s.isRunningExploitChains);
   const cognitiveErrorBanner = useAuditStore((s) => s.cognitiveErrorBanner);
+  const agenticHuntResult = useAuditStore((s) => s.agenticHuntResult);
+  const isRunningAgenticHunt = useAuditStore((s) => s.isRunningAgenticHunt);
+  const agenticHuntError = useAuditStore((s) => s.agenticHuntError);
 
   const fetchCognitivePlaybooksState = useAuditStore(
     (s) => s.fetchCognitivePlaybooksState
@@ -618,6 +643,7 @@ export const CognitiveSecurityWorkbench: React.FC = () => {
   const runCognitiveSemanticHunt = useAuditStore(
     (s) => s.runCognitiveSemanticHunt
   );
+  const runAgenticHuntAction = useAuditStore((s) => s.runAgenticHuntAction);
   const runAdversarialVerification = useAuditStore(
     (s) => s.runAdversarialVerification
   );
@@ -649,6 +675,11 @@ export const CognitiveSecurityWorkbench: React.FC = () => {
     Record<string, boolean>
   >({});
   const [selectedChainId, setSelectedChainId] = useState<string | null>(null);
+  const [agenticFocusGoal, setAgenticFocusGoal] = useState<string>("");
+  const [agenticMaxTurns, setAgenticMaxTurns] = useState<number>(8);
+  const [agenticUseByok, setAgenticUseByok] = useState<boolean>(true);
+  const [agenticTraceExpanded, setAgenticTraceExpanded] =
+    useState<boolean>(false);
 
   const lastAutoHydratedKeyRef = useRef<string | null>(null);
 
@@ -661,6 +692,7 @@ export const CognitiveSecurityWorkbench: React.FC = () => {
     lastAutoHydratedKeyRef.current = key;
     setSelectedChainId(null);
     setAppliedTriageMap({});
+    setAgenticTraceExpanded(false);
     void fetchCognitivePlaybooksState();
     void fetchExploitChainsState();
   }, [projectPath, fetchCognitivePlaybooksState, fetchExploitChainsState]);
@@ -794,6 +826,24 @@ export const CognitiveSecurityWorkbench: React.FC = () => {
     });
   };
 
+  const handleRunAgenticHunt = async () => {
+    setActiveTab("HUNTER");
+    const clampedTurns = Math.max(
+      1,
+      Math.min(20, Math.floor(agenticMaxTurns || 8))
+    );
+    setAgenticMaxTurns(clampedTurns);
+    await runAgenticHuntAction({
+      ...(selectedPlaybookIds.length > 0
+        ? { playbook_lenses: selectedPlaybookIds }
+        : {}),
+      focus_goal: agenticFocusGoal.trim() || null,
+      max_turns: clampedTurns,
+      use_byok_llm: agenticUseByok,
+      run_s6_verify: true,
+    });
+  };
+
   const handleRunVerifier = async () => {
     setActiveTab("VERIFIER");
     await runAdversarialVerification({
@@ -862,6 +912,7 @@ export const CognitiveSecurityWorkbench: React.FC = () => {
   const anyBusy =
     isLoadingCognitive ||
     isRunningCognitiveHunt ||
+    isRunningAgenticHunt ||
     isRunningAdversarialVerify ||
     isRunningExploitChains;
 
@@ -1152,6 +1203,322 @@ export const CognitiveSecurityWorkbench: React.FC = () => {
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* ALASTOR v5.1 Multi-Turn ReAct CPG Deep Agent */}
+          <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="flex items-start gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-300 flex items-center justify-center text-indigo-800 shrink-0">
+                  <Bot className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-sm font-extrabold text-slate-900">
+                      Multi-Turn ReAct CPG Deep Agent
+                    </h3>
+                    <span
+                      className={`px-2 py-0.5 rounded-full border text-[10px] font-mono font-extrabold ${
+                        aiReady
+                          ? "bg-indigo-50 text-indigo-950 border-indigo-300"
+                          : "bg-slate-100 text-slate-900 border-slate-300"
+                      }`}
+                    >
+                      {aiReady
+                        ? "BYOK ReAct + $0 Fallback"
+                        : "$0 Deterministic Fallback Active"}
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-[#f8fafc] border border-slate-300 text-slate-800 text-[10px] font-mono font-bold">
+                      {selectedPlaybookIds.length === 0
+                        ? "Lenses: All 17"
+                        : `Lenses: ${selectedPlaybookIds.length} Selected`}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-700 mt-1 leading-relaxed">
+                    Runs a bounded symlink-confined CPG tool-calling loop with
+                    loop-detection and prompt-injection scrubbing.{" "}
+                    <span className="font-semibold text-slate-900">
+                      $0 Deterministic Fallback
+                    </span>{" "}
+                    runs automatically whenever no BYOK key is configured or Use
+                    BYOK LLM is unchecked.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={anyBusy}
+                onClick={() => void handleRunAgenticHunt()}
+                className="px-4 py-2 rounded-lg bg-indigo-700 hover:bg-indigo-800 disabled:opacity-50 text-white border border-indigo-800 text-xs font-extrabold flex items-center gap-2 shadow-sm transition-colors shrink-0"
+              >
+                {isRunningAgenticHunt ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Play className="w-4 h-4 fill-current" />
+                )}
+                <span>
+                  {isRunningAgenticHunt
+                    ? "Running ReAct CPG Loop..."
+                    : "Launch Multi-Turn ReAct CPG Hunt"}
+                </span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end bg-[#f8fafc] border border-slate-200 rounded-xl p-3.5">
+              <div className="md:col-span-6 space-y-1">
+                <label
+                  htmlFor="agentic-hunt-focus-goal"
+                  className="block text-[11px] font-mono font-extrabold uppercase text-slate-800"
+                >
+                  Focus Goal (Optional)
+                </label>
+                <input
+                  id="agentic-hunt-focus-goal"
+                  type="text"
+                  value={agenticFocusGoal}
+                  onChange={(e) => setAgenticFocusGoal(e.target.value)}
+                  placeholder="Hunt multi-file IDOR and auth bypass"
+                  className="w-full h-9 px-3 rounded-lg bg-white border border-slate-300 focus:border-indigo-600 focus:outline-none text-xs text-slate-900 placeholder-slate-400"
+                />
+              </div>
+
+              <div className="md:col-span-2 space-y-1">
+                <label
+                  htmlFor="agentic-hunt-max-turns"
+                  className="block text-[11px] font-mono font-extrabold uppercase text-slate-800"
+                >
+                  Max Turns (1–20)
+                </label>
+                <input
+                  id="agentic-hunt-max-turns"
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={agenticMaxTurns}
+                  onChange={(e) => {
+                    const parsed = Number(e.target.value);
+                    if (!Number.isFinite(parsed)) {
+                      setAgenticMaxTurns(8);
+                      return;
+                    }
+                    setAgenticMaxTurns(Math.max(1, Math.min(20, Math.floor(parsed))));
+                  }}
+                  className="w-full h-9 px-3 rounded-lg bg-white border border-slate-300 focus:border-indigo-600 focus:outline-none text-xs font-mono font-bold text-slate-900"
+                />
+              </div>
+
+              <div className="md:col-span-4 space-y-1">
+                <label className="flex items-center gap-2 h-9 px-3 rounded-lg bg-white border border-slate-300 text-xs font-bold text-slate-900 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={agenticUseByok}
+                    onChange={(e) => setAgenticUseByok(e.target.checked)}
+                    className="accent-indigo-700 w-3.5 h-3.5"
+                  />
+                  <span>Use BYOK LLM</span>
+                  <span className="ml-auto text-[10px] font-mono font-semibold text-slate-600">
+                    {aiReady ? "Key Ready" : "$0 Fallback"}
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            {agenticHuntError && (
+              <div
+                role="alert"
+                className="px-3.5 py-2.5 rounded-xl bg-rose-50 border border-rose-300 text-rose-950 text-xs font-bold flex items-start gap-2"
+              >
+                <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0 mt-0.5" />
+                <span className="break-words">{agenticHuntError}</span>
+              </div>
+            )}
+
+            {agenticHuntResult && (
+              <div className="rounded-xl border border-slate-200 bg-[#f8fafc] p-4 space-y-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      className={`px-2.5 py-1 rounded border text-[10px] font-mono font-extrabold ${
+                        agenticHuntResult.execution_mode ===
+                        "BYOK_REACT_MULTI_TURN"
+                          ? "bg-indigo-50 text-indigo-950 border-indigo-300"
+                          : "bg-slate-100 text-slate-900 border-slate-300"
+                      }`}
+                    >
+                      {agenticHuntResult.execution_mode.replace(/_/g, " ")}
+                    </span>
+                    <span
+                      className={`px-2.5 py-1 rounded border text-[10px] font-mono font-extrabold ${getAgenticStopReasonBadgeClass(
+                        agenticHuntResult.stop_reason
+                      )}`}
+                    >
+                      STOP: {agenticHuntResult.stop_reason}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono font-bold text-slate-800">
+                    <span className="px-2 py-0.5 rounded bg-white border border-slate-300">
+                      Turns: {agenticHuntResult.turns_used}
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-white border border-slate-300">
+                      Tool Calls: {agenticHuntResult.tool_calls_used}
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-white border border-slate-300 text-indigo-950">
+                      Grounded Findings: {agenticHuntResult.findings.length}
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-300 text-emerald-900 inline-flex items-center gap-1">
+                      <ShieldCheck className="w-3 h-3 text-emerald-800" />
+                      S6 Verified: {agenticHuntResult.s6_verified_count}
+                    </span>
+                  </div>
+                </div>
+
+                {agenticHuntResult.warnings.length > 0 && (
+                  <div className="rounded-lg bg-amber-50 border border-amber-300 px-3 py-2 text-xs text-amber-950 space-y-1">
+                    {agenticHuntResult.warnings.map((w, idx) => (
+                      <div key={idx} className="font-mono text-[11px]">
+                        • {w}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {agenticHuntResult.findings.length > 0 ? (
+                  <div className="space-y-2">
+                    <div className="text-[11px] font-mono font-extrabold uppercase text-slate-800">
+                      Path-Verified Grounded Findings (
+                      {agenticHuntResult.findings.length})
+                    </div>
+                    {agenticHuntResult.findings.map((finding) => {
+                      const bfl = finding.best_fix_location;
+                      const pNode =
+                        finding.path_nodes && finding.path_nodes.length > 0
+                          ? finding.path_nodes[finding.path_nodes.length - 1]
+                          : null;
+                      const fp = bfl?.filepath || pNode?.filepath || "";
+                      const ln = bfl?.line || pNode?.start_line || 1;
+                      return (
+                        <div
+                          key={finding.id}
+                          className="p-3 rounded-xl bg-white border border-slate-200 hover:border-indigo-400 transition-colors flex flex-wrap items-start justify-between gap-3"
+                        >
+                          <div className="space-y-1 min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span
+                                className={`px-2 py-0.5 rounded border text-[10px] font-mono font-extrabold ${getSeverityBadgeClass(
+                                  finding.severity
+                                )}`}
+                              >
+                                {finding.severity}
+                              </span>
+                              <span className="px-2 py-0.5 rounded bg-[#f8fafc] border border-slate-300 text-slate-900 text-[10px] font-mono font-bold">
+                                {finding.rule_id}
+                              </span>
+                              {finding.cwe_id && (
+                                <span className="px-2 py-0.5 rounded bg-amber-50 border border-amber-300 text-amber-950 text-[10px] font-mono font-bold">
+                                  {finding.cwe_id}
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xs font-extrabold text-slate-900">
+                              {finding.title}
+                            </div>
+                            <p className="text-[11px] text-slate-700 leading-relaxed">
+                              {finding.description}
+                            </p>
+                            {fp && (
+                              <div className="text-[10px] font-mono text-slate-700">
+                                Location: {formatShortPath(fp)}:L{ln}
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleJumpToFinding(finding)}
+                            className="px-3 py-1.5 rounded-lg bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-bold flex items-center gap-1.5 shrink-0 shadow-sm"
+                          >
+                            <Code2 className="w-3.5 h-3.5" />
+                            <span>Inspect in IDE</span>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-300 text-emerald-900 text-xs font-semibold flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-800 shrink-0" />
+                    <span>
+                      Agentic hunt finished with 0 newly submitted grounded
+                      findings. Inspect the auditable tool-call trace below.
+                    </span>
+                  </div>
+                )}
+
+                <div className="border-t border-slate-200 pt-2.5">
+                  <button
+                    type="button"
+                    aria-expanded={agenticTraceExpanded}
+                    onClick={() =>
+                      setAgenticTraceExpanded((prev) => !prev)
+                    }
+                    className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-white hover:bg-slate-50 border border-slate-300 text-xs font-extrabold text-slate-900 transition-colors"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Terminal className="w-3.5 h-3.5 text-indigo-700" />
+                      <span>
+                        Auditable Redacted Tool-Call Trace (
+                        {agenticHuntResult.trace.length} steps)
+                      </span>
+                    </span>
+                    {agenticTraceExpanded ? (
+                      <ChevronDown className="w-4 h-4 text-slate-700" />
+                    ) : (
+                      <ChevronRight className="w-4 h-4 text-slate-700" />
+                    )}
+                  </button>
+
+                  {agenticTraceExpanded && (
+                    <div className="mt-2.5 space-y-2 max-h-80 overflow-y-auto pr-1">
+                      {agenticHuntResult.trace.length === 0 ? (
+                        <div className="p-3 rounded-lg bg-white border border-slate-200 text-xs text-slate-700">
+                          No tool calls recorded for this run.
+                        </div>
+                      ) : (
+                        agenticHuntResult.trace.map((step, idx) => (
+                          <div
+                            key={`${step.turn}-${step.tool_name}-${idx}`}
+                            className="p-3 rounded-lg bg-white border border-slate-200 space-y-1.5"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10px]">
+                                <span className="px-1.5 py-0.5 rounded bg-slate-900 text-white font-extrabold">
+                                  Turn {step.turn}
+                                </span>
+                                <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-950 border border-indigo-200 font-bold">
+                                  {step.tool_name}
+                                </span>
+                                {step.blocked_reason && (
+                                  <span className="px-2 py-0.5 rounded bg-rose-50 text-rose-950 border border-rose-300 font-extrabold">
+                                    BLOCKED: {step.blocked_reason}
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-[10px] font-mono font-bold text-slate-600">
+                                {step.duration_ms.toFixed(1)} ms
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-800 whitespace-pre-wrap break-words leading-relaxed">
+                              {step.observation_summary}
+                            </p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Interactive 17-Playbook Grid */}

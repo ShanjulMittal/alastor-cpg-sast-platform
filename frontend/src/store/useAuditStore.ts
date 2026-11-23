@@ -94,6 +94,12 @@ import {
   CustomRuleTestResponse,
   MicroserviceGraphRequest,
   MicroserviceGraphResponse,
+  AgenticHuntRequest,
+  AgenticHuntResponse,
+  AgenticPatchRequest,
+  AgenticPatchResponse,
+  SandboxPlanRequest,
+  SandboxExecutionPlan,
 } from "@/types/cpg";
 import {
   BACKEND_URL,
@@ -126,6 +132,8 @@ import {
   fetchExploitChainsApi,
   synthesizeExploitChainsApi,
   validatePatchPanelApi,
+  runAgenticReactHunt,
+  runAgenticReactPatch,
   planEvProbes,
   runEvVerification,
   replayEvBundles,
@@ -139,6 +147,7 @@ import {
   listFleetCheckpoints,
   resumeFleetCheckpoint,
   runFleetGc,
+  buildSandboxExecutionPlan,
   runPrDeltaGate,
   generateSecurityTest,
   evaluateCompliance,
@@ -166,7 +175,10 @@ let _cognitivePlaybooksInFlightKey = "";
 let _exploitChainsInFlight: Promise<ExploitChainResponse | null> | null = null;
 let _exploitChainsInFlightKey = "";
 let _cognitiveEpoch = 0;
+let _agenticHuntSeq = 0;
+let _agenticPatchSeq = 0;
 let _fleetCheckpointsSeq = 0;
+let _sandboxPlanSeq = 0;
 
 type PastaSastFetchOverride =
   | string
@@ -225,14 +237,61 @@ function resetEvSlice(prevEpoch: number) {
 
 function resetFleetSlice(prevEpoch: number) {
   _fleetCheckpointsSeq += 1;
+  _sandboxPlanSeq += 1;
   return {
     _fleetEpoch: prevEpoch + 1,
     fleetEstimate: null,
     fusionResult: null,
+    sandboxPlan: null,
     isEstimatingFleet: false,
     isImportingFusion: false,
     isLoadingCheckpoints: false,
+    isBuildingSandboxPlan: false,
     fleetError: null,
+    sandboxPlanError: null,
+  };
+}
+
+function resetCognitiveSlice() {
+  _cognitiveEpoch += 1;
+  _cognitivePlaybooksInFlight = null;
+  _cognitivePlaybooksInFlightKey = "";
+  _exploitChainsInFlight = null;
+  _exploitChainsInFlightKey = "";
+  _agenticHuntSeq += 1;
+  _agenticPatchSeq += 1;
+  return {
+    cognitivePlaybooks: null,
+    cognitiveHuntResult: null,
+    adversarialVerifyResult: null,
+    exploitChainsResult: null,
+    patchPanelResult: null,
+    agenticHuntResult: null,
+    agenticPatchResult: null,
+    isLoadingCognitive: false,
+    isRunningCognitiveHunt: false,
+    isRunningAdversarialVerify: false,
+    isRunningExploitChains: false,
+    isValidatingPatchPanel: false,
+    isRunningAgenticHunt: false,
+    isRunningAgenticPatch: false,
+    cognitiveErrorBanner: null,
+    patchPanelError: null,
+    agenticHuntError: null,
+    agenticPatchError: null,
+  };
+}
+
+function resetFindingPatchState() {
+  _agenticPatchSeq += 1;
+  return {
+    patchPanelResult: null,
+    patchPanelError: null,
+    agenticPatchResult: null,
+    agenticPatchError: null,
+    isRunningAgenticPatch: false,
+    generatedSecurityTest: null,
+    drawerSecurityTestError: null,
   };
 }
 
@@ -461,13 +520,19 @@ interface AuditState {
   adversarialVerifyResult: AdversarialVerifyResponse | null;
   exploitChainsResult: ExploitChainResponse | null;
   patchPanelResult: PatchPanelValidateResponse | null;
+  agenticHuntResult: AgenticHuntResponse | null;
+  agenticPatchResult: AgenticPatchResponse | null;
   isLoadingCognitive: boolean;
   isRunningCognitiveHunt: boolean;
   isRunningAdversarialVerify: boolean;
   isRunningExploitChains: boolean;
   isValidatingPatchPanel: boolean;
+  isRunningAgenticHunt: boolean;
+  isRunningAgenticPatch: boolean;
   cognitiveErrorBanner: string | null;
   patchPanelError: string | null;
+  agenticHuntError: string | null;
+  agenticPatchError: string | null;
 
   // Pillar 3: Live Exploit Verification (EV) & Post-Fix ev-replay
   _evEpoch: number;
@@ -490,6 +555,7 @@ interface AuditState {
   fleetRuns: FleetRunResponse[];
   fleetCheckpoints: ScanRunCheckpointSummary[];
   fleetGcReport: GcReport | null;
+  sandboxPlan: SandboxExecutionPlan | null;
   isLoadingDoctor: boolean;
   isEstimatingFleet: boolean;
   isImportingFusion: boolean;
@@ -498,7 +564,9 @@ interface AuditState {
   isLoadingCheckpoints: boolean;
   isResumingCheckpoint: boolean;
   isRunningGc: boolean;
+  isBuildingSandboxPlan: boolean;
   fleetError: string | null;
+  sandboxPlanError: string | null;
 
   // Pillar 5: Next-Gen AppSec (PR Delta Gate, Security Test Generator,
   // Compliance Autopilot, Custom Rule Studio & Cross-Repo Microservice Graph)
@@ -791,6 +859,13 @@ interface AuditState {
   runPatchPanelValidation: (
     payload: PatchPanelValidateRequest
   ) => Promise<PatchPanelValidateResponse | null>;
+  runAgenticHuntAction: (
+    req: Omit<AgenticHuntRequest, "project_path"> & { project_path?: string }
+  ) => Promise<AgenticHuntResponse | null>;
+  runAgenticPatchAction: (
+    req: Omit<AgenticPatchRequest, "project_path"> & { project_path?: string }
+  ) => Promise<AgenticPatchResponse | null>;
+  clearAgenticPatchResult: () => void;
   planEvProbesAction: (
     req: Omit<EvRunRequest, "project_path"> & { project_path?: string }
   ) => Promise<void>;
@@ -824,6 +899,9 @@ interface AuditState {
     req: GcRequest,
     refreshCheckpointsProjectPath?: string
   ) => Promise<void>;
+  buildSandboxPlanAction: (
+    req: Omit<SandboxPlanRequest, "project_path"> & { project_path?: string }
+  ) => Promise<SandboxExecutionPlan | null>;
   clearFleetError: () => void;
   runPrDeltaGateAction: (
     req: Omit<PrDeltaGateRequest, "project_path"> & { project_path?: string }
@@ -961,13 +1039,19 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   adversarialVerifyResult: null,
   exploitChainsResult: null,
   patchPanelResult: null,
+  agenticHuntResult: null,
+  agenticPatchResult: null,
   isLoadingCognitive: false,
   isRunningCognitiveHunt: false,
   isRunningAdversarialVerify: false,
   isRunningExploitChains: false,
   isValidatingPatchPanel: false,
+  isRunningAgenticHunt: false,
+  isRunningAgenticPatch: false,
   cognitiveErrorBanner: null,
   patchPanelError: null,
+  agenticHuntError: null,
+  agenticPatchError: null,
 
   _evEpoch: 0,
   evPlan: null,
@@ -988,6 +1072,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   fleetRuns: [],
   fleetCheckpoints: [],
   fleetGcReport: null,
+  sandboxPlan: null,
   isLoadingDoctor: false,
   isEstimatingFleet: false,
   isImportingFusion: false,
@@ -996,7 +1081,9 @@ export const useAuditStore = create<AuditState>((set, get) => ({
   isLoadingCheckpoints: false,
   isResumingCheckpoint: false,
   isRunningGc: false,
+  isBuildingSandboxPlan: false,
   fleetError: null,
+  sandboxPlanError: null,
 
   _nextgenEpoch: 0,
   prDeltaResult: null,
@@ -1859,12 +1946,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     set((state) => ({
       ...(matchedFinding ? { selectedFinding: matchedFinding } : {}),
       ...(matchedFinding && matchedFinding.id !== state.selectedFinding?.id
-        ? {
-            patchPanelResult: null,
-            patchPanelError: null,
-            generatedSecurityTest: null,
-            drawerSecurityTestError: null,
-          }
+        ? resetFindingPatchState()
         : {}),
       activeFilepath: targetFilepath,
       activeStartLine: targetLine,
@@ -2253,6 +2335,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
         : {
             projectPath: path,
             isLoadingPasta: false,
+            ...resetCognitiveSlice(),
             ...resetEvSlice(state._evEpoch),
             ...resetFleetSlice(state._fleetEpoch),
             ...resetNextgenSlice(state._nextgenEpoch),
@@ -2408,12 +2491,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       activePathStepIndex: 0,
       remediationPreview: null,
       ...(state.selectedFinding?.id !== finding.id
-        ? {
-            patchPanelResult: null,
-            patchPanelError: null,
-            generatedSecurityTest: null,
-            drawerSecurityTestError: null,
-          }
+        ? resetFindingPatchState()
         : {}),
       selectedGraphNodeId: firstNode ? firstNode.id : null,
       activeFilepath: firstNode ? firstNode.filepath : null,
@@ -2445,12 +2523,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     set((state) => ({
       selectedFinding: finding,
       ...(state.selectedFinding?.id !== finding.id
-        ? {
-            patchPanelResult: null,
-            patchPanelError: null,
-            generatedSecurityTest: null,
-            drawerSecurityTestError: null,
-          }
+        ? resetFindingPatchState()
         : {}),
       selectedGraphNodeId: bfl.node_id || null,
       activeFilepath: bfl.filepath,
@@ -2526,14 +2599,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           workspaceViewMode: "REMEDIATION_IDE",
           ideLayoutMode: "SPLIT_BOTH",
           isSidebarCollapsed: false,
-          ...(findingChanged
-            ? {
-                patchPanelResult: null,
-                patchPanelError: null,
-                generatedSecurityTest: null,
-                drawerSecurityTestError: null,
-              }
-            : {}),
+          ...(findingChanged ? resetFindingPatchState() : {}),
           ...(state.graphViewMode === "APP_TREE"
             ? { graphViewMode: "FINDING_PATH" as GraphViewMode }
             : {}),
@@ -2637,8 +2703,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           set({
             selectedFinding: null,
             selectedGraphNodeId: null,
-            generatedSecurityTest: null,
-            drawerSecurityTestError: null,
+            ...resetFindingPatchState(),
           });
         } else if (updatedSel && (!curSel || curSel.id !== updatedSel.id)) {
           const firstNode =
@@ -2649,10 +2714,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
             selectedFinding: updatedSel,
             activePathStepIndex: 0,
             remediationPreview: null,
-            patchPanelResult: null,
-            patchPanelError: null,
-            generatedSecurityTest: null,
-            drawerSecurityTestError: null,
+            ...resetFindingPatchState(),
             selectedGraphNodeId: firstNode ? firstNode.id : null,
             activeFilepath: firstNode ? firstNode.filepath : null,
             activeStartLine: firstNode ? firstNode.start_line : null,
@@ -2881,11 +2943,6 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       Boolean(existingProj && !existingProj.last_scan_at && !existingProj.has_cached_scan);
 
     // Invalidate any in-flight Pillar 2 cognitive & PASTA/SAST+ requests from previous project
-    _cognitiveEpoch += 1;
-    _cognitivePlaybooksInFlight = null;
-    _cognitivePlaybooksInFlightKey = "";
-    _exploitChainsInFlight = null;
-    _exploitChainsInFlightKey = "";
     invalidatePastaAndSastPlusInFlight();
 
     // Optimistically mark the selected project as active on frame 1
@@ -2902,18 +2959,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       communitiesCount: 0,
       languagesDetected: {},
       scopeTelemetry: null,
-      cognitivePlaybooks: null,
-      cognitiveHuntResult: null,
-      adversarialVerifyResult: null,
-      exploitChainsResult: null,
-      patchPanelResult: null,
-      isLoadingCognitive: false,
-      isRunningCognitiveHunt: false,
-      isRunningAdversarialVerify: false,
-      isRunningExploitChains: false,
-      isValidatingPatchPanel: false,
-      cognitiveErrorBanner: null,
-      patchPanelError: null,
+      ...resetCognitiveSlice(),
       ...resetEvSlice(state._evEpoch),
       ...resetFleetSlice(state._fleetEpoch),
       ...resetNextgenSlice(state._nextgenEpoch),
@@ -2931,11 +2977,6 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       );
       if (res.ok) {
         const proj: ProjectConfig = await res.json();
-        _cognitiveEpoch += 1;
-        _cognitivePlaybooksInFlight = null;
-        _cognitivePlaybooksInFlightKey = "";
-        _exploitChainsInFlight = null;
-        _exploitChainsInFlightKey = "";
         invalidatePastaAndSastPlusInFlight();
         set((state) => ({
           projectPath: proj.target_path,
@@ -2956,18 +2997,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
           communitiesCount: 0,
           languagesDetected: {},
           scopeTelemetry: null,
-          cognitivePlaybooks: null,
-          cognitiveHuntResult: null,
-          adversarialVerifyResult: null,
-          exploitChainsResult: null,
-          patchPanelResult: null,
-          isLoadingCognitive: false,
-          isRunningCognitiveHunt: false,
-          isRunningAdversarialVerify: false,
-          isRunningExploitChains: false,
-          isValidatingPatchPanel: false,
-          cognitiveErrorBanner: null,
-          patchPanelError: null,
+          ...resetCognitiveSlice(),
           ...resetEvSlice(state._evEpoch),
           ...resetFleetSlice(state._fleetEpoch),
           ...resetNextgenSlice(state._nextgenEpoch),
@@ -4258,6 +4288,148 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     }
   },
 
+  clearAgenticPatchResult: () => {
+    _agenticPatchSeq += 1;
+    set({
+      agenticPatchResult: null,
+      agenticPatchError: null,
+      isRunningAgenticPatch: false,
+    });
+  },
+
+  runAgenticHuntAction: async (req) => {
+    const reqEpoch = _cognitiveEpoch;
+    const reqSeq = ++_agenticHuntSeq;
+    const targetPath = resolveLocalNextgenProjectPath(
+      req.project_path,
+      get().projectPath,
+      get().appTree?.root_path
+    );
+    if (!targetPath) {
+      set({
+        isRunningAgenticHunt: false,
+        agenticHuntError:
+          "Select or scan a local repository workspace before running the Multi-Turn ReAct CPG Hunt.",
+      });
+      return null;
+    }
+    set({ isRunningAgenticHunt: true, agenticHuntError: null });
+    try {
+      const data = await runAgenticReactHunt({
+        ...req,
+        project_path: targetPath,
+      });
+      if (reqEpoch !== _cognitiveEpoch || reqSeq !== _agenticHuntSeq) {
+        return data;
+      }
+      set({
+        agenticHuntResult: data,
+        isRunningAgenticHunt: false,
+        agenticHuntError: null,
+      });
+      if ((data.findings || []).length > 0) {
+        await get().fetchFindings();
+        if (reqEpoch !== _cognitiveEpoch || reqSeq !== _agenticHuntSeq) {
+          return data;
+        }
+        void Promise.all([
+          get().fetchPastaState({ forceRefresh: true }),
+          get().fetchSastPlusSuite({ forceRefresh: true }),
+        ]);
+      }
+      return data;
+    } catch (err: any) {
+      const msg =
+        err?.detail ||
+        err?.message ||
+        "Multi-Turn ReAct CPG Hunt failed.";
+      console.error("Failed to run Agentic ReAct Hunt:", err);
+      if (reqEpoch === _cognitiveEpoch && reqSeq === _agenticHuntSeq) {
+        set({
+          isRunningAgenticHunt: false,
+          agenticHuntError: msg,
+        });
+      }
+      return null;
+    }
+  },
+
+  runAgenticPatchAction: async (req) => {
+    const reqEpoch = _cognitiveEpoch;
+    const reqSeq = ++_agenticPatchSeq;
+    const selected = get().selectedFinding;
+    const targetFindingId =
+      req.finding_id ?? req.finding?.id ?? selected?.id ?? null;
+    if (!targetFindingId && !req.finding) {
+      set({
+        isRunningAgenticPatch: false,
+        agenticPatchError:
+          "Select a finding before running the Iterative ReAct Auto-Patcher.",
+      });
+      return null;
+    }
+    const targetPath = resolveLocalNextgenProjectPath(
+      req.project_path,
+      get().projectPath,
+      get().appTree?.root_path
+    );
+    if (!targetPath) {
+      set({
+        isRunningAgenticPatch: false,
+        agenticPatchError:
+          "Select or scan a local repository workspace before running Iterative ReAct Auto-Patch.",
+      });
+      return null;
+    }
+    set({ isRunningAgenticPatch: true, agenticPatchError: null });
+    try {
+      const resolvedFinding =
+        req.finding !== undefined
+          ? req.finding
+          : selected && selected.id === targetFindingId
+          ? selected
+          : undefined;
+      const data = await runAgenticReactPatch({
+        ...req,
+        project_path: targetPath,
+        ...(targetFindingId ? { finding_id: targetFindingId } : {}),
+        ...(resolvedFinding ? { finding: resolvedFinding } : {}),
+      });
+      if (reqEpoch !== _cognitiveEpoch || reqSeq !== _agenticPatchSeq) {
+        return null;
+      }
+      const curSelId = get().selectedFinding?.id ?? null;
+      if (targetFindingId && curSelId !== targetFindingId) {
+        set({ isRunningAgenticPatch: false });
+        return null;
+      }
+      set({
+        agenticPatchResult: data,
+        isRunningAgenticPatch: false,
+        agenticPatchError: null,
+      });
+      return data;
+    } catch (err: any) {
+      const msg =
+        err?.detail ||
+        err?.message ||
+        "Iterative ReAct S10->S11 Auto-Patch failed.";
+      console.error("Failed to run Agentic ReAct Patch:", err);
+      if (reqEpoch === _cognitiveEpoch && reqSeq === _agenticPatchSeq) {
+        const curSelId = get().selectedFinding?.id ?? null;
+        if (targetFindingId && curSelId !== targetFindingId) {
+          set({ isRunningAgenticPatch: false });
+        } else {
+          set({
+            isRunningAgenticPatch: false,
+            agenticPatchError: msg,
+          });
+        }
+      }
+      return null;
+    }
+  },
+
   clearEvError: () => set({ evError: null }),
 
   planEvProbesAction: async (req) => {
@@ -4592,6 +4764,50 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     }
   },
 
+  buildSandboxPlanAction: async (req) => {
+    const epoch = get()._fleetEpoch;
+    const reqSeq = ++_sandboxPlanSeq;
+    const targetPath = resolveLocalNextgenProjectPath(
+      req.project_path,
+      get().projectPath,
+      get().appTree?.root_path
+    );
+    if (!targetPath) {
+      set({
+        isBuildingSandboxPlan: false,
+        sandboxPlanError:
+          "Select or scan a local repository workspace before generating a Docker sandbox plan.",
+      });
+      return null;
+    }
+    set({ isBuildingSandboxPlan: true, sandboxPlanError: null });
+    try {
+      const plan = await buildSandboxExecutionPlan({
+        ...req,
+        project_path: targetPath,
+      });
+      if (get()._fleetEpoch !== epoch || reqSeq !== _sandboxPlanSeq) {
+        return null;
+      }
+      set({
+        sandboxPlan: plan,
+        isBuildingSandboxPlan: false,
+        sandboxPlanError: null,
+      });
+      return plan;
+    } catch (err: any) {
+      const msg =
+        err?.detail ||
+        err?.message ||
+        "Failed to generate hardened Docker sandbox execution plan.";
+      console.error("Failed to build Docker sandbox plan:", err);
+      if (get()._fleetEpoch === epoch && reqSeq === _sandboxPlanSeq) {
+        set({ isBuildingSandboxPlan: false, sandboxPlanError: msg });
+      }
+      return null;
+    }
+  },
+
   clearNextgenError: () => set({ nextgenError: null }),
 
   clearGeneratedSecurityTest: () =>
@@ -4889,11 +5105,6 @@ export const useAuditStore = create<AuditState>((set, get) => ({
     if (!path) {
       return { ok: false, error: "Please select or paste a target path or GitHub repository URL." };
     }
-    _cognitiveEpoch += 1;
-    _cognitivePlaybooksInFlight = null;
-    _cognitivePlaybooksInFlightKey = "";
-    _exploitChainsInFlight = null;
-    _exploitChainsInFlightKey = "";
     invalidatePastaAndSastPlusInFlight();
     set((state) => ({
       isScanning: true,
@@ -4903,18 +5114,7 @@ export const useAuditStore = create<AuditState>((set, get) => ({
       pastaAssessment: null,
       isLoadingPasta: false,
       communityMap: null,
-      cognitivePlaybooks: null,
-      cognitiveHuntResult: null,
-      adversarialVerifyResult: null,
-      exploitChainsResult: null,
-      patchPanelResult: null,
-      isLoadingCognitive: false,
-      isRunningCognitiveHunt: false,
-      isRunningAdversarialVerify: false,
-      isRunningExploitChains: false,
-      isValidatingPatchPanel: false,
-      cognitiveErrorBanner: null,
-      patchPanelError: null,
+      ...resetCognitiveSlice(),
       ...resetEvSlice(state._evEpoch),
       ...resetFleetSlice(state._fleetEpoch),
       ...resetNextgenSlice(state._nextgenEpoch),

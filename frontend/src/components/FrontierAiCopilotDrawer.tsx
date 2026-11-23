@@ -37,6 +37,9 @@ import {
   FlaskConical,
   Save,
   Terminal,
+  Bot,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 
 const FALLBACK_PROVIDERS: AiProviderInfo[] = [
@@ -131,6 +134,13 @@ export function FrontierAiCopilotDrawer() {
   const clearGeneratedSecurityTest = useAuditStore(
     (s) => s.clearGeneratedSecurityTest
   );
+  const agenticPatchResult = useAuditStore((s) => s.agenticPatchResult);
+  const isRunningAgenticPatch = useAuditStore((s) => s.isRunningAgenticPatch);
+  const agenticPatchError = useAuditStore((s) => s.agenticPatchError);
+  const runAgenticPatchAction = useAuditStore((s) => s.runAgenticPatchAction);
+  const clearAgenticPatchResult = useAuditStore(
+    (s) => s.clearAgenticPatchResult
+  );
 
   const findings = useAuditStore((s) => s.findings);
   const selectedFinding = useAuditStore((s) => s.selectedFinding);
@@ -167,6 +177,10 @@ export function FrontierAiCopilotDrawer() {
   const [testGenFramework, setTestGenFramework] =
     useState<TestFrameworkType>("auto");
   const [allowTestOverwrite, setAllowTestOverwrite] = useState<boolean>(false);
+  const [agenticPatchRounds, setAgenticPatchRounds] = useState<number>(3);
+  const [agenticPatchUseByok, setAgenticPatchUseByok] = useState<boolean>(true);
+  const [agenticPatchTraceOpen, setAgenticPatchTraceOpen] =
+    useState<boolean>(false);
   const prevFindingIdRef = useRef<string | null>(selectedFinding?.id ?? null);
 
   useEffect(() => {
@@ -174,7 +188,9 @@ export function FrontierAiCopilotDrawer() {
     if (prevFindingIdRef.current !== nextId) {
       prevFindingIdRef.current = nextId;
       setAllowTestOverwrite(false);
+      setAgenticPatchTraceOpen(false);
       clearGeneratedSecurityTest();
+      clearAgenticPatchResult();
       return;
     }
     const st = useAuditStore.getState();
@@ -186,7 +202,19 @@ export function FrontierAiCopilotDrawer() {
     } else if (!nextId && st.drawerSecurityTestError) {
       clearGeneratedSecurityTest();
     }
-  }, [selectedFinding?.id, clearGeneratedSecurityTest]);
+    if (
+      st.agenticPatchResult &&
+      st.agenticPatchResult.finding_id !== nextId
+    ) {
+      clearAgenticPatchResult();
+    } else if (!nextId && st.agenticPatchError) {
+      clearAgenticPatchResult();
+    }
+  }, [
+    selectedFinding?.id,
+    clearGeneratedSecurityTest,
+    clearAgenticPatchResult,
+  ]);
 
   useEffect(() => {
     void fetchAiConfigState();
@@ -1666,6 +1694,282 @@ export function FrontierAiCopilotDrawer() {
                 </div>
               );
             })()}
+
+            {/* ALASTOR v5.1 Iterative ReAct S10->S11 Auto-Patcher */}
+            <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-3 shadow-sm">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="font-extrabold text-slate-900 text-xs flex items-center gap-1.5">
+                    <Bot className="w-4 h-4 text-indigo-700 shrink-0" />
+                    <span>Iterative ReAct S10→S11 Auto-Patcher</span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
+                    Iteratively inspects CPG callers, drafts a surgical patch,
+                    and refines against S11 AST/hostile/taint gates. Runs{" "}
+                    <span className="font-semibold text-slate-800">
+                      $0 Deterministic Fallback
+                    </span>{" "}
+                    automatically when no BYOK key is configured.
+                  </p>
+                </div>
+                <span className="px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-300 text-emerald-900 font-mono text-[9px] font-extrabold shrink-0">
+                  $0 / BYOK
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-end">
+                <div>
+                  <label
+                    htmlFor="agentic-patch-rounds"
+                    className="block text-[10px] font-mono font-bold text-slate-700 mb-1"
+                  >
+                    Refinement Rounds (1–5)
+                  </label>
+                  <input
+                    id="agentic-patch-rounds"
+                    type="number"
+                    min={1}
+                    max={5}
+                    value={agenticPatchRounds}
+                    onChange={(e) => {
+                      const parsed = Number(e.target.value);
+                      if (!Number.isFinite(parsed)) {
+                        setAgenticPatchRounds(3);
+                        return;
+                      }
+                      setAgenticPatchRounds(
+                        Math.max(1, Math.min(5, Math.floor(parsed)))
+                      );
+                    }}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-indigo-600 focus:bg-white"
+                  />
+                </div>
+
+                <label className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-950 text-[11px] font-semibold cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={agenticPatchUseByok}
+                    onChange={(e) =>
+                      setAgenticPatchUseByok(e.target.checked)
+                    }
+                    className="accent-indigo-700"
+                  />
+                  <span>Use BYOK LLM</span>
+                  <span className="ml-auto font-mono text-[9px] font-bold text-indigo-800">
+                    {isProviderReady ? "Ready" : "$0 Fallback"}
+                  </span>
+                </label>
+              </div>
+
+              <button
+                type="button"
+                disabled={!selectedFinding || isRunningAgenticPatch}
+                onClick={() => {
+                  if (!selectedFinding) return;
+                  const safeRounds = Math.max(
+                    1,
+                    Math.min(5, Math.floor(agenticPatchRounds || 3))
+                  );
+                  setAgenticPatchRounds(safeRounds);
+                  void runAgenticPatchAction({
+                    finding_id: selectedFinding.id,
+                    finding: selectedFinding,
+                    max_refinement_rounds: safeRounds,
+                    use_byok_llm: agenticPatchUseByok,
+                  });
+                }}
+                className="w-full py-2 px-3 rounded-xl bg-indigo-700 hover:bg-indigo-800 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-colors"
+              >
+                {isRunningAgenticPatch ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Bot className="w-4 h-4" />
+                )}
+                <span>
+                  {isRunningAgenticPatch
+                    ? "Running Iterative ReAct Auto-Patch..."
+                    : selectedFinding
+                    ? "Run Iterative ReAct Auto-Patch"
+                    : "Select a Finding First"}
+                </span>
+              </button>
+
+              {agenticPatchError && (
+                <div
+                  role="alert"
+                  className="p-2.5 rounded-lg bg-rose-50 border border-rose-300 text-rose-950 text-[11px] font-semibold flex items-start gap-1.5"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5 text-rose-700 shrink-0 mt-0.5" />
+                  <span className="break-words">{agenticPatchError}</span>
+                </div>
+              )}
+
+              {agenticPatchResult && (
+                <div className="space-y-2.5 pt-2 border-t border-slate-200">
+                  <div className="flex flex-wrap items-center justify-between gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10px]">
+                      <span
+                        className={`px-2 py-0.5 rounded border font-extrabold ${
+                          agenticPatchResult.final_status === "APPROVED"
+                            ? "bg-emerald-50 text-emerald-900 border-emerald-300"
+                            : agenticPatchResult.final_status === "REJECTED"
+                            ? "bg-rose-50 text-rose-950 border-rose-300"
+                            : "bg-amber-50 text-amber-950 border-amber-300"
+                        }`}
+                      >
+                        {agenticPatchResult.final_status}
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded border font-bold ${
+                          agenticPatchResult.execution_mode ===
+                          "BYOK_REACT_ITERATIVE"
+                            ? "bg-indigo-50 text-indigo-950 border-indigo-300"
+                            : "bg-slate-100 text-slate-800 border-slate-300"
+                        }`}
+                      >
+                        {agenticPatchResult.execution_mode.replace(/_/g, " ")}
+                      </span>
+                    </div>
+
+                    {agenticPatchResult.s11_panel && (
+                      <span
+                        className={`px-2 py-0.5 rounded border font-mono text-[10px] font-extrabold ${
+                          agenticPatchResult.s11_panel.overall_verdict ===
+                          "APPROVED"
+                            ? "bg-emerald-50 text-emerald-900 border-emerald-300"
+                            : agenticPatchResult.s11_panel.overall_verdict ===
+                              "REJECTED"
+                            ? "bg-rose-50 text-rose-950 border-rose-300"
+                            : "bg-amber-50 text-amber-950 border-amber-300"
+                        }`}
+                      >
+                        S11: {agenticPatchResult.s11_panel.overall_verdict}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono font-bold text-slate-800">
+                    <span className="px-2 py-0.5 rounded bg-slate-50 border border-slate-200">
+                      Rounds: {agenticPatchResult.rounds_used}
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-slate-50 border border-slate-200">
+                      Turns: {agenticPatchResult.turns_used}
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-slate-50 border border-slate-200">
+                      Tool Calls: {agenticPatchResult.tool_calls_used}
+                    </span>
+                  </div>
+
+                  {agenticPatchResult.rationale && (
+                    <p className="text-[11px] text-slate-800 leading-relaxed bg-[#f8fafc] border border-slate-200 rounded-lg p-2.5">
+                      {agenticPatchResult.rationale}
+                    </p>
+                  )}
+
+                  {agenticPatchResult.warnings.length > 0 && (
+                    <div className="p-2 rounded-lg bg-amber-50 border border-amber-300 text-amber-950 text-[10.5px] space-y-0.5">
+                      {agenticPatchResult.warnings.map((w, idx) => (
+                        <div key={idx}>{w}</div>
+                      ))}
+                    </div>
+                  )}
+
+                  {agenticPatchResult.patched_code && (
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-mono font-bold uppercase text-emerald-900">
+                          Candidate Hardened Patch
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            copyText(
+                              "agentic-patch-code",
+                              agenticPatchResult.patched_code
+                            )
+                          }
+                          className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 font-mono text-[10px] font-bold flex items-center gap-1"
+                        >
+                          {copiedKey === "agentic-patch-code" ? (
+                            <>
+                              <Check className="w-3 h-3 text-emerald-700" />
+                              <span>Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3 h-3" />
+                              <span>Copy Patch</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                      <pre className="p-2.5 rounded-lg bg-emerald-50/60 border border-emerald-300 font-mono text-[10.5px] text-slate-900 overflow-x-auto whitespace-pre-wrap break-words max-h-56">
+                        {agenticPatchResult.patched_code}
+                      </pre>
+                    </div>
+                  )}
+
+                  {agenticPatchResult.trace.length > 0 && (
+                    <div>
+                      <button
+                        type="button"
+                        aria-expanded={agenticPatchTraceOpen}
+                        onClick={() =>
+                          setAgenticPatchTraceOpen((prev) => !prev)
+                        }
+                        className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-[11px] font-extrabold text-slate-900 transition-colors"
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <Terminal className="w-3 h-3 text-indigo-700" />
+                          <span>
+                            Redacted Tool-Call Trace (
+                            {agenticPatchResult.trace.length})
+                          </span>
+                        </span>
+                        {agenticPatchTraceOpen ? (
+                          <ChevronDown className="w-3.5 h-3.5 text-slate-700" />
+                        ) : (
+                          <ChevronRight className="w-3.5 h-3.5 text-slate-700" />
+                        )}
+                      </button>
+
+                      {agenticPatchTraceOpen && (
+                        <div className="mt-1.5 space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                          {agenticPatchResult.trace.map((step, idx) => (
+                            <div
+                              key={`${step.turn}-${step.tool_name}-${idx}`}
+                              className="p-2 rounded-lg bg-[#f8fafc] border border-slate-200 space-y-1"
+                            >
+                              <div className="flex items-center justify-between gap-1.5 font-mono text-[9.5px] flex-wrap">
+                                <div className="flex items-center gap-1 flex-wrap">
+                                  <span className="px-1.5 py-0.5 rounded bg-slate-900 text-white font-extrabold">
+                                    Turn {step.turn}
+                                  </span>
+                                  <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-950 border border-indigo-200 font-bold">
+                                    {step.tool_name}
+                                  </span>
+                                  {step.blocked_reason && (
+                                    <span className="px-1.5 py-0.5 rounded bg-rose-50 text-rose-950 border border-rose-300 font-extrabold">
+                                      BLOCKED: {step.blocked_reason}
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="text-slate-600 font-bold">
+                                  {step.duration_ms.toFixed(1)} ms
+                                </span>
+                              </div>
+                              <p className="text-[10.5px] text-slate-800 whitespace-pre-wrap break-words leading-snug">
+                                {step.observation_summary}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
 
             {/* Pillar 5: 1-Click Security Regression Unit-Test Generator */}
             <div className="p-3 rounded-xl bg-white border border-slate-200 space-y-3 shadow-sm">

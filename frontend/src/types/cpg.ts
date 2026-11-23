@@ -2275,3 +2275,121 @@ export interface MicroserviceGraphResponse {
   reactflow_edges: Array<Record<string, any>>;
   warnings: string[];
 }
+
+// ---------------------------------------------------------------------------
+// 19. ALASTOR v5.1 ReAct Agent & Dual Docker Egress-Proxy Sandbox Models
+// ---------------------------------------------------------------------------
+export type AgenticHuntExecutionMode =
+  | "BYOK_REACT_MULTI_TURN"
+  | "DETERMINISTIC_FALLBACK";
+
+export type AgenticHuntStopReason =
+  | "SUBMITTED"
+  | "MAX_TURNS"
+  | "MAX_TOOL_CALLS"
+  | "LOOP_DETECTED"
+  | "FALLBACK_COMPLETE"
+  | "ERROR";
+
+export type AgenticPatchExecutionMode =
+  | "BYOK_REACT_ITERATIVE"
+  | "DETERMINISTIC_FALLBACK";
+
+export type AgenticPatchFinalStatus =
+  | "APPROVED"
+  | "REJECTED"
+  | "NEEDS_HUMAN_REVIEW";
+
+export type SandboxEgressMode = "none" | "mediated";
+
+export interface AgenticTraceStep {
+  turn: number;
+  tool_name: string;
+  tool_args: Record<string, any>;
+  observation_summary: string;
+  duration_ms: number;
+  blocked_reason?: string | null;
+}
+
+export interface AgenticHuntRequest {
+  project_path: string;
+  playbook_lenses?: string[] | null;
+  focus_goal?: string | null;
+  max_turns?: number;
+  max_tool_calls?: number;
+  use_byok_llm?: boolean;
+  run_s6_verify?: boolean;
+}
+
+export interface AgenticHuntResponse {
+  project_path: string;
+  execution_mode: AgenticHuntExecutionMode;
+  turns_used: number;
+  tool_calls_used: number;
+  stop_reason: AgenticHuntStopReason;
+  findings: Finding[];
+  s6_verified_count: number;
+  trace: AgenticTraceStep[];
+  warnings: string[];
+}
+
+export interface AgenticPatchRequest {
+  project_path: string;
+  finding_id?: string | null;
+  finding?: Finding | null;
+  max_turns?: number;
+  max_refinement_rounds?: number;
+  use_byok_llm?: boolean;
+}
+
+export interface AgenticPatchResponse {
+  project_path: string;
+  finding_id: string;
+  execution_mode: AgenticPatchExecutionMode;
+  rounds_used: number;
+  turns_used: number;
+  tool_calls_used: number;
+  final_status: AgenticPatchFinalStatus;
+  patched_code: string;
+  rationale: string;
+  s11_panel?: PatchPanelValidateResponse | null;
+  trace: AgenticTraceStep[];
+  warnings: string[];
+}
+
+export interface SandboxImageInfo {
+  image_name: string;
+  present: boolean;
+  label_version?: string | null;
+  expected_version: string;
+  version_matches: boolean;
+  detail: string;
+}
+
+export interface SandboxImageStatus {
+  docker_available: boolean;
+  expected_version: string;
+  sandbox_image: SandboxImageInfo;
+  egress_image: SandboxImageInfo;
+  ready_for_none_mode: boolean;
+  ready_for_mediated_mode: boolean;
+}
+
+export interface SandboxPlanRequest {
+  project_path: string;
+  output_dir?: string | null;
+  egress_mode?: SandboxEgressMode;
+  allowed_llm_hosts?: string[];
+  cli_args?: string[] | null;
+}
+
+export interface SandboxExecutionPlan {
+  egress_mode: SandboxEgressMode;
+  allowed_llm_hosts: string[];
+  squid_config?: string | null;
+  egress_docker_cmd?: string[] | null;
+  scanner_docker_cmd: string[];
+  build_commands: string[];
+  security_invariants: string[];
+  warnings: string[];
+}

@@ -7,6 +7,7 @@ import {
   FleetAppGroupRollup,
   FleetRepoResult,
   FleetRunResponse,
+  SandboxEgressMode,
   ScanRunCheckpointSummary,
   ScannerFormatType,
 } from "@/types/cpg";
@@ -29,6 +30,7 @@ import {
   HardDrive,
   Layers,
   Loader2,
+  Lock,
   Play,
   RefreshCw,
   RotateCcw,
@@ -41,7 +43,12 @@ import {
   X,
 } from "lucide-react";
 
-type WorkbenchSectionTab = "ALL" | "FUSION" | "FLEET" | "CHECKPOINTS_GC";
+type WorkbenchSectionTab =
+  | "ALL"
+  | "SANDBOX"
+  | "FUSION"
+  | "FLEET"
+  | "CHECKPOINTS_GC";
 
 const SCANNER_FORMAT_OPTIONS: Array<{
   value: "" | ScannerFormatType;
@@ -202,6 +209,16 @@ function getFindingLocation(f: Finding): { filepath: string; line: number } {
   return { filepath: "(workspace)", line: 1 };
 }
 
+function formatShellArgs(args: string[]): string {
+  return args
+    .map((arg) =>
+      /^[A-Za-z0-9_./:@=+-]+$/.test(arg)
+        ? arg
+        : `'${arg.replace(/'/g, "'\"'\"'")}'`
+    )
+    .join(" ");
+}
+
 export const FleetCommandWorkbench: React.FC = () => {
   const projectPath = useAuditStore((s) => s.projectPath);
   const findings = useAuditStore((s) => s.findings);
@@ -214,6 +231,7 @@ export const FleetCommandWorkbench: React.FC = () => {
   const fleetRuns = useAuditStore((s) => s.fleetRuns);
   const fleetCheckpoints = useAuditStore((s) => s.fleetCheckpoints);
   const fleetGcReport = useAuditStore((s) => s.fleetGcReport);
+  const sandboxPlan = useAuditStore((s) => s.sandboxPlan);
 
   const isLoadingDoctor = useAuditStore((s) => s.isLoadingDoctor);
   const isEstimatingFleet = useAuditStore((s) => s.isEstimatingFleet);
@@ -223,7 +241,9 @@ export const FleetCommandWorkbench: React.FC = () => {
   const isLoadingCheckpoints = useAuditStore((s) => s.isLoadingCheckpoints);
   const isResumingCheckpoint = useAuditStore((s) => s.isResumingCheckpoint);
   const isRunningGc = useAuditStore((s) => s.isRunningGc);
+  const isBuildingSandboxPlan = useAuditStore((s) => s.isBuildingSandboxPlan);
   const fleetError = useAuditStore((s) => s.fleetError);
+  const sandboxPlanError = useAuditStore((s) => s.sandboxPlanError);
 
   const fetchFleetDoctorAction = useAuditStore(
     (s) => s.fetchFleetDoctorAction
@@ -243,6 +263,9 @@ export const FleetCommandWorkbench: React.FC = () => {
     (s) => s.resumeFleetCheckpointAction
   );
   const runFleetGcAction = useAuditStore((s) => s.runFleetGcAction);
+  const buildSandboxPlanAction = useAuditStore(
+    (s) => s.buildSandboxPlanAction
+  );
   const clearFleetError = useAuditStore((s) => s.clearFleetError);
 
   // Internal workbench section switcher
@@ -287,6 +310,13 @@ export const FleetCommandWorkbench: React.FC = () => {
   );
   const [olderThanDays, setOlderThanDays] = useState<number>(30);
   const [keepLast, setKeepLast] = useState<number>(20);
+
+  // Dual Docker Egress-Proxy Sandbox state (ALASTOR v5.1)
+  const [sandboxEgressMode, setSandboxEgressMode] =
+    useState<SandboxEgressMode>("none");
+  const [allowedLlmHostsText, setAllowedLlmHostsText] = useState<string>(
+    "api.openai.com, api.anthropic.com, generativelanguage.googleapis.com"
+  );
 
   useEffect(() => {
     return () => {
@@ -442,6 +472,25 @@ export const FleetCommandWorkbench: React.FC = () => {
     );
   };
 
+  const handleGenerateSandboxPlan = async () => {
+    const parsedHosts = allowedLlmHostsText
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    await buildSandboxPlanAction({
+      project_path: projectPath,
+      egress_mode: sandboxEgressMode,
+      allowed_llm_hosts:
+        sandboxEgressMode === "mediated" ? parsedHosts : [],
+    });
+  };
+
+  const sandboxImagesCheck = useMemo(
+    () =>
+      fleetDoctor?.checks?.find((chk) => chk.name === "sandbox_images") || null,
+    [fleetDoctor]
+  );
+
   const displayedFusionFindings = useMemo(() => {
     if (!fusionResult?.findings) return [];
     const prioritized = [...fusionResult.findings].sort((a, b) => {
@@ -561,6 +610,16 @@ export const FleetCommandWorkbench: React.FC = () => {
                   Docker Sandbox:{" "}
                   {fleetDoctor.docker_available ? "Ready" : "Optional (Off)"}
                 </span>
+                {sandboxImagesCheck && (
+                  <span
+                    title={sandboxImagesCheck.detail}
+                    className={`px-2.5 py-1 rounded-lg border font-extrabold ${getCheckStatusBadge(
+                      sandboxImagesCheck.status
+                    )}`}
+                  >
+                    Sandbox Images: {sandboxImagesCheck.status}
+                  </span>
+                )}
                 <span
                   className={`px-2.5 py-1 rounded-lg border font-extrabold flex items-center gap-1 ${
                     fleetDoctor.vault_writable
@@ -879,6 +938,30 @@ export const FleetCommandWorkbench: React.FC = () => {
 
         <button
           type="button"
+          onClick={() => setSectionTab("SANDBOX")}
+          className={`px-3 py-1.5 rounded-lg text-xs font-extrabold border flex items-center gap-1.5 transition-colors ${
+            sectionTab === "SANDBOX"
+              ? "bg-indigo-700 text-white border-indigo-800 shadow-sm"
+              : "bg-white text-slate-700 hover:bg-slate-100 border-slate-300"
+          }`}
+        >
+          <Lock className="w-3.5 h-3.5" />
+          <span>Dual Docker Egress Sandbox</span>
+          {sandboxImagesCheck && (
+            <span
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-extrabold ${
+                sectionTab === "SANDBOX"
+                  ? "bg-white text-indigo-950"
+                  : getCheckStatusBadge(sandboxImagesCheck.status)
+              }`}
+            >
+              {sandboxImagesCheck.status}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
           onClick={() => setSectionTab("FUSION")}
           className={`px-3 py-1.5 rounded-lg text-xs font-extrabold border flex items-center gap-1.5 transition-colors ${
             sectionTab === "FUSION"
@@ -945,6 +1028,346 @@ export const FleetCommandWorkbench: React.FC = () => {
           </span>
         </button>
       </div>
+
+      {/* 1B. ALASTOR v5.1 OS-Enforced Dual Docker Egress-Proxy Sandbox */}
+      {(sectionTab === "ALL" || sectionTab === "SANDBOX") && (
+        <div className="bg-white border border-slate-300 rounded-xl p-5 shadow-sm space-y-4">
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-3">
+            <div className="flex items-start gap-3 min-w-0">
+              <div className="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-300 flex items-center justify-center text-indigo-800 shrink-0">
+                <Lock className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-sm font-extrabold text-slate-900">
+                    OS-Enforced Dual Docker Egress-Proxy Sandbox
+                  </h3>
+                  <span className="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-300 text-emerald-900 text-[10px] font-mono font-extrabold">
+                    --network=none + --read-only
+                  </span>
+                </div>
+                <p className="text-xs text-slate-700 mt-0.5 leading-relaxed">
+                  Confines untrusted repositories inside a non-root,
+                  read-only, capability-dropped scanner container with zero
+                  direct IP egress, bridged exclusively over a Unix socket to an
+                  FQDN-allowlisted Squid CONNECT:443 proxy in mediated mode.
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              disabled={isBuildingSandboxPlan}
+              onClick={() => void handleGenerateSandboxPlan()}
+              className="px-4 py-2 rounded-lg bg-indigo-700 hover:bg-indigo-800 disabled:opacity-50 text-white border border-indigo-800 text-xs font-extrabold flex items-center gap-2 shadow-sm transition-colors shrink-0"
+            >
+              {isBuildingSandboxPlan ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <ShieldCheck className="w-4 h-4" />
+              )}
+              <span>
+                {isBuildingSandboxPlan
+                  ? "Generating Sandbox Plan..."
+                  : "Generate Hardened Docker Sandbox Plan"}
+              </span>
+            </button>
+          </div>
+
+          {/* Prominent sandbox_images Diagnostic Banner from fleetDoctor.checks */}
+          {sandboxImagesCheck ? (
+            <div
+              className={`rounded-xl border px-3.5 py-2.5 flex flex-wrap items-start justify-between gap-2 text-xs ${
+                sandboxImagesCheck.status === "OK"
+                  ? "bg-emerald-50 border-emerald-300 text-emerald-950"
+                  : sandboxImagesCheck.status === "WARN"
+                  ? "bg-amber-50 border-amber-300 text-amber-950"
+                  : "bg-rose-50 border-rose-300 text-rose-950"
+              }`}
+            >
+              <div className="flex items-start gap-2 min-w-0 flex-1">
+                {sandboxImagesCheck.status === "OK" ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                )}
+                <div className="min-w-0 space-y-0.5">
+                  <div className="font-mono text-[11px] font-extrabold">
+                    Doctor Check: sandbox_images — {sandboxImagesCheck.status}
+                  </div>
+                  <div className="text-[11px] font-mono break-words">
+                    {sandboxImagesCheck.detail}
+                  </div>
+                </div>
+              </div>
+              <span
+                className={`px-2 py-0.5 rounded border text-[10px] font-mono font-extrabold shrink-0 ${getCheckStatusBadge(
+                  sandboxImagesCheck.status
+                )}`}
+              >
+                {sandboxImagesCheck.status}
+              </span>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-slate-200 bg-[#f8fafc] px-3.5 py-2.5 flex items-center justify-between gap-2 text-xs text-slate-700">
+              <span>
+                Run <span className="font-mono font-bold">doctor</span> to
+                inspect local <span className="font-mono">alastor-sandbox:local</span>{" "}
+                and <span className="font-mono">alastor-egress:local</span>{" "}
+                version labels.
+              </span>
+              <button
+                type="button"
+                disabled={isLoadingDoctor}
+                onClick={() => void fetchFleetDoctorAction(checkNeo4j)}
+                className="px-2.5 py-1 rounded-lg bg-white hover:bg-slate-100 border border-slate-300 text-[11px] font-mono font-bold text-slate-900 shrink-0"
+              >
+                Refresh Doctor
+              </button>
+            </div>
+          )}
+
+          {/* Mediated-Egress Sandbox Plan Generator Controls */}
+          <div className="rounded-xl bg-[#f8fafc] border border-slate-200 p-4 space-y-3">
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-mono font-extrabold uppercase text-slate-800">
+                Mediated-Egress Sandbox Plan Generator — Egress Mode
+              </div>
+              <div
+                role="radiogroup"
+                aria-label="Docker sandbox egress mode"
+                className="grid grid-cols-1 sm:grid-cols-2 gap-2"
+              >
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={sandboxEgressMode === "none"}
+                  onClick={() => setSandboxEgressMode("none")}
+                  className={`px-3.5 py-2.5 rounded-xl border text-left transition-all ${
+                    sandboxEgressMode === "none"
+                      ? "bg-indigo-700 text-white border-indigo-800 shadow-sm"
+                      : "bg-white text-slate-900 border-slate-300 hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="text-xs font-extrabold">
+                    Networkless (egress: none)
+                  </div>
+                  <div
+                    className={`text-[11px] mt-0.5 ${
+                      sandboxEgressMode === "none"
+                        ? "text-indigo-100"
+                        : "text-slate-600"
+                    }`}
+                  >
+                    Single container, --network=none, $0 deterministic scan.
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={sandboxEgressMode === "mediated"}
+                  onClick={() => setSandboxEgressMode("mediated")}
+                  className={`px-3.5 py-2.5 rounded-xl border text-left transition-all ${
+                    sandboxEgressMode === "mediated"
+                      ? "bg-indigo-700 text-white border-indigo-800 shadow-sm"
+                      : "bg-white text-slate-900 border-slate-300 hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="text-xs font-extrabold">
+                    Mediated Squid Proxy (egress: mediated)
+                  </div>
+                  <div
+                    className={`text-[11px] mt-0.5 ${
+                      sandboxEgressMode === "mediated"
+                        ? "text-indigo-100"
+                        : "text-slate-600"
+                    }`}
+                  >
+                    Scanner stays --network=none; LLM calls traverse Unix socket
+                    to allowlisted Squid CONNECT:443 sidecar.
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {sandboxEgressMode === "mediated" && (
+              <div className="space-y-1">
+                <label
+                  htmlFor="sandbox-allowed-llm-hosts"
+                  className="block text-[11px] font-mono font-extrabold uppercase text-slate-800"
+                >
+                  Allowed Public LLM API FQDNs
+                </label>
+                <input
+                  id="sandbox-allowed-llm-hosts"
+                  type="text"
+                  value={allowedLlmHostsText}
+                  onChange={(e) => setAllowedLlmHostsText(e.target.value)}
+                  placeholder="api.openai.com, api.anthropic.com, generativelanguage.googleapis.com"
+                  className="w-full h-9 px-3 rounded-lg bg-white border border-slate-300 focus:border-indigo-600 focus:outline-none text-xs font-mono text-slate-900 placeholder-slate-400"
+                />
+                <p className="text-[11px] text-slate-600">
+                  Comma-separated public DNS FQDNs allowed via Squid CONNECT:443
+                  (IP literals, wildcards, and .local/.internal hosts are
+                  rejected).
+                </p>
+              </div>
+            )}
+          </div>
+
+          {sandboxPlanError && (
+            <div
+              role="alert"
+              className="px-3.5 py-2.5 rounded-xl bg-rose-50 border border-rose-300 text-rose-950 text-xs font-bold flex items-start gap-2"
+            >
+              <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0 mt-0.5" />
+              <span className="break-words">{sandboxPlanError}</span>
+            </div>
+          )}
+
+          {sandboxPlan && (
+            <div className="space-y-3.5 pt-1">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={`px-2.5 py-1 rounded border text-[10px] font-mono font-extrabold ${
+                      sandboxPlan.egress_mode === "mediated"
+                        ? "bg-indigo-50 text-indigo-950 border-indigo-300"
+                        : "bg-emerald-50 text-emerald-900 border-emerald-300"
+                    }`}
+                  >
+                    EGRESS MODE: {sandboxPlan.egress_mode.toUpperCase()}
+                  </span>
+                  {sandboxPlan.allowed_llm_hosts.map((host) => (
+                    <span
+                      key={host}
+                      className="px-2 py-0.5 rounded bg-white border border-slate-300 text-slate-900 text-[10px] font-mono font-bold"
+                    >
+                      {host}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Security Invariants Badges */}
+              {sandboxPlan.security_invariants.length > 0 && (
+                <div className="space-y-1.5">
+                  <div className="text-[10px] font-mono font-extrabold uppercase text-slate-700">
+                    Enforced Security Invariants (
+                    {sandboxPlan.security_invariants.length})
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {sandboxPlan.security_invariants.map((inv, idx) => (
+                      <span
+                        key={idx}
+                        className="px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-950 text-[11px] font-semibold inline-flex items-center gap-1.5"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                        <span>{inv}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Operator Warnings */}
+              {sandboxPlan.warnings.length > 0 && (
+                <div className="rounded-xl bg-amber-50 border border-amber-300 p-3 space-y-1 text-xs text-amber-950">
+                  <div className="text-[10px] font-mono font-extrabold uppercase text-amber-900">
+                    Operator Warnings
+                  </div>
+                  {sandboxPlan.warnings.map((w, idx) => (
+                    <div key={idx} className="font-mono text-[11px] break-words">
+                      • {w}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Copy-Ready Commands & Config */}
+              <div className="grid grid-cols-1 gap-3">
+                {[
+                  {
+                    key: "sandbox-build-cmds",
+                    title: "Docker Image Build Commands",
+                    badge: "Dockerfile + egress.Dockerfile",
+                    content: sandboxPlan.build_commands.join("\n"),
+                  },
+                  ...(sandboxPlan.egress_mode === "mediated" &&
+                  sandboxPlan.egress_docker_cmd
+                    ? [
+                        {
+                          key: "sandbox-egress-cmd",
+                          title: "Egress Proxy Sidecar Command",
+                          badge: "alastor-egress:local",
+                          content: formatShellArgs(
+                            sandboxPlan.egress_docker_cmd
+                          ),
+                        },
+                      ]
+                    : []),
+                  ...(sandboxPlan.egress_mode === "mediated" &&
+                  sandboxPlan.squid_config
+                    ? [
+                        {
+                          key: "sandbox-squid-conf",
+                          title: "Generated Deny-by-Default squid.conf",
+                          badge: "CONNECT 443 Allowlist",
+                          content: sandboxPlan.squid_config,
+                        },
+                      ]
+                    : []),
+                  {
+                    key: "sandbox-scanner-cmd",
+                    title: "Scanner Container Command",
+                    badge: "--network=none",
+                    content: formatShellArgs(sandboxPlan.scanner_docker_cmd),
+                  },
+                ].map((block) => (
+                  <div
+                    key={block.key}
+                    className="rounded-xl bg-[#f8fafc] border border-slate-200 p-3 space-y-1.5"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-mono font-extrabold uppercase text-slate-800">
+                          {block.title}
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-300 text-emerald-900 font-mono text-[9.5px] font-extrabold">
+                          {block.badge}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void handleCopyText(block.key, block.content)
+                        }
+                        className="px-2.5 py-1 rounded-lg bg-white hover:bg-slate-100 border border-slate-300 text-[10px] font-mono font-bold text-slate-800 flex items-center gap-1"
+                      >
+                        {copiedKey === block.key ? (
+                          <>
+                            <Check className="w-3 h-3 text-emerald-700" />
+                            <span className="text-emerald-800">Copied</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3 h-3 text-slate-700" />
+                            <span>Copy</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                    <pre className="p-2.5 rounded-lg bg-white border border-slate-200 font-mono text-[11px] text-slate-900 overflow-x-auto whitespace-pre-wrap break-all">
+                      {block.content}
+                    </pre>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 2. Universal 6-Format Scanner Fusion Panel */}
       {(sectionTab === "ALL" || sectionTab === "FUSION") && (
