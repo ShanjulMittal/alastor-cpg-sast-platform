@@ -239,9 +239,6 @@ class TestHostileRepoGuard:
                 f"\tallow = always\n"
                 f'[protocol "https"]\n'
                 f"\tallow = always\n"
-                f'[url "ext::sh -c evil"]\n'
-                f"\tinsteadOf = https://github.com/\n"
-                f"\tpushInsteadOf = https://github.com/\n"
             )
 
         custom_env = {
@@ -297,8 +294,10 @@ class TestHostileRepoGuard:
         assert lower_pins.get("remote.origin.vcs") == ""
         assert lower_pins.get("remote.origin.proxy") == ""
         assert lower_pins.get("merge.evil.driver") == "false"
-        assert lower_pins.get("url.ext::sh -c evil.insteadof") == ""
-        assert lower_pins.get("url.ext::sh -c evil.pushinsteadof") == ""
+        assert not any(
+            k.startswith("url.") and (k.endswith(".insteadof") or k.endswith(".pushinsteadof"))
+            for k in lower_pins
+        )
 
         # Both case-variant subsections MUST be neutralized independently!
         for variant in ("evil", "Evil"):
@@ -337,6 +336,42 @@ class TestHostileRepoGuard:
         diff_res = run_hardened_git(str(repo_dir), ["diff"])
         assert diff_res.returncode == 0
         assert "+print('updated')" in diff_res.stdout
+
+    def test_url_insteadof_fail_closed_and_no_wildcard_rewrite(self, tmp_path: Path):
+        # Clean repo must NOT suffer wildcard url.<base>.insteadOf="" rewriting
+        clean_repo = tmp_path / "clean_url_repo"
+        clean_repo.mkdir()
+        _init_git_repo_with_commit(clean_repo)
+        ls_res = run_hardened_git(
+            str(clean_repo),
+            ["ls-remote", "--get-url", "https://gitlab.com/org/repo"],
+        )
+        assert ls_res.returncode == 0
+        assert ls_res.stdout.strip() == "https://gitlab.com/org/repo"
+
+        # Repo-local url.*.insteadOf must fail closed with HostileRepoError
+        evil_insteadof_repo = tmp_path / "evil_insteadof_repo"
+        evil_insteadof_repo.mkdir()
+        _init_git_repo_with_commit(evil_insteadof_repo)
+        with (evil_insteadof_repo / ".git" / "config").open("a", encoding="utf-8") as fh:
+            fh.write('\n[url "https://evil/"]\n\tinsteadOf = https://github.com/\n')
+
+        with pytest.raises(HostileRepoError, match="url\\.\\*\\.insteadOf"):
+            build_hardened_git_env_and_argv(str(evil_insteadof_repo))
+        with pytest.raises(HostileRepoError, match="url\\.\\*\\.insteadOf"):
+            run_hardened_git(str(evil_insteadof_repo), ["status"])
+
+        # Repo-local url.*.pushInsteadOf must also fail closed with HostileRepoError
+        evil_push_repo = tmp_path / "evil_pushinsteadof_repo"
+        evil_push_repo.mkdir()
+        _init_git_repo_with_commit(evil_push_repo)
+        with (evil_push_repo / ".git" / "config").open("a", encoding="utf-8") as fh:
+            fh.write('\n[url "https://evil/"]\n\tpushInsteadOf = https://github.com/\n')
+
+        with pytest.raises(HostileRepoError, match="pushInsteadOf"):
+            build_hardened_git_env_and_argv(str(evil_push_repo))
+        with pytest.raises(HostileRepoError, match="pushInsteadOf"):
+            run_hardened_git(str(evil_push_repo), ["status"])
 
     def test_get_repo_commit_sha_non_git_returns_empty_and_missing_raises(self, tmp_path: Path):
         non_git = tmp_path / "plain_dir"

@@ -7,7 +7,8 @@ Protects the host and CI runners when inspecting untrusted target repositories:
    `core.askPass`, `core.alternateRefsCommand`, `uploadpack.packObjectsHook`,
    `gpg.program`, `protocol.allow`, `diff.external`, `credential.helper`, `filter.*`,
    `diff.*`, `pager.*`, `remote.*`, `credential.*.helper`, `gpg.*.program`, `merge.*.driver`,
-   `protocol.*.allow`, and `url.*.insteadOf` / `pushInsteadOf` via `GIT_CONFIG_COUNT`.
+   and `protocol.*.allow` via `GIT_CONFIG_COUNT`, and fails closed if repo-local `.git/config`
+   defines any `url.*.insteadOf` or `url.*.pushInsteadOf` rewrite rule.
 2. Refusal to load `.env`, `.alastor.yaml`, `config.yaml`, or any config located inside
    the scanned target repository (including nested symlink/junction traversal).
 3. Strict remote clone URL validation (`http://`, `https://`, `ssh://`, `git@host:owner/repo`).
@@ -209,14 +210,12 @@ def _neutralized_value_for_dynamic_key(key: str) -> Optional[str]:
     if proto_match:
         proto_name = proto_match.group(1).lower()
         return "user" if proto_name in _SAFE_GIT_PROTOCOLS else "never"
-    if _URL_REWRITE_KEY_RE.match(key):
-        return ""
     return None
 
 
 def _is_neutralized_config_key(key: str) -> bool:
     lower = key.lower()
-    if lower in _FORCED_BASE_KEYS_LOWER:
+    if lower in _FORCED_BASE_KEYS_LOWER or bool(_URL_REWRITE_KEY_RE.match(key)):
         return True
     return _neutralized_value_for_dynamic_key(key) is not None
 
@@ -263,6 +262,37 @@ def build_hardened_git_env_and_argv(
     if probe.returncode != 0:
         err_text = (probe.stderr or b"").decode("utf-8", errors="replace").strip()
         raise HostileRepoError(f"Hardened git config inspection exited {probe.returncode}: {err_text}")
+
+    # Fail closed if the target repository's own local `.git/config` defines any URL rewrite
+    # (`url.*.insteadOf` / `url.*.pushInsteadOf` are multi-valued prefix lists; `""` would match all URLs).
+    try:
+        local_probe = subprocess.run(
+            ["git", "-C", real_repo, "config", "--local", "--null", "--list"],
+            env=base_env,
+            shell=False,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HostileRepoError(f"Hardened git local config inspection failed: {exc}") from exc
+
+    if local_probe.returncode == 0:
+        for entry in local_probe.stdout.decode("utf-8", errors="replace").split("\x00"):
+            if not entry:
+                continue
+            local_key = entry.split("\n", 1)[0].strip()
+            if local_key and _URL_REWRITE_KEY_RE.match(local_key):
+                raise HostileRepoError(
+                    "Target repository .git/config defines disallowed url.*.insteadOf / pushInsteadOf URL rewrite"
+                )
+    else:
+        local_err = (local_probe.stderr or b"").decode("utf-8", errors="replace").strip()
+        local_err_lower = local_err.lower()
+        if "inside a git repository" not in local_err_lower and "not a git repository" not in local_err_lower:
+            raise HostileRepoError(
+                f"Hardened git local config inspection exited {local_probe.returncode}: {local_err}"
+            )
 
     dynamic_pins: List[Tuple[str, str]] = []
     seen_dynamic: set[str] = set(_FORCED_BASE_KEYS_LOWER)
