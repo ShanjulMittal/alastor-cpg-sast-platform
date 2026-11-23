@@ -5,6 +5,7 @@ TDD Suite for ALASTOR v5.0 Pillar 4 Task 2:
 """
 from __future__ import annotations
 
+import os
 import json
 import subprocess
 import sys
@@ -24,6 +25,7 @@ from database.graph_store import EmbeddedGraphStore
 from engine.community_detector import detect_code_communities
 from engine.fleet_runner import FleetRunner, parse_fleet_csv
 from engine.scanner_fusion_engine import (
+    _paths_match,
     detect_scanner_format,
     fuse_findings_with_cpg,
     parse_external_scanner_report,
@@ -618,6 +620,8 @@ class TestScannerFusionWithCPG:
             enriched_f = resp.findings[0]
             assert enriched_f.source_engine == "CODEQL"
             assert any("run_export" in str(n) for n in enriched_f.path_nodes) or "run_export" in enriched_f.reachability_reason
+            assert comm_map.communities
+            assert comm_map.communities[0].label in enriched_f.reachability_reason
         finally:
             gstore.close()
 
@@ -946,3 +950,414 @@ class TestFleetCsvAndRunner:
             if db_part.exists():
                 db_bytes = db_part.read_text(encoding="utf-8", errors="ignore")
                 assert RAW_GITLEAKS_TOKEN not in db_bytes
+
+
+class TestTask2ReviewRegressionFixes:
+    def test_secret_cpg_enrichment_never_leaks_raw_secret_into_path_nodes(self, tmp_path: Path):
+        repo_dir = tmp_path / "sec_repo"
+        repo_dir.mkdir()
+        custom_secret = "custom_nonregex_secret_token_987654321"
+        cfg_file = repo_dir / "config.py"
+        cfg_file.write_text(
+            "def load_credentials():\n"
+            f'    gh = "{RAW_GITLEAKS_TOKEN}"\n'
+            "    return gh\n"
+            "\n"
+            "def load_custom_secret():\n"
+            f'    custom = "{custom_secret}"\n'
+            "    return custom\n",
+            encoding="utf-8",
+        )
+        scanned, _ = scan_directory_with_telemetry(str(repo_dir))
+        nodes, edges = [], []
+        for sf in scanned:
+            fn_nodes, fn_edges = ASTNormalizer(sf).normalize()
+            nodes.extend(fn_nodes)
+            edges.extend(fn_edges)
+        gstore = EmbeddedGraphStore(str(tmp_path / "cpg_sec.db"))
+        try:
+            gstore.ingest_cpg(nodes, edges)
+            comm_map = detect_code_communities(nodes, edges, None, [], graph_engine_mode="EMBEDDED_SQLITE")
+            gstore.save_communities(comm_map)
+
+            gitleaks_report = [
+                {
+                    "Description": "GitHub PAT",
+                    "StartLine": 2,
+                    "EndLine": 2,
+                    "Match": f'gh = "{RAW_GITLEAKS_TOKEN}"',
+                    "Secret": RAW_GITLEAKS_TOKEN,
+                    "File": "config.py",
+                    "RuleID": "github-pat",
+                }
+            ]
+            fmt, imported = parse_external_scanner_report(json.dumps(gitleaks_report), repo_root=str(repo_dir))
+            direct_custom = Finding(
+                id="sec-direct-1",
+                rule_id="EXT-GITLEAKS-custom",
+                severity="HIGH",
+                title="Hardcoded custom secret",
+                description=f"Found {custom_secret}",
+                cwe_id="CWE-798",
+                is_secret_finding=True,
+                secret_value_raw=custom_secret,
+                path_nodes=[
+                    {
+                        "id": "n-custom",
+                        "label": "Assignment",
+                        "filepath": "config.py",
+                        "start_line": 6,
+                        "code": custom_secret,
+                        "is_sink": True,
+                    }
+                ],
+                source_engine="GITLEAKS",
+            )
+            resp = fuse_findings_with_cpg(
+                imported=imported + [direct_custom],
+                native_findings=[],
+                graph_store=gstore,
+                project_path=str(repo_dir),
+                run_s6_verify=True,
+                detected_format=fmt,
+                correlate_cpg=True,
+            )
+            assert resp.cpg_enriched_count == 2
+            dumped = resp.model_dump_json()
+            assert RAW_GITLEAKS_TOKEN not in dumped
+            assert custom_secret not in dumped
+            for f in resp.findings:
+                assert f.secret_value_raw is None
+                assert any(n.get("label") == "Function" for n in f.path_nodes)
+                for n in f.path_nodes:
+                    assert RAW_GITLEAKS_TOKEN not in str(n)
+                    assert custom_secret not in str(n)
+        finally:
+            gstore.close()
+
+    def test_fleet_runner_confines_fusion_reports_strictly_inside_repo(self, tmp_path: Path):
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        repo = ws / "app-repo"
+        repo.mkdir()
+        (repo / "requirements.txt").write_text("mkdocs==1.6.0\n", encoding="utf-8")
+        (repo / "app.py").write_text("def ok():\n    return 1\n", encoding="utf-8")
+
+        sibling_report = ws / "sibling_report.json"
+        sibling_report.write_text(json.dumps({"results": [], "errors": []}), encoding="utf-8")
+        outside_report = tmp_path / "outside_report.json"
+        outside_report.write_text(json.dumps({"results": [], "errors": []}), encoding="utf-8")
+
+        # Also create an escaping directory link inside repo (NTFS junction on Windows / symlink on POSIX)
+        escaped_dir = tmp_path / "escaped_reports_dir"
+        escaped_dir.mkdir()
+        (escaped_dir / "escaped.json").write_text(json.dumps({"results": [], "errors": []}), encoding="utf-8")
+        link_dir = repo / "linked_reports"
+        if os.name == "nt":
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(link_dir), str(escaped_dir)], check=True, capture_output=True)
+        else:
+            os.symlink(str(escaped_dir), str(link_dir), target_is_directory=True)
+
+        def _confine(raw: str) -> str:
+            real_ws = ws.resolve()
+            cand = Path(raw) if Path(raw).is_absolute() else (real_ws / raw)
+            real_cand = cand.resolve()
+            if real_ws not in real_cand.parents and real_cand != real_ws:
+                raise ValueError(f"Outside workspace: {raw}")
+            return str(real_cand)
+
+        vault = tmp_path / "vault"
+        store = CheckpointStore(str(vault))
+        try:
+            for conf_fn in (None, _confine):
+                runner = FleetRunner(vault_dir=str(vault), checkpoint_store=store, workspace_confinement_fn=conf_fn)
+                for bad_rp in (
+                    str(sibling_report),
+                    "sibling_report.json",
+                    str(outside_report),
+                    "linked_reports/escaped.json",
+                    "D:\\cross_drive\\evil.json" if os.name == "nt" else "/etc/passwd",
+                ):
+                    res, _ = runner.run_single_repo(
+                        FleetRepoSpec(repo=str(repo), app_group="g1", fusion_reports=[bad_rp]),
+                        resume=False,
+                    )
+                    assert res.status == "FAILED"
+                    assert res.go_live_decision == "NO_GO_HOLD_RELEASE"
+                    assert res.error
+        finally:
+            if link_dir.exists():
+                if os.name == "nt":
+                    os.rmdir(link_dir)
+                else:
+                    os.unlink(link_dir)
+            store.close()
+
+    def test_fleet_runner_concurrent_workers_isolated_and_no_live_osv_egress(self, tmp_path: Path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        specs = []
+        for idx in range(4):
+            rdir = ws / f"svc-{idx}"
+            rdir.mkdir()
+            (rdir / "requirements.txt").write_text("requests==2.31.0\n", encoding="utf-8")
+            (rdir / "package-lock.json").write_text(
+                json.dumps({"lockfileVersion": 3, "packages": {"node_modules/lodash": {"version": "4.17.21"}}}),
+                encoding="utf-8",
+            )
+            (rdir / "app.py").write_text("def health():\n    return 'ok'\n", encoding="utf-8")
+            specs.append(FleetRepoSpec(repo=str(rdir), app_group=f"grp-{idx}"))
+
+        vault = tmp_path / "vault"
+        store = CheckpointStore(str(vault))
+        try:
+            runner = FleetRunner(vault_dir=str(vault), checkpoint_store=store)
+            with mock.patch("requests.post", side_effect=AssertionError("Unexpected live OSV HTTP egress")):
+                resp = runner.run_fleet(
+                    FleetRunRequest(
+                        manifest_name="concurrent-offline",
+                        repos=specs,
+                        group_by_app=True,
+                        resume=False,
+                        max_workers=4,
+                    )
+                )
+            assert resp.status == "COMPLETED"
+            assert resp.completed_repos == 4
+            assert resp.failed_repos == 0
+            assert not (vault / "osv_advisory_cache.json").exists()
+            assert not (vault / ".alastor_vault").exists()
+        finally:
+            store.close()
+
+    def test_stop_after_halts_before_full_gate_fails_closed_no_go(self, tmp_path: Path):
+        repo = tmp_path / "clean_svc"
+        repo.mkdir()
+        (repo / "requirements.txt").write_text("mkdocs==1.6.0\n", encoding="utf-8")
+        (repo / "app.py").write_text("def ok():\n    return 42\n", encoding="utf-8")
+
+        vault = tmp_path / "vault"
+        store = CheckpointStore(str(vault))
+        try:
+            runner = FleetRunner(vault_dir=str(vault), checkpoint_store=store)
+            res_s0, _ = runner.run_single_repo(FleetRepoSpec(repo=str(repo), app_group="clean-grp"), resume=False, stop_after="s0")
+            assert res_s0.go_live_decision == "NO_GO_HOLD_RELEASE"
+
+            res_s1, _ = runner.run_single_repo(FleetRepoSpec(repo=str(repo), app_group="clean-grp"), resume=False, stop_after="s1")
+            assert res_s1.go_live_decision == "NO_GO_HOLD_RELEASE"
+
+            fleet_partial = runner.run_fleet(
+                FleetRunRequest(
+                    manifest_name="partial-stop",
+                    repos=[FleetRepoSpec(repo=str(repo), app_group="clean-grp")],
+                    group_by_app=True,
+                    resume=False,
+                    stop_after="s1",
+                )
+            )
+            assert fleet_partial.app_rollups[0].go_live_decision == "NO_GO_HOLD_RELEASE"
+        finally:
+            store.close()
+
+    def test_resume_invalidates_when_profile_or_fusion_reports_change(self, tmp_path: Path):
+        repo = tmp_path / "svc"
+        repo.mkdir()
+        (repo / "requirements.txt").write_text("mkdocs==1.6.0\n", encoding="utf-8")
+        (repo / "app.py").write_text(
+            "def f(x):\n"
+            "    return x\n",
+            encoding="utf-8",
+        )
+        _init_git_repo(repo)
+        semgrep_file = repo / "semgrep.json"
+
+        vault = tmp_path / "vault"
+        store = CheckpointStore(str(vault))
+        try:
+            runner = FleetRunner(vault_dir=str(vault), checkpoint_store=store)
+
+            # Run 1: no fusion reports, deterministic profile
+            r1, _ = runner.run_single_repo(FleetRepoSpec(repo=str(repo), app_group="g", profile="deterministic"), resume=True)
+            assert r1.status == "COMPLETED"
+            assert r1.total_findings == 0
+
+            # Run 2: add semgrep.json -> S0..S2 resume, S3..S9 re-run!
+            semgrep_file.write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "check_id": "python.sqli",
+                                "path": "app.py",
+                                "start": {"line": 2, "col": 5},
+                                "end": {"line": 2, "col": 12},
+                                "extra": {"message": "SQLi", "severity": "ERROR", "metadata": {"cwe": ["CWE-89"]}},
+                            }
+                        ],
+                        "errors": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            r2, f2 = runner.run_single_repo(
+                FleetRepoSpec(repo=str(repo), app_group="g", fusion_reports=["semgrep.json"], profile="deterministic"),
+                resume=True,
+            )
+            assert r2.run_id == r1.run_id
+            assert r2.status == "RESUMED_COMPLETED"
+            assert {"S0_CPG", "S1_RULES", "S2_SECRETS_SCA"}.issubset(set(r2.resumed_stages))
+            assert "S3_FUSION" not in r2.resumed_stages
+            assert "S6_VERIFY" not in r2.resumed_stages
+            assert r2.total_findings == 1
+            assert any("[S6 " in (f.reachability_reason or "") for f in f2)
+
+            # Run 3: edit semgrep.json content -> S3..S9 re-run again!
+            semgrep_file.write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "check_id": "python.sqli",
+                                "path": "app.py",
+                                "start": {"line": 2, "col": 5},
+                                "end": {"line": 2, "col": 12},
+                                "extra": {"message": "SQLi updated", "severity": "CRITICAL", "metadata": {"cwe": ["CWE-89"]}},
+                            }
+                        ],
+                        "errors": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            r3, _ = runner.run_single_repo(
+                FleetRepoSpec(repo=str(repo), app_group="g", fusion_reports=["semgrep.json"], profile="deterministic"),
+                resume=True,
+            )
+            assert r3.run_id == r1.run_id
+            assert "S2_SECRETS_SCA" in r3.resumed_stages
+            assert "S3_FUSION" not in r3.resumed_stages
+            assert r3.critical_count == 1
+
+            # Run 4: change profile -> S0 resumes, S1..S9 invalidate and re-run!
+            r4, _ = runner.run_single_repo(
+                FleetRepoSpec(repo=str(repo), app_group="g", fusion_reports=["semgrep.json"], profile="fast-ci"),
+                resume=True,
+            )
+            assert r4.run_id == r1.run_id
+            assert "S0_CPG" in r4.resumed_stages
+            assert "S1_RULES" not in r4.resumed_stages
+            assert "S3_FUSION" not in r4.resumed_stages
+        finally:
+            store.close()
+
+    def test_posix_abs_paths_rejected_and_dotfiles_preserved_in_paths_match(self, tmp_path: Path):
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+
+        sarif_abs = {
+            "version": "2.1.0",
+            "runs": [
+                {
+                    "tool": {"driver": {"name": "Custom", "rules": []}},
+                    "results": [
+                        {
+                            "ruleId": "R1",
+                            "level": "error",
+                            "message": {"text": "leak"},
+                            "locations": [{"physicalLocation": {"artifactLocation": {"uri": "file:///etc/passwd"}, "region": {"startLine": 1}}}],
+                        }
+                    ],
+                }
+            ],
+        }
+        with pytest.raises(ValueError):
+            parse_external_scanner_report(json.dumps(sarif_abs), repo_root=str(repo_root))
+
+        semgrep_abs = {
+            "results": [
+                {
+                    "check_id": "rule.1",
+                    "path": "/etc/passwd",
+                    "start": {"line": 1, "col": 1},
+                    "end": {"line": 1, "col": 5},
+                    "extra": {"message": "bad", "severity": "ERROR"},
+                }
+            ],
+            "errors": [],
+        }
+        with pytest.raises(ValueError):
+            parse_external_scanner_report(json.dumps(semgrep_abs), repo_root=str(repo_root))
+
+        checkov_ok = {
+            "check_type": "terraform",
+            "results": {
+                "failed_checks": [
+                    {
+                        "check_id": "CKV_AWS_20",
+                        "check_name": "Public ACL",
+                        "file_path": "/infra/main.tf",
+                        "file_line_range": [1, 3],
+                    }
+                ]
+            },
+        }
+        _, ck_findings = parse_external_scanner_report(json.dumps(checkov_ok), repo_root=str(repo_root))
+        assert ck_findings[0].path_nodes[-1]["filepath"] == "infra/main.tf"
+
+        assert _paths_match(".github/workflows/ci.yml", "./.github/workflows/ci.yml") is True
+        assert _paths_match(".env", "env") is False
+
+    def test_same_engine_dedup_does_not_inflate_corroborated_count_and_fleet_attaches_s6(self, tmp_path: Path):
+        semgrep_dup = {
+            "results": [
+                {
+                    "check_id": "python.sqli.a",
+                    "path": "app.py",
+                    "start": {"line": 14, "col": 5},
+                    "end": {"line": 14, "col": 40},
+                    "extra": {"message": "SQLi A", "severity": "ERROR", "metadata": {"cwe": ["CWE-89"]}},
+                },
+                {
+                    "check_id": "python.sqli.b",
+                    "path": "app.py",
+                    "start": {"line": 15, "col": 5},
+                    "end": {"line": 15, "col": 40},
+                    "extra": {"message": "SQLi B", "severity": "ERROR", "metadata": {"cwe": ["CWE-89"]}},
+                },
+            ],
+            "errors": [],
+        }
+        fmt, imp = parse_external_scanner_report(json.dumps(semgrep_dup))
+        resp = fuse_findings_with_cpg(imported=imp, native_findings=[], detected_format=fmt)
+        assert len(resp.findings) == 1
+        assert resp.new_unique_count == 1
+        assert resp.corroborated_count == 0
+        assert resp.findings[0].corroborated_by == []
+        assert "[Corroborated by" not in resp.findings[0].description
+
+        # Fleet S6 verdicts attached both on fresh run and on --resume
+        repo = tmp_path / "vuln_svc"
+        repo.mkdir()
+        (repo / "requirements.txt").write_text("mkdocs==1.6.0\n", encoding="utf-8")
+        (repo / "app.py").write_text(
+            "import sqlite3\n"
+            "def q(uid):\n"
+            "    cur = sqlite3.connect(':memory:').cursor()\n"
+            '    return cur.execute(f"SELECT * FROM u WHERE id = {uid}").fetchall()\n',
+            encoding="utf-8",
+        )
+        _init_git_repo(repo)
+        vault = tmp_path / "vault"
+        store = CheckpointStore(str(vault))
+        try:
+            runner = FleetRunner(vault_dir=str(vault), checkpoint_store=store)
+            spec = FleetRepoSpec(repo=str(repo), app_group="g")
+            _, fresh_findings = runner.run_single_repo(spec, resume=True)
+            assert fresh_findings
+            assert any("[S6 " in (f.reachability_reason or "") for f in fresh_findings)
+
+            res_resumed, resumed_findings = runner.run_single_repo(spec, resume=True)
+            assert res_resumed.status == "RESUMED_COMPLETED"
+            assert any("[S6 " in (f.reachability_reason or "") for f in resumed_findings)
+        finally:
+            store.close()

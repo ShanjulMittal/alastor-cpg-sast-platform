@@ -68,6 +68,24 @@ _CVE_RX = re.compile(r"\b(CVE-\d{4}-\d{4,})\b", re.IGNORECASE)
 _QUOTED_TOKEN_RX = re.compile(r"""['"]([A-Za-z0-9_./+=:@-]{6,})['"]""")
 _ASSIGN_RHS_RX = re.compile(r"""=\s*['"]?([A-Za-z0-9_./+=:@-]{6,})['"]?""")
 _WIN_DRIVE_RX = re.compile(r"^[A-Za-z]:[\\/]")
+_OS_ABS_PREFIXES = (
+    "/etc/",
+    "/var/",
+    "/usr/",
+    "/tmp/",
+    "/home/",
+    "/users/",
+    "/root/",
+    "/bin/",
+    "/sbin/",
+    "/proc/",
+    "/sys/",
+    "/dev/",
+    "/private/",
+    "/opt/",
+    "/mnt/",
+    "/volumes/",
+)
 
 _CANONICAL_CWE_GROUPS: Dict[str, str] = {
     "CWE-77": "CWE-78",
@@ -265,14 +283,26 @@ def _infer_checkov_cwe(check_id: str, check_name: str, resource: str) -> str:
     return "CWE-16"
 
 
-def _normalize_external_path(raw_path: Any, repo_root: Optional[str] = None) -> str:
+def _strip_rel_prefix(fp: str) -> str:
+    norm = fp.replace("\\", "/")
+    while norm.startswith("./"):
+        norm = norm[2:]
+    return norm.lstrip("/")
+
+
+def _normalize_external_path(
+    raw_path: Any,
+    repo_root: Optional[str] = None,
+    allow_leading_repo_slash: bool = False,
+) -> str:
     text = str(raw_path or "").strip()
     if not text:
         return "workspace"
     if any(ch in text for ch in ("\r", "\n", "\x00")):
         raise ValueError("External report location contains forbidden control characters")
 
-    if text.lower().startswith("file://"):
+    was_file_uri = text.lower().startswith("file://")
+    if was_file_uri:
         parsed = urlsplit(text)
         netloc = unquote(parsed.netloc or "")
         uri_path = unquote(parsed.path or "")
@@ -299,6 +329,7 @@ def _normalize_external_path(raw_path: Any, repo_root: Optional[str] = None) -> 
         abs_root = os.path.abspath(repo_root).replace("\\", "/").rstrip("/")
         real_root = os.path.realpath(repo_root).replace("\\", "/").rstrip("/")
         roots = [r for r in (real_root, abs_root) if r]
+        matched_repo_root = False
         for root_cand in roots:
             if os.name == "nt":
                 low_p = slash_path.lower()
@@ -307,20 +338,28 @@ def _normalize_external_path(raw_path: Any, repo_root: Optional[str] = None) -> 
                     return "workspace"
                 if low_p.startswith(low_r + "/"):
                     slash_path = slash_path[len(root_cand) + 1 :]
+                    matched_repo_root = True
                     break
             else:
                 if slash_path == root_cand:
                     return "workspace"
                 if slash_path.startswith(root_cand + "/"):
                     slash_path = slash_path[len(root_cand) + 1 :]
+                    matched_repo_root = True
                     break
 
-        if _WIN_DRIVE_RX.match(slash_path):
-            raise ValueError(f"External report path escapes repository root: {raw_path}")
+        if not matched_repo_root:
+            if _WIN_DRIVE_RX.match(slash_path):
+                raise ValueError(f"External report path escapes repository root: {raw_path}")
+            if slash_path.startswith("/"):
+                if (
+                    was_file_uri
+                    or not allow_leading_repo_slash
+                    or slash_path.lower().startswith(_OS_ABS_PREFIXES)
+                ):
+                    raise ValueError(f"External report path escapes repository root: {raw_path}")
 
-    while slash_path.startswith("./"):
-        slash_path = slash_path[2:]
-    slash_path = slash_path.lstrip("/")
+    slash_path = _strip_rel_prefix(slash_path)
     if not slash_path or slash_path == ".":
         return "workspace"
 
@@ -1160,7 +1199,11 @@ def _parse_checkov_findings(
             resource = str(chk.get("resource") or "").strip()
 
             raw_fp = chk.get("file_path") or chk.get("file_abs_path") or "workspace"
-            rel_fp = _normalize_external_path(raw_fp, repo_root=repo_root)
+            rel_fp = _normalize_external_path(
+                raw_fp,
+                repo_root=repo_root,
+                allow_leading_repo_slash=bool(chk.get("file_path")),
+            )
 
             line_range = chk.get("file_line_range") if isinstance(chk.get("file_line_range"), list) else []
             start_line = max(1, int(line_range[0])) if len(line_range) >= 1 and line_range[0] is not None else 1
@@ -1316,8 +1359,8 @@ def _canonical_category(finding: Finding) -> str:
 def _paths_match(fp_a: str, fp_b: str) -> bool:
     if not fp_a or not fp_b:
         return False
-    a = fp_a.replace("\\", "/").lstrip("./")
-    b = fp_b.replace("\\", "/").lstrip("./")
+    a = _strip_rel_prefix(fp_a)
+    b = _strip_rel_prefix(fp_b)
     return a == b or a.endswith("/" + b) or b.endswith("/" + a)
 
 
@@ -1438,7 +1481,8 @@ def _query_graph_store_nodes_for_file(
         try:
             cm: CommunityMapResponse = graph_store.get_communities()
             for comm in getattr(cm, "communities", []) or []:
-                if any(_paths_match(cf, rel_fp) for cf in (comm.files or [])):
+                comm_fps = getattr(comm, "filepaths", None) or []
+                if any(_paths_match(cf, rel_fp) for cf in comm_fps):
                     community_label = comm.label
                     break
         except Exception:
@@ -1452,6 +1496,7 @@ def _enrich_finding_with_cpg(
     graph_store: Any,
     project_path: Optional[str],
     warnings: List[str],
+    extra_raw_secrets: Optional[Sequence[str]] = None,
 ) -> bool:
     rel_fp, line = _extract_finding_fp_line(finding)
     cpg_nodes, comm_label = _query_graph_store_nodes_for_file(graph_store, rel_fp, warnings)
@@ -1480,6 +1525,11 @@ def _enrich_finding_with_cpg(
     if not cpg_nodes and not file_grounded:
         return False
 
+    is_secret_ctx = bool(finding.is_secret_finding or (finding.cwe_id or "").upper() == "CWE-798")
+    raw_tokens: List[str] = list(extra_raw_secrets or ())
+    if finding.secret_value_raw and len(finding.secret_value_raw) >= 4:
+        raw_tokens.append(finding.secret_value_raw)
+
     enclosing_fn: Optional[CPGNode] = None
     fn_candidates = [
         n
@@ -1496,23 +1546,34 @@ def _enrich_finding_with_cpg(
 
     ctx_parts: List[str] = []
     if enclosing_fn is not None:
-        ctx_parts.append(f"function `{enclosing_fn.name}` (L{enclosing_fn.start_line}-L{enclosing_fn.end_line})")
+        safe_fn_name = _scrub(enclosing_fn.name, raw_tokens)
+        ctx_parts.append(f"function `{safe_fn_name}` (L{enclosing_fn.start_line}-L{enclosing_fn.end_line})")
         fn_dict = enclosing_fn.model_dump()
+        fn_dict["name"] = safe_fn_name
+        if is_secret_ctx:
+            fn_dict["code"] = f"# [Redacted enclosing scope: {safe_fn_name} (L{enclosing_fn.start_line}-L{enclosing_fn.end_line})]"
+        else:
+            fn_dict["code"] = _scrub(fn_dict.get("code") or "", raw_tokens)
         if not any(isinstance(pn, dict) and pn.get("id") == enclosing_fn.id for pn in finding.path_nodes):
             finding.path_nodes.insert(0, fn_dict)
     if nearest_node is not None:
-        ctx_parts.append(f"CPG {nearest_node.label} `{nearest_node.name}`@L{nearest_node.start_line}")
+        near_name = (
+            _REDACTED_MARKER
+            if (is_secret_ctx and nearest_node.label not in ("Function", "Class", "Module", "File"))
+            else _scrub(nearest_node.name, raw_tokens)
+        )
+        ctx_parts.append(f"CPG {nearest_node.label} `{near_name}`@L{nearest_node.start_line}")
         if finding.path_nodes and isinstance(finding.path_nodes[-1], dict):
             finding.path_nodes[-1].setdefault("cpg_node_id", nearest_node.id)
             finding.path_nodes[-1]["scope_id"] = nearest_node.scope_id
             if enclosing_fn is not None:
-                finding.path_nodes[-1]["enclosing_function"] = enclosing_fn.name
+                finding.path_nodes[-1]["enclosing_function"] = _scrub(enclosing_fn.name, raw_tokens)
     if comm_label:
-        ctx_parts.append(f"community `{comm_label}`")
+        ctx_parts.append(f"community `{_scrub(comm_label, raw_tokens)}`")
     if not ctx_parts and file_grounded:
         ctx_parts.append(f"workspace file `{rel_fp}`:L{line}")
 
-    ctx_summary = _scrub(f"CPG Context: {', '.join(ctx_parts)}.")
+    ctx_summary = _scrub(f"CPG Context: {', '.join(ctx_parts)}.", raw_tokens)
     if ctx_summary not in (finding.reachability_reason or ""):
         finding.reachability_reason = (
             f"{finding.reachability_reason} {ctx_summary}".strip()
@@ -1559,7 +1620,11 @@ def fuse_findings_with_cpg(
     cpg_enriched_count = 0
 
     for raw_imp in imported or []:
-        imp = scrub_finding_secrets(raw_imp, clear_raw_secret=True)
+        per_finding_secrets: List[str] = []
+        if raw_imp.secret_value_raw and len(raw_imp.secret_value_raw) >= 4:
+            per_finding_secrets.append(raw_imp.secret_value_raw)
+
+        imp = scrub_finding_secrets(raw_imp, extra_raw_secrets=per_finding_secrets, clear_raw_secret=False)
 
         imp_engine = (imp.source_engine or _SOURCE_ENGINE_BY_FORMAT[eff_format]).strip().upper()
         if not imp.source_engine:
@@ -1568,18 +1633,27 @@ def fuse_findings_with_cpg(
         match = _find_matching_existing(imp, merged)
         if match is not None:
             existing_eng = (match.source_engine or "").strip().upper()
-            if imp_engine and imp_engine != existing_eng and imp_engine not in match.corroborated_by:
-                match.corroborated_by.append(imp_engine)
-            corroborated_count += 1
-            note = _scrub(f"[Corroborated by {imp_engine}: {imp.rule_id}]")
-            if note not in (match.description or ""):
-                match.description = f"{match.description} {note}".strip()
+            if imp_engine and imp_engine != existing_eng:
+                is_new_corroboration = imp_engine not in match.corroborated_by
+                if is_new_corroboration:
+                    match.corroborated_by.append(imp_engine)
+                    corroborated_count += 1
+                    note = _scrub(f"[Corroborated by {imp_engine}: {imp.rule_id}]", per_finding_secrets)
+                    if note not in (match.description or ""):
+                        match.description = f"{match.description} {note}".strip()
             continue
 
         if correlate_cpg:
-            if _enrich_finding_with_cpg(imp, graph_store=graph_store, project_path=project_path, warnings=warnings):
+            if _enrich_finding_with_cpg(
+                imp,
+                graph_store=graph_store,
+                project_path=project_path,
+                warnings=warnings,
+                extra_raw_secrets=per_finding_secrets,
+            ):
                 cpg_enriched_count += 1
 
+        imp = scrub_finding_secrets(imp, extra_raw_secrets=per_finding_secrets, clear_raw_secret=True)
         new_unique_count += 1
         merged.append(imp)
 

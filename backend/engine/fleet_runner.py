@@ -16,10 +16,12 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import csv
 from datetime import datetime, timezone
+import hashlib
 import io
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -436,13 +438,61 @@ def _map_pasta_verdict_to_fleet(pasta_verdict: str) -> str:
     return "CONDITIONAL_GO_LIVE"
 
 
-def _compute_fallback_go_live(findings: List[Finding]) -> str:
+def _compute_fallback_go_live(findings: List[Finding], stopped_early: bool = False) -> str:
+    if stopped_early:
+        return "NO_GO_HOLD_RELEASE"
     active = [f for f in findings if f.triage_status not in ("NOT_EXPLOITABLE", "RESOLVED")]
     if any(f.ev_status == "RUNTIME_EXPLOIT_CONFIRMED" or f.severity in ("CRITICAL", "HIGH") for f in active):
         return "NO_GO_HOLD_RELEASE"
     if any(f.severity in ("MEDIUM", "LOW") for f in active):
         return "CONDITIONAL_GO_LIVE"
     return "GO_LIVE_APPROVED"
+
+
+def _apply_s6_verdicts_to_findings(
+    findings: List[Finding],
+    s6_payload: Dict[str, Any],
+) -> List[Finding]:
+    verdicts = s6_payload.get("verdicts")
+    if not isinstance(verdicts, list) or not findings:
+        return findings
+    by_id: Dict[str, Dict[str, Any]] = {
+        str(v.get("finding_id") or ""): v
+        for v in verdicts
+        if isinstance(v, dict) and v.get("finding_id")
+    }
+    if not by_id:
+        return findings
+
+    updated: List[Finding] = []
+    for raw_f in findings:
+        v = by_id.get(raw_f.id)
+        if v is None:
+            updated.append(raw_f)
+            continue
+        f = raw_f.model_copy(deep=True)
+        if f.cvss_score is None and v.get("cvss_score") is not None:
+            try:
+                f.cvss_score = float(v["cvss_score"])
+            except (TypeError, ValueError):
+                pass
+        verdict_lbl = str(v.get("verdict") or "NEEDS_REVIEW")
+        try:
+            conf_val = int(v.get("confidence") or 0)
+        except (TypeError, ValueError):
+            conf_val = 0
+        try:
+            cvss_val = float(v.get("cvss_score") if v.get("cvss_score") is not None else (f.cvss_score or 0.0))
+        except (TypeError, ValueError):
+            cvss_val = 0.0
+        s6_tag = scrub_raw_secrets_text(
+            f"[S6 {verdict_lbl}: conf={conf_val}%, CVSS={cvss_val:.1f}]",
+            extra_raw_secrets=[f.secret_value_raw] if f.secret_value_raw else None,
+        )
+        if s6_tag not in (f.reachability_reason or ""):
+            f.reachability_reason = f"{f.reachability_reason} {s6_tag}".strip()
+        updated.append(f)
+    return updated
 
 
 class FleetRunner:
@@ -461,6 +511,7 @@ class FleetRunner:
         os.makedirs(self.vault_dir, exist_ok=True)
         self.checkpoint_store = checkpoint_store
         self.workspace_confinement_fn = workspace_confinement_fn
+        self._io_lock = threading.RLock()
 
     def _resolve_fusion_report_path(self, report_path: str, local_repo_path: str) -> str:
         raw = str(report_path or "").strip()
@@ -470,29 +521,47 @@ class FleetRunner:
             raise ValueError(f"Path traversal rejected in fusion report path: {report_path}")
 
         real_repo = os.path.realpath(local_repo_path)
-        repo_candidate = os.path.join(real_repo, raw) if not os.path.isabs(raw) else ""
+        abs_repo = os.path.abspath(real_repo)
+        candidate_raw = raw if os.path.isabs(raw) else os.path.join(real_repo, raw)
+        abs_cand = os.path.abspath(candidate_raw)
+
+        try:
+            if os.path.commonpath([abs_repo, abs_cand]) != abs_repo:
+                raise ValueError(f"Fusion report escapes repository root: {report_path}")
+        except ValueError as exc:
+            raise ValueError(f"Fusion report escapes repository root: {report_path}") from exc
+
+        # Walk every intermediate component under abs_repo for symlinks/NTFS junctions
+        try:
+            rel_from_repo = os.path.relpath(abs_cand, abs_repo)
+        except ValueError as exc:
+            raise ValueError(f"Fusion report escapes repository root: {report_path}") from exc
+        if rel_from_repo == "." or rel_from_repo.startswith(".."):
+            raise ValueError(f"Fusion report path must target a file inside repository root: {report_path}")
+
+        cursor = abs_repo
+        for part in rel_from_repo.split(os.sep):
+            if not part or part == ".":
+                continue
+            cursor = os.path.join(cursor, part)
+            if os.path.lexists(cursor) and is_link_or_junction(cursor):
+                raise ValueError(f"Symlink/junction path component rejected in fusion report: {report_path}")
+
+        resolved = os.path.realpath(abs_cand)
+        try:
+            if os.path.commonpath([real_repo, resolved]) != real_repo or resolved == real_repo:
+                raise ValueError(f"Fusion report escapes repository root: {report_path}")
+        except ValueError as exc:
+            raise ValueError(f"Fusion report escapes repository root: {report_path}") from exc
 
         if self.workspace_confinement_fn is not None:
-            if repo_candidate and os.path.lexists(repo_candidate):
-                if is_link_or_junction(repo_candidate):
-                    real_cand = os.path.realpath(repo_candidate)
-                    if os.path.commonpath([real_repo, real_cand]) != real_repo:
-                        raise ValueError(f"Symlink/junction escape rejected in fusion report: {report_path}")
-                resolved = os.path.realpath(repo_candidate)
-                if os.path.commonpath([real_repo, resolved]) != real_repo:
-                    raise ValueError(f"Fusion report escapes repository root: {report_path}")
-            else:
-                resolved = os.path.realpath(self.workspace_confinement_fn(raw))
-        else:
-            if repo_candidate and os.path.lexists(repo_candidate):
-                resolved = os.path.realpath(repo_candidate)
-                if os.path.commonpath([real_repo, resolved]) != real_repo:
-                    raise ValueError(f"Fusion report escapes repository root: {report_path}")
-            else:
-                abs_p = os.path.abspath(raw)
-                if is_link_or_junction(abs_p):
-                    raise ValueError(f"Symlink/junction fusion report rejected: {report_path}")
-                resolved = os.path.realpath(abs_p)
+            confined = os.path.realpath(self.workspace_confinement_fn(resolved))
+            try:
+                if os.path.commonpath([real_repo, confined]) != real_repo or confined == real_repo:
+                    raise ValueError(f"Fusion report escapes confined repository root: {report_path}")
+            except ValueError as exc:
+                raise ValueError(f"Fusion report escapes confined repository root: {report_path}") from exc
+            resolved = confined
 
         base_lower = os.path.basename(resolved).lower()
         if base_lower == ".env" or base_lower.startswith(".env."):
@@ -502,6 +571,26 @@ class FleetRunner:
         if os.path.getsize(resolved) > _MAX_REPORT_BYTES:
             raise ValueError(f"Fusion report exceeds 50MB limit: {report_path}")
         return resolved
+
+    def _compute_fusion_reports_fingerprint(
+        self,
+        fusion_reports: List[str],
+        local_repo_path: str,
+    ) -> Tuple[str, List[str]]:
+        if not fusion_reports:
+            return hashlib.sha256(b"NO_FUSION_REPORTS").hexdigest(), []
+
+        hasher = hashlib.sha256()
+        resolved_paths: List[str] = []
+        for rpath in fusion_reports:
+            resolved_rp = self._resolve_fusion_report_path(rpath, local_repo_path)
+            resolved_paths.append(resolved_rp)
+            st = os.stat(resolved_rp)
+            with open(resolved_rp, "rb") as fh:
+                content_sha = hashlib.sha256(fh.read()).hexdigest()
+            entry = f"{rpath}|{resolved_rp}|{st.st_size}|{st.st_mtime_ns}|{content_sha}\n"
+            hasher.update(entry.encode("utf-8", errors="replace"))
+        return hasher.hexdigest(), resolved_paths
 
     def _resolve_enabled_rule_ids_for_profile(
         self,
@@ -687,13 +776,23 @@ class FleetRunner:
         os.makedirs(fleet_tmp_parent, exist_ok=True)
         repo_tmp_dir = os.path.join(fleet_tmp_parent, f"{effective_run_id}-{uuid.uuid4().hex[:8]}")
         os.makedirs(repo_tmp_dir, exist_ok=True)
+        worker_data_dir = os.path.join(repo_tmp_dir, "em_data")
+        worker_sv_root = os.path.join(repo_tmp_dir, "sv_root")
+        os.makedirs(worker_data_dir, exist_ok=True)
+        os.makedirs(worker_sv_root, exist_ok=True)
         gstore = EmbeddedGraphStore(os.path.join(repo_tmp_dir, "cpg.db"))
 
         resumed_stages: List[str] = []
         current_findings: List[Finding] = []
         corroborated_count = 0
-        go_live_decision = "CONDITIONAL_GO_LIVE"
+        go_live_decision = "NO_GO_HOLD_RELEASE"
         stopped_early = False
+
+        profile_norm = (spec.profile or "deterministic").strip().lower()
+        profile_fp = hashlib.sha256(profile_norm.encode("utf-8")).hexdigest()
+        upstream_invalidated = False
+        fusion_fp = ""
+        upstream_s3_fp = ""
 
         app_tree: Optional[AppTreeSummary] = None
         scanned_files: Optional[List[ScannedFile]] = None
@@ -715,19 +814,39 @@ class FleetRunner:
             gstore.save_communities(comm_map)
             cpg_hydrated = True
 
-        def _load_completed_stage(stage_name: str) -> Optional[Any]:
-            if not resume:
+        def _load_completed_stage(
+            stage_name: str,
+            expected_meta: Optional[Dict[str, str]] = None,
+        ) -> Optional[Any]:
+            if not resume or upstream_invalidated:
                 return None
             ckpt = self.checkpoint_store.get_stage(effective_run_id, stage_name)
-            if ckpt is not None and ckpt[0].status == "COMPLETED":
-                resumed_stages.append(stage_name)
-                return ckpt[1]
-            return None
+            if ckpt is None or ckpt[0].status != "COMPLETED":
+                return None
+            if expected_meta:
+                meta = ckpt[0].metadata or {}
+                for mk, mv in expected_meta.items():
+                    if meta.get(mk) != mv:
+                        return None
+            resumed_stages.append(stage_name)
+            return ckpt[1]
 
         try:
-            local_em = EnterpriseManager()
-            local_em.data_dir = self.vault_dir
-            local_em.vault_dir = self.vault_dir
+            with self._io_lock:
+                local_em = EnterpriseManager()
+            local_em.data_dir = worker_data_dir
+            local_em.vault_dir = repo_tmp_dir
+
+            # Keep offline deterministic fleet scans free of outbound api.osv.dev network calls
+            is_online_osv = (
+                profile_norm in ("online", "live", "online-osv")
+                or os.environ.get("ALASTOR_FLEET_LIVE_OSV", "").strip() == "1"
+            )
+            if not is_online_osv:
+                for q in local_em.queries:
+                    if q.id == "SCA-2-LIVE-CVE-LOCKFILE":
+                        q.enabled = False
+
             enabled_rule_ids = self._resolve_enabled_rule_ids_for_profile(local_em, spec.profile)
 
             # ---------------------------------------------------------------
@@ -736,6 +855,7 @@ class FleetRunner:
             s0_t = time.perf_counter()
             s0_cached = _load_completed_stage("S0_CPG")
             if s0_cached is None:
+                upstream_invalidated = True
                 hostile_configs = find_hostile_target_configs(local_path)
                 _ensure_cpg_hydrated()
                 assert app_tree is not None
@@ -761,10 +881,11 @@ class FleetRunner:
             # ---------------------------------------------------------------
             if not stopped_early:
                 s1_t = time.perf_counter()
-                s1_cached = _load_completed_stage("S1_RULES")
+                s1_cached = _load_completed_stage("S1_RULES", expected_meta={"profile_fp": profile_fp})
                 if s1_cached is not None and isinstance(s1_cached, list):
                     current_findings = [Finding.model_validate(item) for item in s1_cached]
                 else:
+                    upstream_invalidated = True
                     _ensure_cpg_hydrated()
                     raw_sast = (
                         gstore.run_cpg_rules(
@@ -790,7 +911,7 @@ class FleetRunner:
                         "COMPLETED",
                         payload=s1_checkpoint_payload,
                         duration_ms=round((time.perf_counter() - s1_t) * 1000.0, 2),
-                        metadata={"native_sast_count": len(current_findings)},
+                        metadata={"native_sast_count": len(current_findings), "profile_fp": profile_fp},
                     )
                 if target_stop_stage == "S1_RULES":
                     stopped_early = True
@@ -800,17 +921,18 @@ class FleetRunner:
             # ---------------------------------------------------------------
             if not stopped_early:
                 s2_t = time.perf_counter()
-                s2_cached = _load_completed_stage("S2_SECRETS_SCA")
+                s2_cached = _load_completed_stage("S2_SECRETS_SCA", expected_meta={"profile_fp": profile_fp})
                 if s2_cached is not None and isinstance(s2_cached, list):
                     current_findings = [Finding.model_validate(item) for item in s2_cached]
                 else:
+                    upstream_invalidated = True
                     sca_iac_findings: List[Finding] = []
                     try:
                         sca_iac_findings = local_em.run_sca_and_iac_scanners(local_path)
                     except Exception as sca_err:
                         logger.warning("Non-fatal SCA/IaC error on %s: %s", local_path, str(sca_err)[:120])
 
-                    sv_engine = SecretValidatorEngine(platform_root=self.vault_dir)
+                    sv_engine = SecretValidatorEngine(platform_root=worker_sv_root)
                     sv_engine._live_enabled = False
                     # Guard against hostile .git/config execution by never invoking unhardened git log
                     sv_engine._scan_git_history = False
@@ -832,7 +954,8 @@ class FleetRunner:
                         for f in enriched_s2
                     ]
 
-                    ev_map = ExploitVerificationEngine(self.vault_dir).get_confirmed_status_map(local_path)
+                    with self._io_lock:
+                        ev_map = ExploitVerificationEngine(self.vault_dir).get_confirmed_status_map(local_path)
                     if ev_map:
                         ev_synced: List[Finding] = []
                         for f in enriched_s2:
@@ -857,7 +980,7 @@ class FleetRunner:
                         "COMPLETED",
                         payload=[f.model_dump() for f in current_findings],
                         duration_ms=round((time.perf_counter() - s2_t) * 1000.0, 2),
-                        metadata={"findings_count": len(current_findings)},
+                        metadata={"findings_count": len(current_findings), "profile_fp": profile_fp},
                     )
                 if target_stop_stage == "S2_SECRETS_SCA":
                     stopped_early = True
@@ -867,17 +990,24 @@ class FleetRunner:
             # ---------------------------------------------------------------
             if not stopped_early:
                 s3_t = time.perf_counter()
-                s3_cached = _load_completed_stage("S3_FUSION")
+                fusion_fp, resolved_report_paths = self._compute_fusion_reports_fingerprint(
+                    spec.fusion_reports, local_path
+                )
+                upstream_s3_fp = hashlib.sha256(f"{profile_fp}|{fusion_fp}".encode("utf-8")).hexdigest()
+                s3_cached = _load_completed_stage(
+                    "S3_FUSION",
+                    expected_meta={"profile_fp": profile_fp, "fusion_fp": fusion_fp},
+                )
                 if s3_cached is not None and isinstance(s3_cached, dict):
                     raw_flist = s3_cached.get("findings") or []
                     current_findings = [Finding.model_validate(item) for item in raw_flist]
                     corroborated_count = int(s3_cached.get("corroborated_count") or 0)
                 else:
+                    upstream_invalidated = True
                     fusion_warnings: List[str] = []
-                    if spec.fusion_reports:
+                    if resolved_report_paths:
                         _ensure_cpg_hydrated()
-                        for rpath in spec.fusion_reports:
-                            resolved_rp = self._resolve_fusion_report_path(rpath, local_path)
+                        for resolved_rp in resolved_report_paths:
                             with open(resolved_rp, "r", encoding="utf-8", errors="replace") as fh:
                                 report_text = fh.read()
                             det_fmt, imported = parse_external_scanner_report(
@@ -914,6 +1044,8 @@ class FleetRunner:
                         metadata={
                             "fusion_reports_count": len(spec.fusion_reports),
                             "corroborated_count": corroborated_count,
+                            "profile_fp": profile_fp,
+                            "fusion_fp": fusion_fp,
                         },
                     )
                 if target_stop_stage == "S3_FUSION":
@@ -924,8 +1056,11 @@ class FleetRunner:
             # ---------------------------------------------------------------
             if not stopped_early:
                 s6_t = time.perf_counter()
-                s6_cached = _load_completed_stage("S6_VERIFY")
-                if s6_cached is None:
+                s6_cached = _load_completed_stage("S6_VERIFY", expected_meta={"upstream_fp": upstream_s3_fp})
+                if s6_cached is not None and isinstance(s6_cached, dict):
+                    current_findings = _apply_s6_verdicts_to_findings(current_findings, s6_cached)
+                else:
+                    upstream_invalidated = True
                     s6_ids = [f.id for f in current_findings] if len(current_findings) > 50 else None
                     s6_resp = verify_findings_adversarially(
                         target_dir=local_path,
@@ -935,13 +1070,15 @@ class FleetRunner:
                         use_ai=False,
                         max_batch=max(1, min(50, len(current_findings) or 1)),
                     )
+                    s6_payload = s6_resp.model_dump()
+                    current_findings = _apply_s6_verdicts_to_findings(current_findings, s6_payload)
                     self.checkpoint_store.save_stage(
                         effective_run_id,
                         "S6_VERIFY",
                         "COMPLETED",
-                        payload=s6_resp.model_dump(),
+                        payload=s6_payload,
                         duration_ms=round((time.perf_counter() - s6_t) * 1000.0, 2),
-                        metadata={"total_verified": s6_resp.total_verified},
+                        metadata={"total_verified": s6_resp.total_verified, "upstream_fp": upstream_s3_fp},
                     )
                 if target_stop_stage == "S6_VERIFY":
                     stopped_early = True
@@ -953,10 +1090,11 @@ class FleetRunner:
             api_ops = None
             if not stopped_early:
                 s8_t = time.perf_counter()
-                s8_cached = _load_completed_stage("S8_CHAINS")
+                s8_cached = _load_completed_stage("S8_CHAINS", expected_meta={"upstream_fp": upstream_s3_fp})
                 if s8_cached is not None and isinstance(s8_cached, dict):
                     s8_chains = s8_cached.get("chains") or []
                 else:
+                    upstream_invalidated = True
                     _ensure_cpg_hydrated()
                     api_ops = ApiOperationsEngine().analyze_workspace_api_operations(local_path, current_findings)
                     s8_resp = synthesize_exploit_chains(
@@ -974,7 +1112,7 @@ class FleetRunner:
                         "COMPLETED",
                         payload=s8_resp.model_dump(),
                         duration_ms=round((time.perf_counter() - s8_t) * 1000.0, 2),
-                        metadata={"total_chains": s8_resp.total_chains},
+                        metadata={"total_chains": s8_resp.total_chains, "upstream_fp": upstream_s3_fp},
                     )
                 if target_stop_stage == "S8_CHAINS":
                     stopped_early = True
@@ -984,7 +1122,7 @@ class FleetRunner:
             # ---------------------------------------------------------------
             if not stopped_early:
                 s9_t = time.perf_counter()
-                s9_cached = _load_completed_stage("S9_REPORTS")
+                s9_cached = _load_completed_stage("S9_REPORTS", expected_meta={"upstream_fp": upstream_s3_fp})
                 if s9_cached is not None and isinstance(s9_cached, dict):
                     go_live_decision = str(s9_cached.get("go_live_decision") or "CONDITIONAL_GO_LIVE")
                 else:
@@ -998,13 +1136,14 @@ class FleetRunner:
                         c if isinstance(c, ExploitChainItem) else ExploitChainItem.model_validate(c)
                         for c in s8_chains
                     ]
-                    pasta_resp = PastaThreatEngine(vault_dir=self.vault_dir).evaluate_pasta(
-                        target_dir=local_path,
-                        findings=current_findings,
-                        app_tree=app_tree,
-                        api_ops=api_ops,
-                        exploit_chains=typed_chains,
-                    )
+                    with self._io_lock:
+                        pasta_resp = PastaThreatEngine(vault_dir=self.vault_dir).evaluate_pasta(
+                            target_dir=local_path,
+                            findings=current_findings,
+                            app_tree=app_tree,
+                            api_ops=api_ops,
+                            exploit_chains=typed_chains,
+                        )
                     go_live_decision = _map_pasta_verdict_to_fleet(pasta_resp.golive_verdict)
                     self.checkpoint_store.save_stage(
                         effective_run_id,
@@ -1017,10 +1156,10 @@ class FleetRunner:
                             "mandatory_pre_golive_count": pasta_resp.mandatory_pre_golive_count,
                         },
                         duration_ms=round((time.perf_counter() - s9_t) * 1000.0, 2),
-                        metadata={"go_live_decision": go_live_decision},
+                        metadata={"go_live_decision": go_live_decision, "upstream_fp": upstream_s3_fp},
                     )
             else:
-                go_live_decision = _compute_fallback_go_live(current_findings)
+                go_live_decision = _compute_fallback_go_live(current_findings, stopped_early=True)
 
             # Scrub raw secret literals before returning Findings from FleetRunner
             safe_findings = [
