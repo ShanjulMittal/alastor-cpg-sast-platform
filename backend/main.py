@@ -5806,7 +5806,13 @@ def _resolve_nextgen_confined_path(project_path: Optional[str]) -> str:
             status_code=400,
             detail="Symlink or junction project_path is not permitted.",
         )
-    return _resolve_confined_ev_project_path(raw)
+    confined = _resolve_confined_ev_project_path(raw)
+    if not os.path.isdir(confined):
+        raise HTTPException(
+            status_code=400,
+            detail="Requested project_path must be an existing directory.",
+        )
+    return confined
 
 
 def _has_populated_active_findings(norm_req: str) -> bool:
@@ -5853,17 +5859,17 @@ def run_nextgen_pr_gate(req: PrDeltaGateRequest):
     confined_path = _resolve_nextgen_confined_path(req.project_path)
     req_confined = req.model_copy(update={"project_path": confined_path})
 
-    norm_req = os.path.normcase(os.path.realpath(confined_path))
-    norm_cur = os.path.normcase(
-        os.path.realpath(current_scan_dir or enterprise_mgr.platform_root)
-    )
-    active_findings: Optional[List[Finding]] = None
-    if norm_req == norm_cur and _has_populated_active_findings(norm_req):
-        candidate = _get_active_or_custom_findings(confined_path)
-        if candidate:
-            active_findings = candidate
-
     try:
+        norm_req = os.path.normcase(os.path.realpath(confined_path))
+        norm_cur = os.path.normcase(
+            os.path.realpath(current_scan_dir or enterprise_mgr.platform_root)
+        )
+        active_findings: Optional[List[Finding]] = None
+        if norm_req == norm_cur and _has_populated_active_findings(norm_req):
+            candidate = _get_active_or_custom_findings(confined_path)
+            if candidate:
+                active_findings = candidate
+
         return evaluate_pr_delta_gate(
             req_confined,
             findings=active_findings,
@@ -5879,53 +5885,53 @@ def run_nextgen_pr_gate(req: PrDeltaGateRequest):
 def generate_nextgen_security_test(req: SecurityTestGenerateRequest):
     """Generates a scrubbed, syntax-validated security regression unit test for a Finding."""
     confined_path = _resolve_nextgen_confined_path(req.project_path)
-    finding: Optional[Finding] = req.finding
-    if finding is None:
-        clean_fid = (req.finding_id or "").strip()
-        if not clean_fid:
-            raise HTTPException(
-                status_code=400,
-                detail="Either finding or finding_id must be supplied.",
-            )
-        workspace_findings = _get_active_or_custom_findings(confined_path)
-        finding = next((f for f in workspace_findings if f.id == clean_fid), None)
-
-        if finding is None:
-            norm_req = os.path.normcase(os.path.realpath(confined_path))
-            norm_cur = os.path.normcase(
-                os.path.realpath(current_scan_dir or enterprise_mgr.platform_root)
-            )
-            if norm_req == norm_cur:
-                raw_match: Optional[Finding] = None
-                with _findings_lock:
-                    for pool in (
-                        _cached_findings or (),
-                        _cached_external_findings or (),
-                        _cached_cognitive_findings or (),
-                    ):
-                        hit = next((f for f in pool if f.id == clean_fid), None)
-                        if hit is not None:
-                            raw_match = hit.model_copy(deep=True)
-                            break
-                if raw_match is not None:
-                    finding = _correlate_ev_status_onto_findings(
-                        confined_path, [raw_match]
-                    )[0]
-
-        if finding is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Finding '{_sanitize_log(clean_fid)}' not found in confined workspace.",
-            )
-
-    req_confined = req.model_copy(
-        update={
-            "project_path": confined_path,
-            "finding": finding,
-            "finding_id": finding.id,
-        }
-    )
     try:
+        finding: Optional[Finding] = req.finding
+        if finding is None:
+            clean_fid = (req.finding_id or "").strip()
+            if not clean_fid:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Either finding or finding_id must be supplied.",
+                )
+            workspace_findings = _get_active_or_custom_findings(confined_path)
+            finding = next((f for f in workspace_findings if f.id == clean_fid), None)
+
+            if finding is None:
+                norm_req = os.path.normcase(os.path.realpath(confined_path))
+                norm_cur = os.path.normcase(
+                    os.path.realpath(current_scan_dir or enterprise_mgr.platform_root)
+                )
+                if norm_req == norm_cur:
+                    raw_match: Optional[Finding] = None
+                    with _findings_lock:
+                        for pool in (
+                            _cached_findings or (),
+                            _cached_external_findings or (),
+                            _cached_cognitive_findings or (),
+                        ):
+                            hit = next((f for f in pool if f.id == clean_fid), None)
+                            if hit is not None:
+                                raw_match = hit.model_copy(deep=True)
+                                break
+                    if raw_match is not None:
+                        finding = _correlate_ev_status_onto_findings(
+                            confined_path, [raw_match]
+                        )[0]
+
+            if finding is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Finding '{_sanitize_log(clean_fid)}' not found in confined workspace.",
+                )
+
+        req_confined = req.model_copy(
+            update={
+                "project_path": confined_path,
+                "finding": finding,
+                "finding_id": finding.id,
+            }
+        )
         return generate_security_regression_test(req_confined, finding)
     except HTTPException:
         raise

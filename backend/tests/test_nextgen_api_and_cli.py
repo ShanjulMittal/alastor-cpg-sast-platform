@@ -933,3 +933,109 @@ class TestNextgenFastApiRoutes:
             monkeypatch.setattr(main_mod, "_get_ai_allowed_roots", orig_allowed_fn)
             if iso_store._conn is not None:
                 iso_store.close()
+
+    def test_confined_regular_file_and_internal_value_error_return_400_not_500(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import main as main_mod
+        from database.checkpoint_store import CheckpointStore
+        from engine.compliance_and_rules_engine import CustomRuleEngine
+        from engine.exploit_verification_engine import ExploitVerificationEngine
+        from engine.hostile_repo_guard import HostileRepoError
+        from models import Finding
+
+        ws = tmp_path / "confined_file_ws"
+        _create_pr_multi_commit_repo(ws)
+        reg_file = ws / "base_service.py"
+        assert reg_file.is_file()
+
+        vault = tmp_path / "vault"
+        iso_store = CheckpointStore(str(vault))
+        iso_ev = ExploitVerificationEngine(vault_dir=str(vault))
+        iso_rules = CustomRuleEngine(vault_dir=str(vault))
+
+        monkeypatch.setattr(main_mod, "startup_event", lambda: None)
+        monkeypatch.setattr(main_mod, "shutdown_event", lambda: None)
+        monkeypatch.setattr(main_mod, "checkpoint_store", iso_store)
+        monkeypatch.setattr(main_mod, "ev_engine", iso_ev)
+        monkeypatch.setattr(main_mod, "custom_rule_engine", iso_rules)
+        monkeypatch.setattr(main_mod, "_get_ai_allowed_roots", lambda: [str(ws)])
+        monkeypatch.setattr(main_mod, "current_scan_dir", str(ws))
+        monkeypatch.setattr(
+            main_mod,
+            "_cached_findings",
+            [Finding(id="F-REG-1", rule_id="RULE-7-SQLI-FORMAT", severity="HIGH", title="SQLi")],
+        )
+        monkeypatch.setattr(main_mod, "_cached_external_findings", [])
+        monkeypatch.setattr(main_mod, "_cached_cognitive_findings", [])
+        monkeypatch.setattr(main_mod, "_cached_cognitive_dir", "")
+
+        try:
+            with TestClient(main_mod.app, raise_server_exceptions=False) as client:
+                # 1. Existing confined regular file MUST return HTTP 400 (never 500)
+                r_gt_file = client.post(
+                    "/api/nextgen/generate-test",
+                    json={"project_path": str(reg_file), "finding_id": "F-REG-1"},
+                )
+                assert r_gt_file.status_code == 400, r_gt_file.text
+
+                r_pg_file = client.post(
+                    "/api/nextgen/pr-gate",
+                    json={"project_path": str(reg_file)},
+                )
+                assert r_pg_file.status_code == 400, r_pg_file.text
+
+                r_comp_file = client.post(
+                    "/api/nextgen/compliance/evaluate",
+                    json={"project_path": str(reg_file)},
+                )
+                assert r_comp_file.status_code == 400, r_comp_file.text
+
+                r_cr_file = client.post(
+                    "/api/nextgen/custom-rules/test",
+                    json={
+                        "rule": {"rule_id": "TMP-1", "name": "Eval", "pattern": r"eval\("},
+                        "project_path": str(reg_file),
+                    },
+                )
+                assert r_cr_file.status_code == 400, r_cr_file.text
+
+                r_ms_file = client.post(
+                    "/api/nextgen/microservice-graph",
+                    json={
+                        "services": [{"service_name": "svc", "repo_path": str(reg_file)}],
+                        "scan_findings": False,
+                    },
+                )
+                assert r_ms_file.status_code == 400, r_ms_file.text
+
+                # 2. ValueError / HostileRepoError from finding resolution inside pr-gate / generate-test / compliance -> HTTP 400
+                monkeypatch.setattr(
+                    main_mod,
+                    "_get_active_or_custom_findings",
+                    lambda _td: (_ for _ in ()).throw(HostileRepoError("Simulated hostile finding store")),
+                )
+                assert (
+                    client.post(
+                        "/api/nextgen/pr-gate",
+                        json={"project_path": str(ws)},
+                    ).status_code
+                    == 400
+                )
+                assert (
+                    client.post(
+                        "/api/nextgen/generate-test",
+                        json={"project_path": str(ws), "finding_id": "F-REG-1"},
+                    ).status_code
+                    == 400
+                )
+                assert (
+                    client.post(
+                        "/api/nextgen/compliance/evaluate",
+                        json={"project_path": str(ws)},
+                    ).status_code
+                    == 400
+                )
+        finally:
+            if iso_store._conn is not None:
+                iso_store.close()
