@@ -10,7 +10,7 @@
 
 [![Version: v5.1.0 Sovereign Enterprise](https://img.shields.io/badge/Release-v5.1.0%20Sovereign%20Enterprise-0284c7?style=for-the-badge)](./CHANGELOG.md)
 [![Tests: 533 Passing](https://img.shields.io/badge/Backend%20Suite-533%20Tests%20Passing-059669?style=for-the-badge)](./backend/tests/)
-[![Languages: 18 Polyglot CPG](https://img.shields.io/badge/Polyglot%20CPG-18%20Languages%20%28Zero%20JVM%29-4f46e5?style=for-the-badge)](#-whats-new-in-v500--v510--5-pillars--dual-sandbox)
+[![Languages: 18 Polyglot CPG](https://img.shields.io/badge/Polyglot%20CPG-18%20Languages%20%28Zero%20JVM%29-4f46e5?style=for-the-badge)](#-comprehensive-feature-catalog-alastor-v510)
 [![Graph: Neo4j + SQLite WAL](https://img.shields.io/badge/Dual%20GraphStore-Neo4j%20%2B%20SQLite%20WAL-0e7490?style=for-the-badge)](./backend/database/graph_store.py)
 [![Agents: 17 Playbooks + ReAct CPG](https://img.shields.io/badge/Cognitive%20Engine-17%20Playbooks%20%2B%20ReAct%20CPG-7c3aed?style=for-the-badge)](./backend/engine/agentic_react_loop.py)
 [![Live EV: httpx + ev-replay + IDOR](https://img.shields.io/badge/Live%20EV-IP--Pinned%20httpx%20%2B%20ev--replay-d97706?style=for-the-badge)](./backend/engine/exploit_verification_engine.py)
@@ -20,11 +20,10 @@
 <br />
 
 [**⚡ 3-Minute Quick Start (Web, CLI, SDK & Docker Sandbox)**](#-3-minute-quick-start-100-local--sovereign) •
-[**🚀 What's New in `v5.0` & `v5.1`**](#-whats-new-in-v500--v510--5-pillars--dual-sandbox) •
-[**⚔️ Benchmark vs. VVAH / Semgrep / Snyk / Checkmarx**](#️-head-to-head-competitive-benchmark) •
-[**🛡️ Complete 33-Rule & Engine Matrix**](#️-complete-21-rule-deterministic-security-matrix) •
+[**✨ Detailed Feature Catalog**](#-comprehensive-feature-catalog-alastor-v510) •
+[**🛡️ Complete 33-Rule & Engine Matrix**](#️-complete-33-rule--multi-engine-security-matrix) •
 [**📸 Visual Daylight Studio Tour**](#-complete-visual-tour--every-stage-directional-graph-ai-workflow--export) •
-[**📖 Full Master SOP**](./docs/ALASTOR_Master_SOP_and_Product_Guide.md)
+[**📖 Complete Non-Technical & Technical Master SOP**](./docs/ALASTOR_Master_SOP_and_Product_Guide.md)
 
 </div>
 
@@ -45,35 +44,60 @@
 
 ---
 
-## 🚀 What's New in `v5.0.0` & `v5.1.0` — 5 Pillars + Dual Sandbox
+## ✨ Comprehensive Feature Catalog (ALASTOR `v5.1.0`)
 
-| Pillar / Release | Capabilities Delivered |
-| :--- | :--- |
-| **Pillar 1 — Polyglot CPG & Zero-Docker GraphStore** | 18-language offline `Tree-Sitter` compiler (`tree-sitter==0.26.1`), Hostile-Repo `.gitignore` Scope Walker, Domain-Aware Sanitizer Tracking, 12 new polyglot rules (`RULE-22..33`), Dual `Neo4j APOC` + `SQLite WAL` GraphStore, and Leiden Community Detection. |
-| **Pillar 2 — Cognitive Hunt, S6/S8/S11 & Patch Panel** | 17 specialist security playbooks, 6 repo-kind auto-baselines, prompt-injection stripping, centralized raw-secret/PEM scrubbing, S6 Adversarial Verifier (`CVSS 3.1`), S8 Multi-Hop Exploit Chains, and S11 Dual-Verified 3-Persona Patch Panel. |
-| **Pillar 3 — Live EV, `ev-replay` & PASTA/SAR Promotion** | DNS-rebinding-proof IP-pinned `httpx` Live EV, Zero-Collection CPG Auto-Probing + OpenAPI/Postman import, Multi-Role IDOR/BOLA matrix, fail-closed post-fix `ev-replay`, `curl`/`pytest` PoC generation, PASTA Stage VII Mandatory Blocker promotion, and native `.docx`/`.pdf` SAR dossiers. |
-| **Pillar 4 — CLI/SDK, Checkpoints, Fleet & 6-Format Fusion** | Hostile-repo git/config/symlink guard, SQLite WAL stage checkpoints (`--resume` + host provenance + `gc`), Universal 6-Format Scanner Fusion (`SARIF`, `CodeQL`, `Semgrep`, `Trivy`, `Gitleaks`, `Checkov`), CSV Multi-Repo Fleet Runner (`--repo-file`, `--group-by-app`), Embedded-First `alastor` CLI + Typed Python SDK, and Daylight Fleet Command Workbench. |
-| **Pillar 5 — Pure 300% Next-Gen AppSec** | `alastor pr-gate` PR/Git-Diff Incremental Security Gate, Automated `pytest`/`jest`/`vitest`/`go test` Security Regression Unit-Test Generator, 5-Framework Compliance Autopilot (`PCI-DSS 4.0`, `SOC 2`, `ISO 27001`, `HIPAA`, `OWASP ASVS 5.0`) + AST-ReDoS-Safe Custom Rule Studio, and Cross-Repo Microservice Attack-Graph Stitching. |
-| **`v5.1.0` — ReAct CPG Agent & Dual Docker Egress Sandbox** | Multi-Turn ReAct CPG-Tool-Calling Hunter & Iterative S10→S11 Auto-Patcher (`agentic_react_loop.py`) + OS-Enforced Dual Docker Egress-Proxy Sandbox (`docker/sandbox/Dockerfile`, `egress.Dockerfile`, `sandbox_orchestrator.py`) with `doctor` image-version drift checks. |
+Every capability below runs **100% locally and sovereignly** with zero mandatory cloud upload and a full **`$0` offline deterministic baseline** (optional BYOK LLMs are strictly opt-in). For step-by-step instructions tailored to both non-technical stakeholders and technical engineers, read the **[📖 Master SOP & Complete Application Guide](./docs/ALASTOR_Master_SOP_and_Product_Guide.md)**.
 
----
+### 1. 18-Language Polyglot CPG Compiler & Dual GraphStore
+- **Offline Multi-Language Compilation (Zero JVM):** Compiles **18 languages** (`Python`, `JavaScript`, `TypeScript`, `TSX`, `Java`, `Go`, `Rust`, `C`, `C++`, `C#`, `PHP`, `Ruby`, `Kotlin`, `Swift`, `Scala`, `Dart`, `Solidity`, `SQL`) via `tree-sitter==0.26.1` + `tree-sitter-language-pack==0.13.0` into a unified **AST + CFG + DFG + Inter-Procedural Call Graph (`:CALLS`)**.
+- **Dual-Engine `GraphStore` (`Neo4j 5 APOC` + Zero-Docker `SQLite WAL`):** Automatically uses **Neo4j 5 + APOC** when available for large-scale Cypher traversals, and seamlessly falls back to an embedded **SQLite WAL** graph engine (`.alastor_vault/cpg_embedded.db`) so teams can run ALASTOR on any laptop or CI runner without Docker.
+- **Hostile-Repo `.gitignore` Scope Walker:** Discovers scannable source files while respecting `.gitignore`, skipping build artifacts/vendored trees, and strictly refusing `.env*`, private key material, `.git/`, hostile agent instruction files, and escaping symlinks or NTFS junctions.
+- **Generalized Domain-Aware Sanitizer Tracking:** Eliminates false positives by verifying exact AST sanitizer bodies per vulnerability domain (`commonpath`/`basename`/`is_relative_to` for Path Traversal, `ipaddress` private-IP checks for SSRF, parameterized queries/`int()` coercion for SQLi, CRLF stripping for Log Injection, `SafeLoader`/`defusedxml` for Deserialization & XXE).
+- **Deterministic Leiden Community Detection (`COMMUNITY_MAP`):** Partitions large codebases into architectural functional clusters and computes **Best Fix Locations (BFL)** — the highest-leverage chokepoints where a single patch severs multiple attack paths.
 
-## ⚔️ Head-to-Head Competitive Benchmark
+### 2. Deterministic Security Rules, Secret Vault, Reachable SCA & CI/CD IaC
+- **33 Deterministic SAST & Polyglot Rules (`RULE-1`–`RULE-33`):** Covers OS command injection, code/SSTI injection, SQL/Cypher injection, DOM XSS, path traversal, SSRF, unsafe deserialization, weak crypto, XXE, TLS bypass, open redirect, insecure PRNG, log injection, dead stores, infinite loops, unreachable code, orphan gadgets, plus **12 polyglot rule packs (`RULE-22`–`RULE-33`)** spanning Java, Go, Rust, C/C++, C#, PHP, Ruby, Kotlin, Swift, Scala, Dart, Solidity (reentrancy/tx.origin), and SQL.
+- **Native Secret Scanner, Git-History Hunter & Secret Keys Vault:** Detects hardcoded API keys, cloud credentials (`AKIA`, `ghp_`, `sk_`, JWT secrets, PEM private keys) with Shannon entropy scoring, placeholder filtering, git-history scanning, and centralized raw-secret/PEM redaction before any logs, prompts, or reports are written.
+- **Live Reachable SCA (`SCA-1`, `SCA-2`) & `CycloneDX v1.5` SBOM:** Audits floating SemVer manifests (`package.json`, `requirements.txt`, lockfiles), queries live **OSV.dev** vulnerability data, cross-checks every CVE against CPG `Import` AST reachability, and exports `CycloneDX v1.5` SBOMs.
+- **Infrastructure & CI/CD Pipeline Security (`IAC-1`–`IAC-3` & PBOM):** Audits `Dockerfile` root containers and missing web security headers, `docker-compose.yml` / Kubernetes plaintext secrets, and GitHub Actions workflows (mutable `@v4` tags, `${{ github.event.* }}` script injection, `pull_request_target` abuse) with a full CI/CD Pipeline Bill of Materials (PBOM).
 
-| Capability | **ALASTOR `v5.1.0`** | **Visa VVAH `v1.6.0`** | **Semgrep Pro** | **Checkmarx / Fortify** | **Snyk Code + SCA** |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Code Graph Depth** | **18-Lang Full CPG (`AST+CFG+DFG+:CALLS`) — Neo4j + SQLite WAL (Zero JVM)** | Symbol/call graph (ArcadeDB / JVM) | Cross-file AST + taint | Proprietary AST/DFG | Proprietary semantic graph |
-| **Offline `\$0` Discovery (No LLM Required)** | ✅ **33 Rules + Secrets + OSV SCA + IaC + `COG-1..5` + S6/S8** | ❌ Core S2/S4/S6 requires LLM spend | ✅ Paid license | ✅ Paid license | ❌ Cloud upload |
-| **17 Playbooks + Multi-Turn ReAct Agent + S6/S8/S11** | ✅ **17 Playbooks + 7-Tool ReAct CPG Agent + S6/S8/S11** | ✅ 17 Playbooks + LangGraph S4/S6/S8/S10/S11 | ☁️ Vendor-locked AI | ☁️ Paid Cloud Add-On | ☁️ Vendor-locked AI |
-| **Interactive Daylight Web IDE & Graphs** | ✅ **Full Next.js Studio (Monaco Diff, ReactFlow CPG/360°/PASTA/Microservice)** | ❌ CLI / Markdown / SARIF only | ☁️ Cloud dashboard | ⚠️ Legacy web portal | ☁️ Cloud dashboard |
-| **Live Exploit Verification (`EV`) & `ev-replay`** | ✅ **Zero-Collection CPG + OpenAPI/Postman + Multi-Role IDOR + `curl`/`pytest` PoCs** | ⚠️ Beta HTTP EV (manual spec) | ❌ | ❌ | ❌ |
-| **Universal External Scanner Fusion** | ✅ **6 Formats (`SARIF`, `CodeQL`, `Semgrep`, `Trivy`, `Gitleaks`, `Checkov`)** | ⚠️ Semgrep plugin + SDK inject | ❌ | ⚠️ Partial connectors | ❌ |
-| **PR Delta Gate + Auto Security Regression Tests** | ✅ **`alastor pr-gate` + `pytest`/`jest`/`vitest`/`go test` Generator** | ❌ (S11 runs no tests) | ⚠️ PR diff only | ❌ | ⚠️ PR diff only |
-| **5-Framework Compliance + Custom Rule Studio** | ✅ **PCI-DSS 4.0, SOC 2, ISO 27001, HIPAA, ASVS 5.0 + ReDoS-Safe Studio** | ❌ | ⚠️ Custom YAML only | ⚠️ Compliance packs | ⚠️ Enterprise tier |
-| **Cross-Repo Microservice Attack Graphs** | ✅ **HTTP/gRPC/Queue Multi-Repo Stitching in ReactFlow** | ❌ Single-repo + CSV rollups | ❌ | ❌ | ❌ |
-| **PASTA 7-Stage & Executive Word/PDF SAR Dossiers** | ✅ **STRIDE + PASTA + Native `.docx`/`.pdf` SAR + CycloneDX 1.5 + RACI** | ❌ Markdown + SARIF only | ❌ | ⚠️ Basic PDF | ⚠️ Basic PDF |
-| **Hostile-Repo Guard & Dual Docker Egress Sandbox** | ✅ **Hardened Git + `alastor-sandbox:local` (`--network=none`) + Squid Egress Sidecar** | ✅ Hardened Git + Dual Docker Sandbox | ❌ | ❌ | ❌ |
-| **License & Cost** | **100% Free & Open Source (`MIT`)** | Apache-2.0 (LLM spend required) | \$\$\$ Per-Developer | \$\$\$\$ Six-Figure Annual | \$\$\$ Per-Developer |
+### 3. Cognitive Security Engine — 17 Specialist Playbooks, Multi-Turn ReAct CPG Agent & S6/S8/S11
+- **17 Specialist Security Playbooks & 6 Auto-Baselines:** Automatically profiles repository type (Web API, Frontend SPA, Microservice, Smart Contract, CLI/Library, Infrastructure) and runs targeted playbooks covering auth/authz, business logic, multi-tenancy/IDOR, crypto, deserialization, SSRF, injection, file handling, secrets, and supply chain (`COG-1`–`COG-5` deterministic baseline + optional BYOK deep hunting + CPG sibling sweeps).
+- **Opt-In Multi-Turn ReAct CPG-Tool-Calling Agent (`v5.1.0`):** Provider-agnostic ReAct loop (`run_agentic_react_hunt`, `run_agentic_react_patch`) with a **`$0` deterministic fallback trace** when no API key is configured. Operates exclusively through **7 strictly confined read-only tools** (`list_repo_files`, `read_code_slice` capped at 120 lines, AST-ReDoS-validated `search_code_regex`, `query_cpg_callers`, `query_cpg_callees`, `get_function_context`, and terminal `submit_findings` / `submit_patch`) with prompt-injection stripping, raw-secret scrubbing, duplicate-call loop detection (`LOOP_DETECTED`), and hallucination filtering.
+- **S6 Adversarial Verifier (`FIRST CVSS 3.1`):** Applies deterministic **Exclusion Rules A–F** (test/mock files, dead unreachable paths, verified sanitizers, constant-only sinks, non-exploitable contexts) and calculates standardized **CVSS 3.1** base vectors and scores.
+- **S8 Multi-Hop Exploit Chain Synthesis:** Links individual findings (e.g., Information Leak → Auth Bypass → SSRF/SQLi → RCE) into end-to-end composite attack chains ranked by cumulative impact.
+- **S11 Dual-Verified 3-Persona Patch Panel & Iterative S10→S11 Auto-Patcher:** Every proposed fix passes **AST syntax validation**, **hostile-patch post-gating** (blocks patches that introduce new sinks/backdoors), **CPG taint-severance verification**, and **3 adversarial reviewer personas** (Security Architect, AppSec Reviewer, Reliability Engineer). In ReAct patch mode, rejected patches iteratively refine across up to 5 rounds using S11 critique feedback.
+
+### 4. IP-Pinned Native `httpx` Live Exploit Verification (`EV`), Post-Fix `ev-replay` & Multi-Role IDOR
+- **Zero-Collection CPG Auto-Probing + API Spec Import:** Automatically extracts HTTP routes, parameters, and auth context directly from ALASTOR's CPG, or imports **OpenAPI 3.x**, **Swagger 2.0**, and **Postman v2.1** collections.
+- **DNS-Rebinding-Proof IP-Pinned `httpx` Transport:** Resolves DNS once, validates the resolved IP, and pins the socket connection to prevent DNS-rebinding SSRF. Restricts probing to **loopback (`127.0.0.1` / `::1`) by default**, supports explicit opt-in RFC1918/ULA staging networks, and **permanently blocks** public IPs, cloud metadata (`169.254.169.254`), cross-origin redirects, and ALASTOR's own API port (`:8000`).
+- **6 Non-Destructive Probe Families & Multi-Role IDOR/BOLA Matrix:** Tests `EV-IDOR-BOLA` (cross-role authorization matrix), `EV-SQLI-ERROR-DIFF`, `EV-XSS-REFLECTED-CANARY`, `EV-CORS-CREDENTIAL-REFLECT`, `EV-OPEN-REDIRECT`, and `EV-PATH-TRAVERSAL-HEADERS` with zero-traffic `DRY_RUN_PLAN` previews before sending any live packet.
+- **Fail-Closed Post-Fix `ev-replay` & Credential-Free PoCs:** Replays confirmed probes after a developer patches the bug to attest `FIXED_VERIFIED` vs. `STILL_VULNERABLE`, exports runnable `curl` and `pytest` PoCs (with zero raw credentials), and **automatically promotes** `RUNTIME_EXPLOIT_CONFIRMED` findings to **PASTA Stage VII Mandatory Pre-Go-Live Blockers**.
+
+### 5. Threat Modeling, 7-Stage PASTA, Executive ASPM & Native Word/PDF SAR Dossiers
+- **Interactive 4-Zone Directional Trust Boundary Graph & Microsoft STRIDE Matrix:** Visualizes traffic crossing **Zone 1 (External Ingress)** → **Zone 2 (API/CLI Entrypoints)** → **Zone 3 (Validation & BFL Chokepoints)** → **Zone 4 (Critical Sinks & Secrets)** alongside complete STRIDE threat verdicts.
+- **7-Stage PASTA Threat Workbench & Attack Trees:** Captures business objectives, technical scope, decomposition, threat analysis, vulnerability mapping, attack trees, and risk/impact analysis with formal **Go-Live Release Gates** (`GO_LIVE_APPROVED`, `CONDITIONAL_GO_LIVE`, `NO_GO_HOLD_RELEASE`) and auditable executive risk waivers.
+- **Native Word (`.docx`) & PDF (`.pdf`) SAR Go-Live Dossiers:** Generates board-ready Security Assessment Reports embedding executive summaries, Go-Live gate decisions, PASTA Stage VII blockers, Live EV runtime attestations, compliance posture, and remediation roadmaps — plus Light **Executive HTML (`.html`)**, **RFC-4180 CSV**, **OASIS SARIF `v2.1.0`**, and **CycloneDX `v1.5`** exports.
+- **Non-Coder Risk Translator, PMI/COBIT RACI, Multi-Tenant RBAC & Jira/GitHub Sync:** Translates technical CWEs into plain-English business impact, maps organizational accountability in an interactive RACI matrix, manages RBAC roles, and syncs findings bi-directionally with Jira & GitHub Issues.
+
+### 6. Next-Gen AppSec Suite — PR Delta Gate, Regression TestGen, Compliance Autopilot & Microservice Stitching
+- **PR / Git-Diff Incremental Security Gate (`alastor pr-gate`):** Diffs `base_ref..head_ref` (or uncommitted `WORKTREE`), classifies findings into `NEWLY_INTRODUCED`, `MODIFIED_CONTEXT` (1-hop CPG neighbors of changed code), and `PRE_EXISTING`, enforces configurable fail-on-severity CI exit codes, and emits copy-ready PR review Markdown.
+- **Automated Security Regression Unit-Test Generator:** Deterministically synthesizes AST-verified security regression unit tests in **`pytest`**, **`jest`**, **`vitest`**, or **`go test`** for patched findings, with preview or safe write to `tests/security/`.
+- **5-Framework Continuous Compliance Autopilot:** Continuously evaluates live CPG findings, secrets, SCA, and Live EV attestations against **PCI-DSS 4.0**, **SOC 2**, **ISO/IEC 27001:2022**, **HIPAA**, and **OWASP ASVS 5.0** with control-level Pass/Fail/Warning evidence.
+- **AST-ReDoS-Safe Custom Rule Studio:** Author, live-test in a sandbox, and persist declarative organization-specific security rules in `.alastor_vault/custom_rules.json` (`0o600`), protected by Python `re._parser` AST catastrophic-backtracking (ReDoS) validation.
+- **Cross-Repo Microservice Attack-Graph Stitcher:** Correlates outbound HTTP, gRPC, and Message Queue client calls in one repository to inbound API routes/consumers in sibling repositories and renders end-to-end multi-repo attack paths interactively in ReactFlow.
+
+### 7. Hardened 9-Command `alastor` CLI, Typed Python SDK, Checkpoints, Fleet Runner & 6-Format Fusion
+- **Embedded-First 9-Command CLI (`alastor` / `python -m alastor_cli`) & Typed Python SDK (`alastor_sdk`):** Execute `setup`, `doctor`, `estimate`, `scan`, `pr-gate`, `remediate` (report-only or host-provenance-gated `fix`), `validate`, `ev-replay`, and `gc` fully offline or against a running `--server`.
+- **SQLite WAL Stage Checkpoints (`--resume`) & Host Provenance:** Persists SHA-256 tamper-checked scan checkpoints per stage so interrupted enterprise scans resume cleanly, enforces host-produced scan provenance before allowing disk writes in `remediate --mode fix`, and provides retention cleanup (`gc`).
+- **CSV Multi-Repo Fleet Runner (`--repo-file`, `--group-by-app`):** Scans entire portfolios from a CSV manifest with per-repo fault isolation and rolls up findings into Application-Group Go-Live posture dashboards.
+- **Universal 6-Format External Scanner Fusion:** Auto-detects and ingests **SARIF 2.1.0**, **CodeQL**, **Semgrep JSON**, **Trivy JSON**, **Gitleaks JSON** (automatically secret-scrubbed), and **Checkov JSON**, mapping external alerts directly onto ALASTOR's CPG with multi-engine `corroborated_by` confidence boosts.
+
+### 8. Hostile-Repo Isolation, Dual Docker Egress Sandbox, Daylight Web IDE & BYOK Frontier AI
+- **Hostile-Repo Isolation Guard (`hostile_repo_guard.py`):** Neutralizes malicious git hooks (`core.hooksPath=/dev/null`), `core.fsmonitor`, `diff.external`, and smudge/clean filters via `GIT_CONFIG_COUNT`, fails closed on `url.*.insteadOf` credential hijacking, refuses target `.env`/config files, and performs symlink/NTFS-junction-safe cleanup.
+- **OS-Enforced Dual Docker Egress-Proxy Sandbox (`v5.1.0`):** Ships two hardened non-root (`USER 65534:65534`, setuid/setgid-stripped) local-build images: **`alastor-sandbox:local`** (always runs `--network=none`, `--read-only`, private-key build rejection, `socat` Unix-socket client) and **`alastor-egress:local`** (non-root Squid `CONNECT :443` FQDN allowlist + anti-DNS-rebinding `blocked_dst` CIDR blocklist). `alastor doctor` automatically verifies local image version drift (`org.alastor.version=5.1.0`).
+- **Guided 4-Stage WCAG AA Daylight Web IDE & Atomic Batch Auto-Fix:** Crisp light-only high-contrast UI (`>= 4.5:1` across *Olympian Daylight*, *Athena Parchment*, *Hyperborean Frost*), 100% directional perimeter-arrow ReactFlow graphs with Flow Story Bars and BFS Blast Radius, light Monaco Editor + BFL `DiffEditor`, and one-click bottom-up **`Fix All Safe Issues`** with `.alastor_patches` SHA-256 atomic rollback and unified `.patch` export.
+- **Token-Efficient BYOK Frontier AI Copilot (`90–95%` Savings):** Zero-SDK adapters for **Google Gemini**, **OpenAI**, **Anthropic Claude**, and **OpenAI-Compatible / OpenRouter / Local Ollama / vLLM** backed by a `0o600` local vault, `<= 40`-line CPG Micro-Slicing, SHA-256 slice caching (`0` repeat tokens), Batch TP/FP Validation, and Monaco Selection Auditing.
 
 ---
 
@@ -260,7 +284,7 @@ Press **`Ctrl+K`** anywhere to jump across stages, findings, AI modes, or export
 
 ---
 
-## 🛡️ Complete 21-Rule Deterministic Security Matrix
+## 🛡️ Complete 33-Rule & Multi-Engine Security Matrix
 
 | Rule ID | Engine | Severity | MITRE CWE | Vulnerability / Control Audited | Zero-FP Deterministic Proof |
 | :--- | :---: | :---: | :---: | :--- | :--- |
@@ -405,7 +429,7 @@ TSC_EXIT=0 • Next.js build passed • 0 dark: classes • 0 DOM XSS sinks
 
 ## 📚 Documentation, Contributing & Security
 
-- **[📖 Master Product Guide & Standard Operating Procedure (SOP)](./docs/ALASTOR_Master_SOP_and_Product_Guide.md)** — Complete v5.1 operator manual, 4-stage workflow guide, CLI/SDK, ReAct agent, Live EV, PASTA/SAR, and Docker Sandbox deep-dive.
+- **[📖 Complete Master SOP & Application Handbook (`docs/ALASTOR_Master_SOP_and_Product_Guide.md`)](./docs/ALASTOR_Master_SOP_and_Product_Guide.md)** — Comprehensive end-to-end Standard Operating Procedure written for **both non-technical stakeholders** (plain-English mental model, business value, executive Go-Live gates, SAR dossiers, RACI & glossary) **and technical engineers** (architecture, 18-language CPG, 14 step-by-step SOPs, CLI/SDK, REST APIs, Live EV, ReAct Agent & Dual Docker Egress Sandbox).
 - **[📋 Full Changelog (`CHANGELOG.md`)](./CHANGELOG.md)** — Detailed version-by-version engineering notes (`v1.0.0` through `v5.1.0`).
 - **[📐 Architecture Specs & Plans (`docs/superpowers/`)](./docs/superpowers/)** — Detailed design specifications for PASTA, Pillars 1–5, and v5.1.
 - **[🔬 Contributing Guide (`CONTRIBUTING.md`)](./CONTRIBUTING.md)** — How to add new Tree-Sitter languages, CPG rules, and run the 533-test suite.
