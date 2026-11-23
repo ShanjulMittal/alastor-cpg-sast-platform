@@ -1,6 +1,6 @@
-# ALASTOR (`Ἀλάστωρ`) v4.0.0 — Enterprise Product Guide, Feature Catalog & Master Standard Operating Procedure (SOP)
+# ALASTOR (`Ἀλάστωρ`) v5.1.0 — Enterprise Product Guide, Feature Catalog & Master Standard Operating Procedure (SOP)
 
-**Deterministic Code Property Graph (AST + CFG + DFG + Call Graph) • Guided 4-Stage High-Contrast WCAG AA Daylight Studio (`1. Scan & Repos · 2. Triage & Fix · 3. 360° Map & Threats · 4. ASPM, Rules & Reports`) • 100% Directional CPG, 360° Cross-File `IMPORTS ▶` & 4-Zone Trust Boundary Graphs with Flow Story Bar & Blast Radius • One-Click `"Fix All Safe Issues"` Atomic Batch Auto-Patcher + Live Monaco BFL `DiffEditor` • Token-Efficient Multi-Provider BYOK Frontier AI Copilot (`90–95%` Savings via CPG Micro-Slicing & SHA-256 Cache) • Public & Private GitHub Scanner • Live OSV.dev Reachable SCA • STRIDE Matrix • CycloneDX v1.5 SBOM • Multi-Tenant RBAC & PMI/COBIT RACI**
+**18-Language Deterministic Code Property Graph (AST + CFG + DFG + Call Graph over Neo4j APOC or Zero-Docker SQLite WAL) • Multi-Turn ReAct CPG-Tool-Calling Agent & 17-Lens Cognitive Playbooks • S6 CVSS 3.1 Verifier, S8 Multi-Hop Exploit Chains & S11 Dual-Verified 3-Persona Patch Panel • IP-Pinned Live Exploit Verification (`EV`) + Post-Fix `ev-replay` + Multi-Role IDOR Matrix • 7-Stage PASTA Threat Modeling & Native `.docx`/`.pdf` SAR Go-Live Dossiers • 9-Command Offline-First `alastor` CLI + Typed Python SDK • SQLite `--resume` Checkpoints & Universal 6-Format Scanner Fusion • PR Delta Gate, Security Regression Test Generator, 5-Framework Compliance Autopilot + ReDoS-Safe Custom Rule Studio, Cross-Repo Microservice Attack-Graph Stitching & Dual Docker Egress-Proxy Sandbox**
 
 ![ALASTOR Mythological Demon Crest](./screenshots/alastor_demon_logo.jpg)
 
@@ -119,3 +119,35 @@ Modern engineering organizations suffer from five systemic failures in Applicati
 - **Version `4.0.0` (2026-11-11)**: 100% Directional CPG/360°/Trust-Boundary Graphs (perimeter arrowheads, step indices, cross-file `IMPORTS ▶`, 3-step single-node synthesis, Flow Story Bar, Blast Radius), Guided 4-Stage WCAG AA Daylight-Only Studio (`0` feature reduction), One-Click Atomic `"Fix All Safe Issues"` Batch Auto-Patcher, Token-Efficient Multi-Provider BYOK Frontier AI Copilot (`90–95%` Micro-Slice savings + SHA-256 cache), `31/31` pytest (`0` warnings), and `20/20` Self-Audit pass (`0` findings).
 - **Version `3.0.0` (2026-11-10)**: Live BFL `"Sever the Thread"` Auto-Patcher (`preview`/`apply`/`undo`), `RULE-14`–`RULE-16` (`21/21` rules), CPG-Backed Zero-FP Web Intel, and `O(1)` UNWIND Neo4j ingestion.
 - **Version `2.6.2`–`v1.0.0` (2026-10)**: Public/Private GitHub Scanner, AST-Verified Sanitizer Summaries, Live `OSV.dev` Reachable SCA, CI/CD Workflow Security (`IAC-3`), STRIDE Matrix, Secret Vault, Multi-Tenant RBAC, RACI Governance, CycloneDX v1.5 SBOM, and Core Tree-Sitter + Neo4j CPG Engine.
+
+
+---
+
+## Part VII: ALASTOR `v5.0.0` & `v5.1.0` Operator SOP Addendum (All 5 Pillars + ReAct CPG Agent & Dual Docker Sandbox)
+
+### 1. Stage 1 — Fleet Command, SQLite Checkpoints (`--resume`), 6-Format Scanner Fusion & Dual Docker Sandbox
+- Open **Stage 1 (`1. Scan & Repos`) -> `Fleet Command, Checkpoints & Scanner Fusion`** (`FleetCommandWorkbench.tsx`):
+  - **System Doctor & Sandbox Image Drift**: Verify `18/18` offline Tree-Sitter parsers, active GraphStore (`NEO4J` vs. `EMBEDDED_SQLITE_WAL`), Git hardening, and local Docker sandbox images (`alastor-sandbox:local` & `alastor-egress:local` `org.alastor.version=5.1.0`).
+  - **`$0` Scope Estimator**: Preview scannable files, LOC, language breakdown, deterministic scan time, and estimated optional AI token spend before scanning.
+  - **Universal 6-Format Scanner Fusion**: Upload or paste **SARIF 2.1.0**, **CodeQL**, **Semgrep JSON**, **Trivy JSON**, **Gitleaks JSON** (automatically scrubbed), or **Checkov JSON** to enrich onto ALASTOR's CPG and record multi-engine `corroborated_by` agreement.
+  - **CSV Fleet Batch Runner (`--repo-file`, `--group-by-app`)**: Run multi-repo batch audits with per-repo isolation, SQLite WAL stage checkpoints (`Resume` in 1 click), and App-Group Go-Live decision rollups, plus vault `GC` retention cleanup.
+  - **OS-Enforced Dual Docker Egress-Proxy Sandbox**: Generate single-container (`egress: none`, `--network=none`) or dual-container mediated-egress (`egress: mediated`, `--network=none` scanner bridged over Unix socket to non-root Squid FQDN proxy with anti-DNS-rebinding `blocked_dst`) plans.
+
+### 2. Stage 2 — Copilot Drawer: S11 3-Persona Patch Panel, Iterative ReAct Auto-Patcher & Security Test Generator
+- Open **`✨ Frontier AI` Copilot Drawer -> `PATCH` Tab** (`FrontierAiCopilotDrawer.tsx`):
+  - **S11 Dual-Verified 3-Persona Patch Panel**: Validates patches through AST syntax verification, hostile-patch post-gating, CPG severance proof, and 3 adversarial reviewer personas.
+  - **Iterative ReAct S10→S11 Auto-Patcher (`v5.1`)**: Uses confined read-only CPG tools (`list_repo_files`, `read_code_slice`, `search_code_regex`, `query_cpg_callers`, `query_cpg_callees`, `get_function_context`) to refine patches across up to 5 rounds using S11 critique feedback (or runs in `$0` deterministic fallback mode).
+  - **1-Click Security Regression Unit-Test Generator**: Generates AST-verified `pytest`, `jest`, `vitest`, or `go test` regression tests alongside patches (preview or safely write to `tests/security/`).
+
+### 3. Stage 3 — PASTA 7-Stage Workbench, Cognitive Hunt + Multi-Turn ReAct CPG Agent & Live EV Console
+- Open **Stage 3 (`3. 360° Map & Threats`) -> `Threat Modeling`** (`ThreatModelingView.tsx`):
+  - **PASTA 7-Stage & Attack Trees (`PastaThreatWorkbench.tsx`)**: Configure application business profile, evaluate Go-Live Release Gates (`NO_GO_HOLD_RELEASE` / `CONDITIONAL_GO_LIVE` / `GO_LIVE_APPROVED`), apply auditable waivers, and export native **Word (`.docx`)** & **PDF (`.pdf`)** SAR Go-Live Dossiers.
+  - **Cognitive Hunt & Chains (`CognitiveSecurityWorkbench.tsx`)**: Run 17 specialist playbooks (`COG-1..5` + BYOK), **Multi-Turn ReAct CPG Deep Hunt** with auditable redacted tool-call trace, S6 Adversarial Verification (`CVSS 3.1`), and S8 Multi-Hop Exploit Chains.
+  - **Live EV & Replay Console (`LiveExploitVerificationConsole.tsx`)**: Run zero-traffic `DRY_RUN_PLAN` or armed IP-pinned `httpx` live verification (loopback default + explicit RFC1918 staging opt-in, permanent public/metadata/self-port `:8000` blocks) across 6 probe families + Multi-Role IDOR/BOLA matrix, copy credential-free `curl`/`pytest` PoCs, and run 1-click post-fix `ev-replay` (`FIXED_VERIFIED` vs. `STILL_VULNERABLE`). Confirmed live exploits auto-promote to **PASTA Stage VII Mandatory Pre-Go-Live Blockers**.
+
+### 4. Stage 4 — Next-Gen AppSec Studio (`v5`)
+- Open **Stage 4 (`4. ASPM, Rules & Reports`) -> `Next-Gen AppSec (v5)`** (`NextGenAppSecStudio.tsx`):
+  - **PR Delta Gate**: Evaluate `base_ref..head_ref` or `WORKTREE` diffs separating `NEWLY_INTRODUCED` vs. `MODIFIED_CONTEXT` (1-hop CPG neighbors) vs. `PRE_EXISTING`, enforce merge gates, and copy PR review Markdown.
+  - **Continuous Compliance Autopilot**: Evaluate live findings & EV attestations across **PCI-DSS 4.0**, **SOC 2**, **ISO/IEC 27001:2022**, **HIPAA**, and **OWASP ASVS 5.0**.
+  - **Custom Rule Studio**: Author, test in a live sandbox, and persist declarative custom rules in `.alastor_vault/custom_rules.json` (`0o600`) protected by Python `re._parser` AST ReDoS validation.
+  - **Cross-Repo Microservice Attack-Graph Stitcher**: Stitch outbound HTTP/gRPC/Queue client calls to inbound routes across 2+ repositories to visualize multi-repo attack paths interactively in ReactFlow.

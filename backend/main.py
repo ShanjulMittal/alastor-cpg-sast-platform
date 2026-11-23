@@ -206,9 +206,9 @@ async def app_lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="ALASTOR Enterprise Deterministic CPG, STRIDE Threat Modeling & SAST++++++ Engine",
-    version="2.6.1",
-    description="Compiler-grade deterministic Code Property Graph, STRIDE Threat Modeling, Live Lockfile CVE Reachability, Secret Keys Vault, Rule Engine Profiles, Multi-Tenant RBAC, and ASPM platform.",
+    title="ALASTOR v5.1 Enterprise Polyglot CPG, Cognitive Agent, Live EV, PASTA & ASPM Platform",
+    version="5.1.0",
+    description="18-language deterministic Code Property Graph (Neo4j + SQLite WAL), 17-Lens & Multi-Turn ReAct CPG Agent, S6/S8/S11 Verification, Live EV & ev-replay, PASTA 7-Stage & SAR DOCX/PDF, Universal 6-Format Scanner Fusion, PR Delta Gate, Compliance Autopilot, Microservice Attack-Graph Stitching, and Dual Docker Egress Sandbox.",
     lifespan=app_lifespan,
 )
 

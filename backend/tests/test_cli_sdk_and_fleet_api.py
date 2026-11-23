@@ -102,7 +102,7 @@ class TestPackagingAndEntryPoint:
         assert pyproject_path.is_file()
         data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
         assert data["project"]["name"] == "alastor-sast"
-        assert data["project"]["version"] == "5.0.0"
+        assert data["project"]["version"] == "5.1.0"
         assert data["project"]["scripts"]["alastor"] == "alastor_cli:main"
         assert set(["alastor_cli", "alastor_sdk", "models", "main"]).issubset(
             set(data["tool"]["setuptools"]["py-modules"])

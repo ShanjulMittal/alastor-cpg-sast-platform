@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alastor-sast"
-version = "5.0.0"
-description = "ALASTOR Enterprise Deterministic CPG, Cognitive Security, Live Exploit Verification & Batch Fleet SAST Platform"
+version = "5.1.0"
+description = "ALASTOR v5.1 Enterprise 18-Language Polyglot CPG, Multi-Turn ReAct CPG Agent, Live Exploit Verification, Universal Scanner Fusion, Fleet & Dual Docker Sandbox SAST Platform"
 requires-python = ">=3.11"
 dependencies = [
     "click>=8.1",
